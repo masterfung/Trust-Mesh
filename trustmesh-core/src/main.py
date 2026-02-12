@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, or_
 
+from src.crypto import decrypt, derive_vault_key
 from src.database import async_session, init_db
 from src.models import Connection, Network, NetworkMembership, User
 from src.routes import capsules, connections, networks, queries, users
@@ -15,11 +16,28 @@ from src.schemas import GraphEdge, GraphNetwork, GraphNode, GraphResponse
 # Populated at startup from seed data or on user login
 vault_keys: dict[str, bytes] = {}
 
+DEMO_PASSWORD = "trustmesh-demo"
+
+
+async def _load_vault_keys():
+    """Load vault keys for all users using the demo password."""
+    async with async_session() as db:
+        result = await db.execute(select(User))
+        for user in result.scalars().all():
+            if user.vault_key_salt and user.encrypted_vault_key:
+                try:
+                    derived_key, _ = derive_vault_key(DEMO_PASSWORD, user.vault_key_salt)
+                    master_key = decrypt(user.encrypted_vault_key, derived_key)
+                    vault_keys[user.id] = master_key
+                except Exception:
+                    pass  # Skip users with bad keys
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifecycle: init DB on startup."""
+    """Application lifecycle: init DB + load vault keys on startup."""
     await init_db()
+    await _load_vault_keys()
     yield
 
 
