@@ -299,6 +299,110 @@ CAPSULES = [
         "tier": "private",
         "networks": [],
     },
+    # ── FAMILY MEDICAL RECORDS (The Johnsons) ──
+    {
+        "owner": "peter",
+        "type": "preference",
+        "title": "Peter's Medical Info",
+        "content": (
+            "Blood type: O+. Height: 5'11\", Weight: 195 lbs. "
+            "Prescription: Atorvastatin 20mg daily (cholesterol), refill at CVS. "
+            "No known drug allergies. Had appendectomy 2018. "
+            "Primary care: Dr. Torres, Riverside Medical. "
+            "Insurance: Blue Cross PPO, Member ID: BCX-447281. "
+            "Last physical: October 2025, all clear. Cholesterol trending down."
+        ),
+        "tier": "network",
+        "networks": ["The Johnsons"],
+    },
+    {
+        "owner": "molly",
+        "type": "preference",
+        "title": "Molly's Medical Info",
+        "content": (
+            "Blood type: A-. Height: 5'6\", Weight: 140 lbs. "
+            "Prescription: Sertraline 50mg daily (anxiety), Vitamin D 2000 IU. "
+            "Allergic to sulfa antibiotics — causes rash. "
+            "Primary care: Dr. Torres, Riverside Medical. "
+            "OB/GYN: Dr. Martinez, (555) 789-0123. "
+            "Insurance: Blue Cross PPO, Member ID: BCX-447282. "
+            "Last mammogram: June 2025, normal. Thyroid checked annually."
+        ),
+        "tier": "network",
+        "networks": ["The Johnsons"],
+    },
+    {
+        "owner": "jane",
+        "type": "preference",
+        "title": "Jane's Medical Info",
+        "content": (
+            "Blood type: A+. Height: 5'5\", Weight: 125 lbs. Age: 16. "
+            "Prescription: Cetirizine 10mg daily (seasonal allergies). "
+            "Had ACL tear repair left knee, March 2024 — cleared for full activity Sept 2024. "
+            "Wears contacts: -2.50 both eyes, Acuvue Oasys. "
+            "Pediatrician: Dr. Nakamura, Lincoln Pediatrics, (555) 890-1234. "
+            "Insurance: Blue Cross PPO (under Peter), Dependent ID: BCX-447281-D1. "
+            "Tetanus booster due: March 2026."
+        ),
+        "tier": "network",
+        "networks": ["The Johnsons"],
+    },
+    {
+        "owner": "bill",
+        "type": "preference",
+        "title": "Bill's Full Medical Record",
+        "content": (
+            "Blood type: O+. Height: 5'2\", Weight: 105 lbs. Age: 14. "
+            "CRITICAL ALLERGIES: Peanuts (anaphylaxis) — EpiPen required. "
+            "Lactose intolerant (not life-threatening). "
+            "Prescription: Montelukast 10mg daily (asthma prevention), "
+            "Albuterol inhaler as needed (in backpack and kitchen drawer). "
+            "Pediatrician: Dr. Nakamura, Lincoln Pediatrics, (555) 890-1234. "
+            "Allergist: Dr. Wong, (555) 678-9012 — next appointment March 15. "
+            "Insurance: Blue Cross PPO (under Peter), Dependent ID: BCX-447281-D2. "
+            "School nurse has copies of allergy action plan and inhaler authorization."
+        ),
+        "tier": "network",
+        "networks": ["The Johnsons"],
+    },
+    {
+        "owner": "molly",
+        "type": "procedure",
+        "title": "Grandma Rose's Full Medical Profile",
+        "content": (
+            "Blood type: B+. Age: 78. Weight: 135 lbs. "
+            "CONDITIONS: Type 2 diabetes, hypertension, chronic kidney disease (stage 3b), "
+            "mild cognitive impairment, osteoarthritis in both knees. "
+            "MEDICATIONS (current): "
+            "- Lisinopril 10mg 2x daily (7am, 7pm) — blood pressure "
+            "- Metformin 500mg 2x daily (8am, 6pm) — diabetes, MUST take with food "
+            "- Amlodipine 5mg 1x daily (7pm) — blood pressure "
+            "- Calcitriol 0.25mcg 1x daily — kidney/bone health "
+            "- Sevelamer 800mg 3x daily with meals — phosphorus binder "
+            "- Erythropoietin injection weekly (Monday, administered by visiting nurse) "
+            "ALLERGIES: Penicillin (hives), lactose intolerant. "
+            "DNR on file — copy in the blue folder in the hall closet. "
+            "Medicare ID: 1EG4-TE5-MK72. Supplemental: AARP United #UHG-99421."
+        ),
+        "tier": "network",
+        "networks": ["The Johnsons"],
+    },
+    {
+        "owner": "peter",
+        "type": "contact",
+        "title": "Family Emergency Contacts",
+        "content": (
+            "Peter cell: (555) 111-2222. Molly cell: (555) 111-3333. "
+            "Neighbor (backup key): Linda Chen, (555) 222-4444, 45 Oak St. "
+            "Poison Control: (800) 222-1222. "
+            "Plumber (emergency): Mike's Plumbing, (555) 333-5555. "
+            "Vet (dog, Biscuit): Riverside Animal Hospital, (555) 444-6666. "
+            "Insurance agent: Tom Keane, State Farm, (555) 555-7777. "
+            "Family lawyer: Patricia Gomez, (555) 666-8888."
+        ),
+        "tier": "network",
+        "networks": ["The Johnsons"],
+    },
     # ── KYLE ───────────────────────────────────
     {
         "owner": "kyle",
