@@ -351,6 +351,11 @@ export default function GraphPage() {
                       <p className="text-[11px] text-muted-foreground truncate">
                         {q.question}
                       </p>
+                      {q.response && (
+                        <p className="text-[11px] text-foreground/80 mt-1.5 line-clamp-2 leading-relaxed">
+                          {q.response}
+                        </p>
+                      )}
                       <div className="flex items-center gap-3 mt-1.5 text-[10px] text-muted">
                         <span className="capitalize">{q.trust_level}</span>
                         <span>{q.latency_ms}ms</span>

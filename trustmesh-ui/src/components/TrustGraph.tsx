@@ -257,12 +257,11 @@ export function TrustGraph({
     gRef.current = g.node();
 
     // Zoom
-    svg.call(
-      d3
-        .zoom<SVGSVGElement, unknown>()
-        .scaleExtent([0.3, 3])
-        .on("zoom", (event) => g.attr("transform", event.transform))
-    );
+    const zoomBehavior = d3
+      .zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.3, 3])
+      .on("zoom", (event) => g.attr("transform", event.transform));
+    svg.call(zoomBehavior);
 
     // Prepare data
     const nodes: SimNode[] = data.nodes.map((n) => ({ ...n }));
@@ -444,7 +443,44 @@ export function TrustGraph({
       drawHulls();
     });
 
-    // Process any queued animations after layout settles
+    // Auto-fit the graph to viewport after simulation settles
+    const fitTimer = setTimeout(() => {
+      // Calculate bounding box of all nodes
+      const xs = nodes.map((n) => n.x ?? 0);
+      const ys = nodes.map((n) => n.y ?? 0);
+      const minX = Math.min(...xs) - 80;
+      const maxX = Math.max(...xs) + 80;
+      const minY = Math.min(...ys) - 80;
+      const maxY = Math.max(...ys) + 80;
+      const bboxWidth = maxX - minX;
+      const bboxHeight = maxY - minY;
+
+      const scale = Math.min(
+        width / bboxWidth,
+        height / bboxHeight,
+        1.8 // Don't zoom in too much
+      ) * 0.85; // Leave some padding
+
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      const tx = width / 2 - cx * scale;
+      const ty = height / 2 - cy * scale - 20; // Nudge up slightly for visual balance
+
+      svg
+        .transition()
+        .duration(800)
+        .ease(d3.easeCubicOut)
+        .call(zoomBehavior.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+
+      // Process any queued animations
+      const queue = animationQueueRef.current;
+      animationQueueRef.current = [];
+      for (const anim of queue) {
+        animateQuery(anim.fromId, anim.toId, anim.decision, "public");
+      }
+    }, 1500); // Wait for simulation to mostly settle
+
+    // Process queued animations on simulation end too
     simulation.on("end", () => {
       const queue = animationQueueRef.current;
       animationQueueRef.current = [];
@@ -455,6 +491,7 @@ export function TrustGraph({
 
     return () => {
       simulation.stop();
+      clearTimeout(fitTimer);
     };
   }, [data, animateQuery]);
 
