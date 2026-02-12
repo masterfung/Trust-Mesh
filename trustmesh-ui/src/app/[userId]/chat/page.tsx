@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type User, type QueryResult } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { TrustBadge, DecisionBadge } from "@/components/TrustBadge";
+import ReactMarkdown from "react-markdown";
 
 export default function ChatPage() {
   const { userId } = useParams<{ userId: string }>();
@@ -26,10 +27,14 @@ export default function ChatPage() {
     queryFn: () => api.listQueries(userId),
   });
 
+  const [queryMode, setQueryMode] = useState<"self" | "other">("other");
   const otherUsers = users?.filter((u: User) => u.id !== userId) ?? [];
 
   const mutation = useMutation({
-    mutationFn: () => api.query(userId, targetId, question),
+    mutationFn: () => {
+      const target = queryMode === "self" ? userId : targetId;
+      return api.query(userId, target, question);
+    },
     onSuccess: (result) => {
       setResults((prev) => [result, ...prev]);
       setQuestion("");
@@ -39,7 +44,8 @@ export default function ChatPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!targetId || !question.trim()) return;
+    if (queryMode === "other" && !targetId) return;
+    if (!question.trim()) return;
     mutation.mutate();
   };
 
@@ -49,15 +55,53 @@ export default function ChatPage() {
     <div className="max-w-3xl mx-auto">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold mb-1">Ask Another Agent</h1>
+        <h1 className="text-2xl font-bold mb-1">Agent Chat</h1>
         <p className="text-muted-foreground text-sm">
-          Query another person&apos;s AI agent. Your trust level determines what knowledge they share.
+          Talk to your own agent or query another person&apos;s agent. Trust level determines what knowledge gets shared.
         </p>
       </div>
 
       {/* Query Form */}
       <form onSubmit={handleSubmit} className="bg-card border border-card-border rounded-2xl p-5 mb-8">
-        {/* Target Selection */}
+        {/* Mode Toggle */}
+        <div className="flex gap-2 mb-5">
+          <button
+            type="button"
+            onClick={() => setQueryMode("self")}
+            className={`flex-1 py-2.5 px-4 rounded-xl text-sm font-medium transition-all ${
+              queryMode === "self"
+                ? "bg-accent/15 border-2 border-accent text-accent"
+                : "bg-card-hover border-2 border-transparent text-muted-foreground hover:border-card-border"
+            }`}
+          >
+            <span className="flex items-center justify-center gap-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+              </svg>
+              Ask My Agent
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setQueryMode("other")}
+            className={`flex-1 py-2.5 px-4 rounded-xl text-sm font-medium transition-all ${
+              queryMode === "other"
+                ? "bg-accent/15 border-2 border-accent text-accent"
+                : "bg-card-hover border-2 border-transparent text-muted-foreground hover:border-card-border"
+            }`}
+          >
+            <span className="flex items-center justify-center gap-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+              Ask Another Agent
+            </span>
+          </button>
+        </div>
+
+        {/* Target Selection (only for "other" mode) */}
+        {queryMode === "other" && (
         <div className="mb-5">
           <label className="block text-sm font-medium text-muted-foreground mb-2">Whose agent do you want to ask?</label>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -85,6 +129,16 @@ export default function ChatPage() {
             ))}
           </div>
         </div>
+        )}
+
+        {/* Self query info banner */}
+        {queryMode === "self" && (
+          <div className="mb-5 p-3 bg-accent/5 border border-accent/15 rounded-xl">
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium text-accent">Private access</span> — your agent sees all your capsules including private ones. Ask about your own knowledge.
+            </p>
+          </div>
+        )}
 
         {/* Question Input */}
         <div className="mb-4">
@@ -95,16 +149,18 @@ export default function ChatPage() {
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder={
-                targetUser
-                  ? `Ask ${targetUser.display_name}'s agent...`
-                  : "Select a person above..."
+                queryMode === "self"
+                  ? `Ask your agent about your knowledge...`
+                  : targetUser
+                    ? `Ask ${targetUser.display_name}'s agent...`
+                    : "Select a person above..."
               }
               className="w-full bg-background border border-card-border rounded-xl px-4 py-3 text-sm pr-24 placeholder:text-muted"
-              disabled={!targetId}
+              disabled={queryMode === "other" && !targetId}
             />
             <button
               type="submit"
-              disabled={!targetId || !question.trim() || mutation.isPending}
+              disabled={(queryMode === "other" && !targetId) || !question.trim() || mutation.isPending}
               className="absolute right-1.5 top-1.5 px-4 py-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-all"
             >
               {mutation.isPending ? (
@@ -118,12 +174,15 @@ export default function ChatPage() {
         </div>
 
         {/* Trust Context Hint */}
-        {targetUser && (
+        {(queryMode === "self" || targetUser) && (
           <p className="text-[11px] text-muted flex items-center gap-1.5">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
             </svg>
-            Your trust level with {targetUser.display_name} determines which capsules their agent can access.
+            {queryMode === "self"
+              ? "Your agent has full access to all your capsules including private ones."
+              : `Your trust level with ${targetUser?.display_name} determines which capsules their agent can access.`
+            }
           </p>
         )}
       </form>
@@ -195,7 +254,7 @@ function QueryResultCard({
 
         {result.response && (
           <div
-            className={`text-sm p-4 rounded-xl leading-relaxed ${
+            className={`text-sm p-4 rounded-xl leading-relaxed prose prose-sm prose-invert max-w-none ${
               result.decision === "allowed"
                 ? "bg-success-dim border border-success/15"
                 : result.decision === "denied"
@@ -203,7 +262,7 @@ function QueryResultCard({
                   : "bg-warning-dim border border-warning/15"
             }`}
           >
-            {result.response}
+            <ReactMarkdown>{result.response}</ReactMarkdown>
           </div>
         )}
 

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.models import Connection, ConnectionRequest, User
+from src.rate_limit import check_connection_rate, record_connection_request
 from src.schemas import (
     ConnectionRequestCreate,
     ConnectionRequestResponse,
@@ -26,6 +27,11 @@ async def send_connection_request(
     """Send a connection request to another user."""
     if data.from_user_id == data.to_user_id:
         raise HTTPException(400, "Cannot connect to yourself")
+
+    # Rate limit check (application-level, NOT Citadel)
+    allowed, reason = check_connection_rate(data.from_user_id)
+    if not allowed:
+        raise HTTPException(429, reason)
 
     from_user = await db.get(User, data.from_user_id)
     to_user = await db.get(User, data.to_user_id)
@@ -66,6 +72,7 @@ async def send_connection_request(
     db.add(req)
     await db.commit()
     await db.refresh(req)
+    record_connection_request(data.from_user_id)
     return ConnectionRequestResponse(
         id=req.id,
         from_user_id=req.from_user_id,

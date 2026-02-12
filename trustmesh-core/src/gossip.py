@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src import citadel, embeddings
 from src.agents import agent_respond
 from src.crypto import decrypt_text
+from src.rate_limit import check_query_rate, record_query
 from src.models import (
     Agent,
     CapsuleNetworkAccess,
@@ -127,6 +128,12 @@ async def query_agent(
     trust_level, shared_networks = await resolve_trust_level(db, from_user_id, to_user_id)
     network_names = [n.name for n in shared_networks]
 
+    # 1b. Rate limit check (application-level, NOT Citadel)
+    rate_ok, rate_reason = check_query_rate(from_user_id, to_user_id, trust_level)
+    if not rate_ok:
+        return {"decision": "denied", "response": rate_reason, "latency_ms": 0,
+                "trust_level": trust_level, "shared_networks": network_names}
+
     # 2. Citadel: scan input
     input_scan = await citadel.scan_input(question)
     if input_scan.decision == "BLOCK":
@@ -195,6 +202,9 @@ async def query_agent(
         response_text = f"Response redacted: {', '.join(output_scan.findings)}"
 
     latency = int((time.time() - start) * 1000)
+
+    # Record for rate limiting
+    record_query(from_user_id, to_user_id)
 
     # Log query
     query_record = Query(
