@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0f172a;
+  --foreground: #e2e8f0;
+  --card: #1e293b;
+  --card-border: #334155;
+  --accent: #38bdf8;
+  --accent-dim: #0ea5e9;
+  --success: #4ade80;
+  --danger: #f87171;
+  --warning: #fbbf24;
+  --muted: #94a3b8;
+  --trust-public: #fbbf24;
+  --trust-network: #38bdf8;
+  --trust-private: #f87171;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-border: var(--card-border);
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-success: var(--success);
+  --color-danger: var(--danger);
+  --color-warning: var(--warning);
+  --color-muted: var(--muted);
+  --color-trust-public: var(--trust-public);
+  --color-trust-network: var(--trust-network);
+  --color-trust-private: var(--trust-private);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+/* Trust tier badges */
+.badge-public { background: var(--trust-public); color: #000; }
+.badge-network { background: var(--trust-network); color: #000; }
+.badge-private { background: var(--trust-private); color: #fff; }
