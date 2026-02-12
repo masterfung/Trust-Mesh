@@ -132,7 +132,9 @@ async def query_agent(
     rate_ok, rate_reason = check_query_rate(from_user_id, to_user_id, trust_level)
     if not rate_ok:
         return {"decision": "denied", "response": rate_reason, "latency_ms": 0,
-                "trust_level": trust_level, "shared_networks": network_names}
+                "from_user_id": from_user_id, "to_user_id": to_user_id,
+                "question": question, "trust_level": trust_level,
+                "shared_networks": network_names}
 
     # 2. Citadel: scan input
     input_scan = await citadel.scan_input(question)
@@ -154,6 +156,9 @@ async def query_agent(
         await db.commit()
         return {
             "id": query_record.id,
+            "from_user_id": from_user_id,
+            "to_user_id": to_user_id,
+            "question": question,
             "decision": "denied",
             "response": "Blocked: potential security threat detected",
             "trust_level": trust_level,
@@ -163,6 +168,7 @@ async def query_agent(
                 "decision": input_scan.decision,
             },
             "latency_ms": latency,
+            "created_at": query_record.created_at.isoformat(),
         }
 
     # 3. Get accessible capsules
