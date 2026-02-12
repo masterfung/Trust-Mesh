@@ -46,77 +46,109 @@ export default function ChatPage() {
   const targetUser = otherUsers.find((u: User) => u.id === targetId);
 
   return (
-    <div className="max-w-3xl">
-      <h1 className="text-2xl font-bold mb-1">Ask Another Agent</h1>
-      <p className="text-muted text-sm mb-6">
-        Query another person&apos;s AI agent. Your trust level determines what knowledge they share.
-      </p>
+    <div className="max-w-3xl mx-auto">
+      {/* Header */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold mb-1">Ask Another Agent</h1>
+        <p className="text-muted-foreground text-sm">
+          Query another person&apos;s AI agent. Your trust level determines what knowledge they share.
+        </p>
+      </div>
 
       {/* Query Form */}
-      <form onSubmit={handleSubmit} className="bg-card border border-card-border rounded-lg p-4 mb-6">
-        <div className="mb-4">
-          <label className="block text-xs text-muted mb-1.5">Ask whose agent?</label>
+      <form onSubmit={handleSubmit} className="bg-card border border-card-border rounded-2xl p-5 mb-8">
+        {/* Target Selection */}
+        <div className="mb-5">
+          <label className="block text-sm font-medium text-muted-foreground mb-2">Whose agent do you want to ask?</label>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             {otherUsers.map((u: User) => (
               <button
                 key={u.id}
                 type="button"
                 onClick={() => setTargetId(u.id)}
-                className={`p-2 rounded-lg text-left text-sm border transition-colors ${
+                className={`p-3 rounded-xl text-left transition-all ${
                   targetId === u.id
-                    ? "border-accent bg-accent/10 text-accent"
-                    : "border-card-border hover:border-accent/50"
+                    ? "bg-accent/10 border-2 border-accent shadow-sm"
+                    : "bg-card-hover border-2 border-transparent hover:border-card-border"
                 }`}
               >
-                <span className="font-medium">{u.display_name}</span>
-                <span className="block text-xs text-muted truncate">@{u.username}</span>
+                <div className="flex items-center gap-2 mb-1">
+                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-white font-bold text-xs ${
+                    targetId === u.id ? "bg-accent" : "bg-muted"
+                  }`}>
+                    {u.display_name[0]}
+                  </div>
+                  <span className="font-medium text-sm truncate">{u.display_name}</span>
+                </div>
+                <span className="text-[11px] text-muted truncate block">@{u.username}</span>
               </button>
             ))}
           </div>
         </div>
 
-        <div className="mb-3">
-          <label className="block text-xs text-muted mb-1.5">Your question</label>
-          <input
-            type="text"
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder={
-              targetUser
-                ? `Ask ${targetUser.display_name}'s agent...`
-                : "Select a person above..."
-            }
-            className="w-full bg-background border border-card-border rounded-lg px-3 py-2 text-sm focus:border-accent focus:outline-none"
-            disabled={!targetId}
-          />
+        {/* Question Input */}
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-muted-foreground mb-2">Your question</label>
+          <div className="relative">
+            <input
+              type="text"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder={
+                targetUser
+                  ? `Ask ${targetUser.display_name}'s agent...`
+                  : "Select a person above..."
+              }
+              className="w-full bg-background border border-card-border rounded-xl px-4 py-3 text-sm pr-24 placeholder:text-muted"
+              disabled={!targetId}
+            />
+            <button
+              type="submit"
+              disabled={!targetId || !question.trim() || mutation.isPending}
+              className="absolute right-1.5 top-1.5 px-4 py-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              {mutation.isPending ? (
+                <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+              ) : "Send"}
+            </button>
+          </div>
         </div>
 
-        <button
-          type="submit"
-          disabled={!targetId || !question.trim() || mutation.isPending}
-          className="w-full bg-accent text-black font-medium py-2 rounded-lg text-sm hover:bg-accent-dim disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          {mutation.isPending ? "Querying agent..." : "Send Query"}
-        </button>
+        {/* Trust Context Hint */}
+        {targetUser && (
+          <p className="text-[11px] text-muted flex items-center gap-1.5">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            Your trust level with {targetUser.display_name} determines which capsules their agent can access.
+          </p>
+        )}
       </form>
 
       {/* Results */}
       {results.length > 0 && (
-        <div className="space-y-4 mb-8">
-          <h2 className="text-sm font-semibold text-muted">This Session</h2>
-          {results.map((r) => (
-            <QueryResultCard key={r.id} result={r} users={users ?? []} currentUserId={userId} />
-          ))}
+        <div className="mb-8">
+          <h2 className="text-sm font-semibold text-muted-foreground mb-3">This Session</h2>
+          <div className="space-y-3">
+            {results.map((r) => (
+              <QueryResultCard key={r.id} result={r} users={users ?? []} currentUserId={userId} />
+            ))}
+          </div>
         </div>
       )}
 
       {/* History */}
       {history && history.length > 0 && (
-        <div className="space-y-4">
-          <h2 className="text-sm font-semibold text-muted">Query History</h2>
-          {history.map((r: QueryResult) => (
-            <QueryResultCard key={r.id} result={r} users={users ?? []} currentUserId={userId} />
-          ))}
+        <div>
+          <h2 className="text-sm font-semibold text-muted-foreground mb-3">Query History</h2>
+          <div className="space-y-3">
+            {history.map((r: QueryResult) => (
+              <QueryResultCard key={r.id} result={r} users={users ?? []} currentUserId={userId} />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -137,15 +169,18 @@ function QueryResultCard({
   const isSent = result.from_user_id === currentUserId;
 
   return (
-    <div className="bg-card border border-card-border rounded-lg p-4">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2 text-xs text-muted">
-          <span className="font-medium text-foreground">
+    <div className="bg-card border border-card-border rounded-2xl overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-3 border-b border-card-border bg-card-hover/30">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="font-semibold text-foreground">
             {isSent ? "You" : fromUser?.display_name}
           </span>
-          <span>asked</span>
-          <span className="font-medium text-foreground">
-            {isSent ? toUser?.display_name : "your"} agent
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+          </svg>
+          <span className="font-semibold text-foreground">
+            {isSent ? toUser?.display_name : "your"}&apos;s agent
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -154,32 +189,45 @@ function QueryResultCard({
         </div>
       </div>
 
-      <p className="text-sm font-medium mb-2">&ldquo;{result.question}&rdquo;</p>
+      {/* Body */}
+      <div className="px-5 py-4">
+        <p className="text-sm font-medium mb-3">&ldquo;{result.question}&rdquo;</p>
 
-      {result.response && (
-        <div
-          className={`text-sm p-3 rounded-lg ${
-            result.decision === "allowed"
-              ? "bg-success/5 border border-success/20"
-              : result.decision === "denied"
-                ? "bg-danger/5 border border-danger/20"
-                : "bg-warning/5 border border-warning/20"
-          }`}
-        >
-          {result.response}
+        {result.response && (
+          <div
+            className={`text-sm p-4 rounded-xl leading-relaxed ${
+              result.decision === "allowed"
+                ? "bg-success-dim border border-success/15"
+                : result.decision === "denied"
+                  ? "bg-danger-dim border border-danger/15"
+                  : "bg-warning-dim border border-warning/15"
+            }`}
+          >
+            {result.response}
+          </div>
+        )}
+
+        {/* Metadata */}
+        <div className="flex items-center gap-4 mt-3 text-[11px] text-muted">
+          {result.shared_networks.length > 0 && (
+            <span className="flex items-center gap-1">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/>
+                <line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/>
+              </svg>
+              {result.shared_networks.join(", ")}
+            </span>
+          )}
+          <span>{result.latency_ms}ms</span>
+          {result.citadel_input?.decision && (
+            <span className={`flex items-center gap-1 ${result.citadel_input.decision === "BLOCK" ? "text-danger" : "text-success"}`}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              </svg>
+              Citadel: {result.citadel_input.decision}
+            </span>
+          )}
         </div>
-      )}
-
-      <div className="flex items-center gap-4 mt-3 text-xs text-muted">
-        {result.shared_networks.length > 0 && (
-          <span>Networks: {result.shared_networks.join(", ")}</span>
-        )}
-        <span>{result.latency_ms}ms</span>
-        {result.citadel_input?.decision && (
-          <span className={result.citadel_input.decision === "BLOCK" ? "text-danger" : "text-success"}>
-            Citadel: {result.citadel_input.decision}
-          </span>
-        )}
       </div>
     </div>
   );

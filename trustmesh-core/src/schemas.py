@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Users ──────────────────────────────────────────
@@ -12,7 +12,21 @@ class UserCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=100)
     bio: str = ""
     is_discoverable: bool = True
-    password: str = Field(min_length=4, max_length=100)  # Simplified for hackathon
+    password: str = Field(min_length=16, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def password_complexity(cls, v: str) -> str:
+        """Require uppercase, lowercase, digit, and special character."""
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not any(c.islower() for c in v):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not any(c.isdigit() for c in v):
+            raise ValueError("Password must contain at least one digit")
+        if not any(not c.isalnum() for c in v):
+            raise ValueError("Password must contain at least one special character (!@#$%^&* etc.)")
+        return v
 
 
 class UserResponse(BaseModel):
@@ -33,6 +47,16 @@ class UserPublic(BaseModel):
     bio: str
 
     model_config = {"from_attributes": True}
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    user: UserResponse
+    token: str
 
 
 # ── Agents ─────────────────────────────────────────

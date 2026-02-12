@@ -3,6 +3,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
+    credentials: "include", // Send httpOnly cookies with every request
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   if (!res.ok) {
@@ -110,6 +111,18 @@ export interface GraphData {
 // ── API Functions ──
 
 export const api = {
+  // Auth (session managed via httpOnly cookies — no tokens in JS)
+  login: (username: string, password: string) =>
+    apiFetch<User>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  logout: () =>
+    apiFetch<{ status: string }>("/api/auth/logout", { method: "POST" }),
+  getMe: () => apiFetch<User>("/api/auth/me"),
+  createUser: (data: { username: string; display_name: string; bio: string; password: string }) =>
+    apiFetch<User>("/api/users", { method: "POST", body: JSON.stringify(data) }),
+
   // Users
   listUsers: () => apiFetch<User[]>("/api/users"),
   getUser: (id: string) => apiFetch<User>(`/api/users/${id}`),

@@ -40,15 +40,20 @@ export default function ConnectionsPage() {
   });
 
   return (
-    <div className="max-w-3xl">
+    <div className="max-w-3xl mx-auto">
+      {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold">Connections</h1>
-          <p className="text-muted text-sm">People you trust and share knowledge with</p>
+          <p className="text-muted-foreground text-sm">People you trust and share knowledge with</p>
         </div>
         <button
           onClick={() => setShowConnect(!showConnect)}
-          className="px-4 py-2 bg-accent text-black font-medium rounded-lg text-sm hover:bg-accent-dim transition-colors"
+          className={`px-4 py-2.5 font-medium rounded-xl text-sm transition-all ${
+            showConnect
+              ? "bg-card-hover text-muted-foreground border border-card-border"
+              : "bg-accent hover:bg-accent-hover text-white hover:shadow-lg hover:shadow-accent/20"
+          }`}
         >
           {showConnect ? "Cancel" : "+ Connect"}
         </button>
@@ -57,30 +62,38 @@ export default function ConnectionsPage() {
       {/* Pending Requests */}
       {requests && requests.length > 0 && (
         <div className="mb-6">
-          <h2 className="text-sm font-semibold text-warning mb-3">
+          <h2 className="text-sm font-semibold text-warning mb-3 flex items-center gap-2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
             Pending Requests ({requests.length})
           </h2>
           <div className="space-y-2">
             {requests.map((r: ConnectionRequest) => (
-              <div key={r.id} className="bg-card border border-warning/30 rounded-lg p-3 flex items-center justify-between">
-                <div>
-                  <span className="text-sm font-medium">
-                    {r.from_user?.display_name || "Unknown"}
-                  </span>
-                  {r.message && (
-                    <p className="text-xs text-muted mt-0.5">&ldquo;{r.message}&rdquo;</p>
-                  )}
+              <div key={r.id} className="bg-card border border-warning/20 rounded-2xl p-4 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-warning/15 flex items-center justify-center text-warning font-bold text-sm">
+                    {r.from_user?.display_name?.[0] || "?"}
+                  </div>
+                  <div>
+                    <span className="text-sm font-semibold">
+                      {r.from_user?.display_name || "Unknown"}
+                    </span>
+                    {r.message && (
+                      <p className="text-xs text-muted mt-0.5">&ldquo;{r.message}&rdquo;</p>
+                    )}
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <button
                     onClick={() => acceptMutation.mutate(r.id)}
-                    className="px-3 py-1 text-xs bg-success/10 text-success rounded hover:bg-success/20 transition-colors"
+                    className="px-4 py-2 text-xs font-medium bg-success/10 text-success rounded-xl hover:bg-success/20 transition-colors border border-success/20"
                   >
                     Accept
                   </button>
                   <button
                     onClick={() => declineMutation.mutate(r.id)}
-                    className="px-3 py-1 text-xs bg-danger/10 text-danger rounded hover:bg-danger/20 transition-colors"
+                    className="px-4 py-2 text-xs font-medium bg-danger/10 text-danger rounded-xl hover:bg-danger/20 transition-colors border border-danger/20"
                   >
                     Decline
                   </button>
@@ -100,22 +113,33 @@ export default function ConnectionsPage() {
       )}
 
       {/* Current Connections */}
-      <h2 className="text-sm font-semibold mb-3">Connected ({connections?.length ?? 0})</h2>
+      <h2 className="text-sm font-semibold mb-3 text-muted-foreground">Connected ({connections?.length ?? 0})</h2>
       <div className="space-y-2">
         {connections?.map((c: Connection) => (
-          <div key={c.id} className="bg-card border border-card-border rounded-lg p-3 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-accent-dim flex items-center justify-center text-white font-bold">
+          <div key={c.id} className="bg-card border border-card-border rounded-2xl p-4 flex items-center gap-3 hover:bg-card-hover transition-colors">
+            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-accent to-purple-500 flex items-center justify-center text-white font-bold">
               {c.peer?.display_name?.[0] || "?"}
             </div>
-            <div className="flex-1">
-              <p className="text-sm font-medium">{c.peer?.display_name}</p>
-              <p className="text-xs text-muted">@{c.peer?.username} &middot; {c.peer?.bio}</p>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold">{c.peer?.display_name}</p>
+              <p className="text-xs text-muted truncate">@{c.peer?.username} &middot; {c.peer?.bio}</p>
             </div>
-            <span className="text-xs text-success">Connected</span>
+            <span className="inline-flex items-center gap-1 text-xs text-success bg-success/10 px-2.5 py-1 rounded-lg font-medium border border-success/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-success" />
+              Connected
+            </span>
           </div>
         ))}
         {!connections?.length && (
-          <p className="text-muted text-sm text-center py-8">No connections yet.</p>
+          <div className="text-center py-12">
+            <p className="text-muted text-sm">No connections yet.</p>
+            <button
+              onClick={() => setShowConnect(true)}
+              className="mt-3 text-accent text-sm hover:text-accent-hover transition-colors"
+            >
+              Send your first connection request &rarr;
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -140,14 +164,14 @@ function SendConnectionForm({
   });
 
   return (
-    <div className="bg-card border border-card-border rounded-lg p-4 mb-6">
-      <h2 className="text-sm font-semibold mb-3">Send Connection Request</h2>
-      <div className="mb-3">
-        <label className="block text-xs text-muted mb-1">Connect with</label>
+    <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
+      <h2 className="text-base font-semibold mb-4">Send Connection Request</h2>
+      <div className="mb-4">
+        <label className="block text-sm font-medium text-muted-foreground mb-1.5">Connect with</label>
         <select
           value={targetId}
           onChange={(e) => setTargetId(e.target.value)}
-          className="w-full bg-background border border-card-border rounded px-2 py-1.5 text-sm"
+          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm"
         >
           <option value="">Select a person...</option>
           {unconnected.map((u) => (
@@ -155,20 +179,20 @@ function SendConnectionForm({
           ))}
         </select>
       </div>
-      <div className="mb-3">
-        <label className="block text-xs text-muted mb-1">Message (optional)</label>
+      <div className="mb-4">
+        <label className="block text-sm font-medium text-muted-foreground mb-1.5">Message (optional)</label>
         <input
           type="text"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="Hi, I'd like to connect..."
-          className="w-full bg-background border border-card-border rounded px-2 py-1.5 text-sm"
+          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted"
         />
       </div>
       <button
         onClick={() => mutation.mutate()}
         disabled={!targetId || mutation.isPending}
-        className="w-full bg-accent text-black font-medium py-2 rounded-lg text-sm hover:bg-accent-dim disabled:opacity-50 transition-colors"
+        className="w-full bg-accent hover:bg-accent-hover text-white font-semibold py-3 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/20"
       >
         {mutation.isPending ? "Sending..." : "Send Request"}
       </button>

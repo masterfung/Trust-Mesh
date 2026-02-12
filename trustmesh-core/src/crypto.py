@@ -1,12 +1,23 @@
-"""Encryption service: AES-256-GCM for vault keys and capsule content."""
+"""Encryption service: AES-256-GCM for vault keys and capsule content.
+
+Key derivation uses Argon2id (memory-hard, GPU/ASIC resistant).
+Production: replace password-based derivation with WebAuthn PRF extension.
+"""
 
 import hashlib
 import os
 
+from argon2.low_level import Type, hash_secret_raw
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 KEY_SIZE = 32  # AES-256
 NONCE_SIZE = 12  # GCM standard
+
+# Argon2id parameters (OWASP recommended for password hashing)
+ARGON2_TIME_COST = 3  # iterations
+ARGON2_MEMORY_COST = 65536  # 64 MiB
+ARGON2_PARALLELISM = 4
+ARGON2_SALT_SIZE = 16
 
 
 def generate_key() -> bytes:
@@ -15,15 +26,23 @@ def generate_key() -> bytes:
 
 
 def derive_vault_key(password: str, salt: bytes | None = None) -> tuple[bytes, bytes]:
-    """Derive a vault key from password using PBKDF2.
+    """Derive a vault key from password using Argon2id.
 
     Returns (derived_key, salt).
-    For hackathon: simplified password-based derivation.
+    Argon2id is memory-hard, resistant to GPU/ASIC brute-force attacks.
     Production: replace with WebAuthn PRF extension.
     """
     if salt is None:
-        salt = os.urandom(16)
-    key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations=100_000, dklen=KEY_SIZE)
+        salt = os.urandom(ARGON2_SALT_SIZE)
+    key = hash_secret_raw(
+        secret=password.encode(),
+        salt=salt,
+        time_cost=ARGON2_TIME_COST,
+        memory_cost=ARGON2_MEMORY_COST,
+        parallelism=ARGON2_PARALLELISM,
+        hash_len=KEY_SIZE,
+        type=Type.ID,  # Argon2id — hybrid of Argon2i + Argon2d
+    )
     return key, salt
 
 

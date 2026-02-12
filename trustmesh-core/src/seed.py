@@ -16,8 +16,8 @@ from src.models import (
     User,
 )
 
-# Shared password for demo (simplified for hackathon)
-DEMO_PASSWORD = "trustmesh-demo"
+# Shared password for demo (simplified for hackathon — 16+ chars required)
+DEMO_PASSWORD = "TrustMesh-demo-2026"
 
 USERS = [
     {

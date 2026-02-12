@@ -16,7 +16,7 @@ from src.schemas import GraphEdge, GraphNetwork, GraphNode, GraphResponse
 # Populated at startup from seed data or on user login
 vault_keys: dict[str, bytes] = {}
 
-DEMO_PASSWORD = "trustmesh-demo"
+DEMO_PASSWORD = "TrustMesh-demo-2026"
 
 
 async def _load_vault_keys():
@@ -50,7 +50,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3050", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

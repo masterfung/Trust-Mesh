@@ -5,10 +5,10 @@ import * as d3 from "d3";
 import type { GraphData } from "@/lib/api";
 
 const NETWORK_COLORS: Record<string, string> = {
-  family: "#38bdf8",
+  family: "#6366f1",
   team: "#a78bfa",
-  friends: "#4ade80",
-  custom: "#fbbf24",
+  friends: "#22c55e",
+  custom: "#f59e0b",
 };
 
 const USER_COLORS: Record<string, string> = {
@@ -70,17 +70,17 @@ export function TrustGraph({ data }: { data: GraphData }) {
       .forceSimulation(nodes)
       .force(
         "link",
-        d3.forceLink<SimNode, SimLink>(links).id((d) => d.id).distance(120)
+        d3.forceLink<SimNode, SimLink>(links).id((d) => d.id).distance(140)
       )
-      .force("charge", d3.forceManyBody().strength(-400))
+      .force("charge", d3.forceManyBody().strength(-500))
       .force("center", d3.forceCenter(width / 2, height / 2))
-      .force("collision", d3.forceCollide(50));
+      .force("collision", d3.forceCollide(55));
 
     // Draw network hulls
     const hullGroup = g.append("g").attr("class", "hulls");
 
     function drawHulls() {
-      hullGroup.selectAll("path").remove();
+      hullGroup.selectAll("*").remove();
 
       for (const net of networkGroups) {
         const memberNodes = nodes.filter((n) => net.members.includes(n.id));
@@ -90,11 +90,10 @@ export function TrustGraph({ data }: { data: GraphData }) {
         memberNodes.forEach((n) => {
           const x = n.x ?? 0;
           const y = n.y ?? 0;
-          // Add padding points around each node for smoother hulls
-          points.push([x - 30, y - 30]);
-          points.push([x + 30, y - 30]);
-          points.push([x - 30, y + 30]);
-          points.push([x + 30, y + 30]);
+          points.push([x - 40, y - 40]);
+          points.push([x + 40, y - 40]);
+          points.push([x - 40, y + 40]);
+          points.push([x + 40, y + 40]);
         });
 
         const hull = d3.polygonHull(points);
@@ -104,15 +103,16 @@ export function TrustGraph({ data }: { data: GraphData }) {
             .datum(hull)
             .attr("d", (d) => `M${d.join("L")}Z`)
             .attr("fill", net.color)
-            .attr("fill-opacity", 0.07)
+            .attr("fill-opacity", 0.06)
             .attr("stroke", net.color)
-            .attr("stroke-opacity", 0.3)
+            .attr("stroke-opacity", 0.25)
             .attr("stroke-width", 1.5)
-            .attr("stroke-dasharray", "4,4");
+            .attr("stroke-dasharray", "6,4")
+            .attr("rx", 12);
 
           // Network label
           const cx = d3.mean(memberNodes, (n) => n.x) ?? 0;
-          const cy = (d3.min(memberNodes, (n) => n.y) ?? 0) - 45;
+          const cy = (d3.min(memberNodes, (n) => n.y) ?? 0) - 55;
           hullGroup
             .append("text")
             .attr("x", cx)
@@ -121,7 +121,8 @@ export function TrustGraph({ data }: { data: GraphData }) {
             .attr("fill", net.color)
             .attr("font-size", "11px")
             .attr("font-weight", "600")
-            .attr("opacity", 0.8)
+            .attr("font-family", "system-ui, sans-serif")
+            .attr("opacity", 0.7)
             .text(net.name);
         }
       }
@@ -133,9 +134,9 @@ export function TrustGraph({ data }: { data: GraphData }) {
       .selectAll("line")
       .data(links)
       .join("line")
-      .attr("stroke", "#475569")
+      .attr("stroke", "#3f3f46")
       .attr("stroke-width", 1.5)
-      .attr("stroke-opacity", 0.6);
+      .attr("stroke-opacity", 0.5);
 
     // Node groups
     const node = g
@@ -162,13 +163,14 @@ export function TrustGraph({ data }: { data: GraphData }) {
           })
       );
 
-    // Node circles
+    // Node circles with glow
     node
       .append("circle")
-      .attr("r", 22)
+      .attr("r", 26)
       .attr("fill", (d) => USER_COLORS[d.username] || "#6b7280")
-      .attr("stroke", "#0f172a")
-      .attr("stroke-width", 2);
+      .attr("stroke", "#09090b")
+      .attr("stroke-width", 3)
+      .style("filter", "drop-shadow(0 0 6px rgba(99, 102, 241, 0.15))");
 
     // Node labels (initials)
     node
@@ -178,15 +180,18 @@ export function TrustGraph({ data }: { data: GraphData }) {
       .attr("fill", "white")
       .attr("font-size", "12px")
       .attr("font-weight", "bold")
+      .attr("font-family", "system-ui, sans-serif")
       .text((d) => d.display_name.split(" ").map((w) => w[0]).join(""));
 
     // Name labels below
     node
       .append("text")
       .attr("text-anchor", "middle")
-      .attr("dy", "38px")
-      .attr("fill", "#94a3b8")
-      .attr("font-size", "10px")
+      .attr("dy", "42px")
+      .attr("fill", "#a1a1aa")
+      .attr("font-size", "11px")
+      .attr("font-family", "system-ui, sans-serif")
+      .attr("font-weight", "500")
       .text((d) => d.display_name);
 
     // Tick
@@ -210,15 +215,15 @@ export function TrustGraph({ data }: { data: GraphData }) {
       <svg ref={svgRef} className="w-full h-full" />
 
       {/* Legend */}
-      <div className="absolute bottom-4 left-4 bg-card/90 backdrop-blur border border-card-border rounded-lg p-3">
-        <p className="text-xs font-semibold text-muted mb-2">Networks</p>
+      <div className="absolute bottom-4 left-4 bg-card/95 backdrop-blur-sm border border-card-border rounded-2xl p-4 shadow-lg">
+        <p className="text-xs font-semibold text-muted-foreground mb-3">Networks</p>
         {data.networks.map((n) => (
-          <div key={n.id} className="flex items-center gap-2 mb-1">
+          <div key={n.id} className="flex items-center gap-2.5 mb-1.5">
             <div
-              className="w-3 h-3 rounded-full"
+              className="w-3 h-3 rounded-sm"
               style={{ backgroundColor: NETWORK_COLORS[n.network_type] || NETWORK_COLORS.custom }}
             />
-            <span className="text-xs text-muted">{n.name}</span>
+            <span className="text-xs text-muted-foreground">{n.name}</span>
           </div>
         ))}
       </div>

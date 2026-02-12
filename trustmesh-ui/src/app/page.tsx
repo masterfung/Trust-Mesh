@@ -1,72 +1,426 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type User } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+
+const DEMO_PASSWORD = "TrustMesh-demo-2026";
 
 const USER_COLORS: Record<string, string> = {
-  peter: "from-blue-600 to-blue-400",
-  molly: "from-purple-600 to-purple-400",
-  jane: "from-pink-600 to-pink-400",
-  bill: "from-green-600 to-green-400",
-  kyle: "from-orange-600 to-orange-400",
+  peter: "from-blue-500 to-cyan-400",
+  molly: "from-violet-500 to-purple-400",
+  jane: "from-pink-500 to-rose-400",
+  bill: "from-emerald-500 to-green-400",
+  kyle: "from-orange-500 to-amber-400",
 };
 
+function validatePasswordComplexity(pw: string): string | null {
+  if (pw.length < 16) return "Password must be at least 16 characters";
+  if (!/[A-Z]/.test(pw)) return "Must contain an uppercase letter";
+  if (!/[a-z]/.test(pw)) return "Must contain a lowercase letter";
+  if (!/[0-9]/.test(pw)) return "Must contain a digit";
+  if (!/[^A-Za-z0-9]/.test(pw)) return "Must contain a special character (!@#$%^&* etc.)";
+  return null;
+}
+
 export default function Home() {
+  const { user: authUser, isLoading: authLoading } = useAuth();
+  const router = useRouter();
   const { data: users, isLoading } = useQuery({
     queryKey: ["users"],
     queryFn: api.listUsers,
   });
+  const [authMode, setAuthMode] = useState<"none" | "login" | "signup">("none");
+
+  // If already logged in, redirect to dashboard
+  useEffect(() => {
+    if (authUser && !authLoading) {
+      router.push(`/${authUser.id}`);
+    }
+  }, [authUser, authLoading, router]);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-muted animate-pulse">Loading...</div>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-8">
-      <div className="text-center mb-12">
-        <h1 className="text-5xl font-bold text-accent mb-3">TrustMesh</h1>
-        <p className="text-lg text-muted max-w-xl mx-auto">
-          Trust-aware knowledge sharing for AI agents. Each person has an AI agent
-          that holds their knowledge and shares it appropriately based on trust relationships.
-        </p>
-      </div>
+    <div className="min-h-screen flex flex-col">
+      {/* Hero */}
+      <div className="flex-1 flex flex-col items-center justify-center p-6 md:p-12">
+        {/* Logo + Tagline */}
+        <div className="text-center mb-12">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-accent/10 border border-accent/20 text-accent text-xs font-medium mb-6">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+            Powered by Claude Opus 4.6
+          </div>
+          <h1 className="text-5xl md:text-6xl font-bold tracking-tight mb-4">
+            <span className="text-gradient">TrustMesh</span>
+          </h1>
+          <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto leading-relaxed">
+            Your personal AI agent holds your knowledge and shares it with the right
+            people — powered by trust networks and encrypted vaults.
+          </p>
+        </div>
 
-      <div className="mb-6">
-        <p className="text-muted text-sm text-center">Select a person to view their perspective:</p>
-      </div>
-
-      {isLoading ? (
-        <div className="text-muted animate-pulse">Loading users...</div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 max-w-5xl">
-          {users?.map((user: User) => (
-            <Link
-              key={user.id}
-              href={`/${user.id}`}
-              className="group block p-5 rounded-xl bg-card border border-card-border hover:border-accent transition-all hover:scale-105"
+        {/* Feature Pills */}
+        <div className="flex flex-wrap justify-center gap-3 mb-12">
+          {[
+            { icon: "🔐", label: "AES-256 Encrypted" },
+            { icon: "🤖", label: "AI Agent Per User" },
+            { icon: "🛡️", label: "Trust-Tiered Access" },
+            { icon: "🔍", label: "Citadel Security" },
+          ].map((f) => (
+            <div
+              key={f.label}
+              className="flex items-center gap-2 px-4 py-2 rounded-full bg-card border border-card-border text-sm text-muted-foreground"
             >
-              <div
-                className={`w-14 h-14 rounded-full bg-gradient-to-br ${USER_COLORS[user.username] || "from-gray-600 to-gray-400"} flex items-center justify-center text-white font-bold text-xl mb-3 group-hover:shadow-lg group-hover:shadow-accent/20 transition-shadow`}
-              >
-                {user.display_name[0]}
-              </div>
-              <h2 className="text-foreground font-semibold text-sm">{user.display_name}</h2>
-              <p className="text-xs text-muted mt-1 line-clamp-2">{user.bio}</p>
-            </Link>
+              <span>{f.icon}</span>
+              <span>{f.label}</span>
+            </div>
           ))}
+        </div>
+
+        {/* Auth Forms */}
+        <div className="w-full max-w-lg mb-12">
+          {authMode === "login" ? (
+            <LoginForm onDone={() => setAuthMode("none")} onSwitch={() => setAuthMode("signup")} />
+          ) : authMode === "signup" ? (
+            <SignupForm onDone={() => setAuthMode("none")} onSwitch={() => setAuthMode("login")} />
+          ) : (
+            <div className="flex gap-3">
+              <button
+                onClick={() => setAuthMode("login")}
+                className="flex-1 py-3.5 bg-accent hover:bg-accent-hover text-white font-semibold rounded-xl text-base transition-all hover:shadow-lg hover:shadow-accent/25"
+              >
+                Log In
+              </button>
+              <button
+                onClick={() => setAuthMode("signup")}
+                className="flex-1 py-3.5 bg-card border border-card-border hover:border-accent/50 text-foreground font-semibold rounded-xl text-base transition-all hover:bg-card-hover"
+              >
+                Sign Up
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Demo Users */}
+        <div className="w-full max-w-4xl">
+          <div className="text-center mb-6">
+            <p className="text-sm text-muted">
+              Or explore the demo — pick a family member to see their perspective:
+            </p>
+          </div>
+
+          {isLoading ? (
+            <div className="flex justify-center">
+              <div className="text-muted animate-pulse">Loading...</div>
+            </div>
+          ) : (
+            <DemoUserGrid users={users || []} />
+          )}
+        </div>
+
+        {/* Graph Link */}
+        <div className="mt-10">
+          <Link
+            href="/graph"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-card border border-card-border text-sm text-muted-foreground hover:text-foreground hover:border-accent/50 transition-all"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/>
+              <line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/>
+            </svg>
+            View Trust Graph
+          </Link>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <footer className="py-6 px-4 border-t border-card-border text-center">
+        <p className="text-xs text-muted">
+          Built with Claude Opus 4.6 for the Claude Code Hackathon &middot; AES-256-GCM Encryption &middot; Citadel Security Scanning
+        </p>
+      </footer>
+    </div>
+  );
+}
+
+function DemoUserGrid({ users }: { users: User[] }) {
+  const { loginAsDemo } = useAuth();
+  const router = useRouter();
+  const [loadingUser, setLoadingUser] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  const handleDemoLogin = async (user: User) => {
+    setLoadingUser(user.id);
+    setError("");
+    try {
+      const loggedIn = await loginAsDemo(user.username, DEMO_PASSWORD);
+      router.push(`/${loggedIn.id}`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Demo login failed");
+      setLoadingUser(null);
+    }
+  };
+
+  return (
+    <div>
+      {error && (
+        <div className="text-danger text-sm mb-4 p-3 bg-danger-dim rounded-lg border border-danger/20 text-center">
+          {error}
+        </div>
+      )}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        {users.map((user: User) => (
+          <button
+            key={user.id}
+            onClick={() => handleDemoLogin(user)}
+            disabled={loadingUser !== null}
+            className="group relative p-4 rounded-xl bg-card border border-card-border hover:border-accent/50 transition-all hover:bg-card-hover text-left disabled:opacity-60"
+          >
+            <div
+              className={`w-12 h-12 rounded-xl bg-gradient-to-br ${USER_COLORS[user.username] || "from-zinc-600 to-zinc-400"} flex items-center justify-center text-white font-bold text-lg mb-3 transition-transform group-hover:scale-110`}
+            >
+              {loadingUser === user.id ? (
+                <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+              ) : (
+                user.display_name[0]
+              )}
+            </div>
+            <h2 className="text-foreground font-semibold text-sm">{user.display_name}</h2>
+            <p className="text-xs text-muted mt-1 line-clamp-2">{user.bio}</p>
+            <span className="absolute top-2 right-2 text-[10px] text-muted bg-card-hover px-1.5 py-0.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
+              Demo
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LoginForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => void }) {
+  const { login } = useAuth();
+  const router = useRouter();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [isPending, setIsPending] = useState(false);
+
+  const handleSubmit = async () => {
+    setError("");
+    setIsPending(true);
+    try {
+      const user = await login(username, password);
+      router.push(`/${user.id}`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Login failed");
+    } finally {
+      setIsPending(false);
+    }
+  };
+
+  return (
+    <div className="bg-card border border-card-border rounded-2xl p-6 shadow-xl shadow-black/20">
+      <h2 className="text-xl font-bold mb-1">Welcome Back</h2>
+      <p className="text-sm text-muted mb-5">
+        Log in to access your AI agent and encrypted vault.
+      </p>
+
+      {error && (
+        <div className="text-danger text-sm mb-4 p-3 bg-danger-dim rounded-lg border border-danger/20">
+          {error}
         </div>
       )}
 
-      <div className="mt-12 flex gap-4">
-        <Link
-          href="/graph"
-          className="px-4 py-2 rounded-lg bg-accent/10 text-accent text-sm hover:bg-accent/20 transition-colors"
-        >
-          View Trust Graph
-        </Link>
+      <div className="space-y-4 mb-5">
+        <div>
+          <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Username</label>
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+            placeholder="e.g., peter"
+            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+            onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+          />
+        </div>
+        <div>
+          <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Password</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Your password"
+            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+            onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+          />
+        </div>
       </div>
 
-      <footer className="mt-16 text-xs text-muted text-center">
-        <p>Built with Opus 4.6 for the Claude Code Hackathon</p>
-        <p className="mt-1">Encryption: AES-256-GCM | Security: Citadel | AI: Claude Opus 4.6</p>
-      </footer>
+      <div className="flex gap-3 mb-4">
+        <button
+          onClick={handleSubmit}
+          disabled={!username.trim() || !password.trim() || isPending}
+          className="flex-1 py-2.5 bg-accent hover:bg-accent-hover text-white font-semibold rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/25"
+        >
+          {isPending ? (
+            <span className="flex items-center justify-center gap-2">
+              <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              Authenticating...
+            </span>
+          ) : "Log In"}
+        </button>
+        <button
+          onClick={onDone}
+          className="px-5 py-2.5 text-sm text-muted-foreground hover:text-foreground rounded-xl hover:bg-card-hover transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+
+      <p className="text-center text-xs text-muted">
+        Don&apos;t have an account?{" "}
+        <button onClick={onSwitch} className="text-accent hover:text-accent-hover transition-colors">
+          Sign up
+        </button>
+      </p>
+    </div>
+  );
+}
+
+function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => void }) {
+  const { signup } = useAuth();
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const [username, setUsername] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [bio, setBio] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const passwordError = password.length > 0 ? validatePasswordComplexity(password) : null;
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      signup({ username, display_name: displayName, bio, password }),
+    onSuccess: (newUser) => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      router.push(`/${newUser.id}`);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const isValid = username.trim() && displayName.trim() && !passwordError && password.length >= 16;
+
+  return (
+    <div className="bg-card border border-card-border rounded-2xl p-6 shadow-xl shadow-black/20">
+      <h2 className="text-xl font-bold mb-1">Create Your Account</h2>
+      <p className="text-sm text-muted mb-5">
+        A personal AI agent and encrypted vault will be created for you.
+      </p>
+
+      {error && (
+        <div className="text-danger text-sm mb-4 p-3 bg-danger-dim rounded-lg border border-danger/20">
+          {error}
+        </div>
+      )}
+
+      <div className="space-y-4 mb-5">
+        <div>
+          <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Username</label>
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+            placeholder="e.g., alice"
+            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+          />
+        </div>
+        <div>
+          <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Display Name</label>
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="e.g., Alice Chen"
+            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+          />
+        </div>
+        <div>
+          <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Password</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Min 16 chars, mixed case + digit + special"
+            className={`w-full bg-background border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 ${
+              passwordError ? "border-danger/50" : "border-card-border focus:border-accent/50"
+            }`}
+          />
+          {passwordError ? (
+            <p className="text-xs text-danger mt-1">{passwordError}</p>
+          ) : password.length > 0 ? (
+            <p className="text-xs text-green-400 mt-1">Password meets complexity requirements</p>
+          ) : (
+            <p className="text-xs text-muted mt-1">Argon2id derives your AES-256 vault key</p>
+          )}
+        </div>
+        <div>
+          <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Bio <span className="text-muted">(optional)</span></label>
+          <input
+            type="text"
+            value={bio}
+            onChange={(e) => setBio(e.target.value)}
+            placeholder="Tell others about yourself..."
+            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+          />
+        </div>
+      </div>
+
+      <div className="flex gap-3 mb-4">
+        <button
+          onClick={() => mutation.mutate()}
+          disabled={!isValid || mutation.isPending}
+          className="flex-1 py-2.5 bg-accent hover:bg-accent-hover text-white font-semibold rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/25"
+        >
+          {mutation.isPending ? (
+            <span className="flex items-center justify-center gap-2">
+              <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              Creating...
+            </span>
+          ) : "Create Account"}
+        </button>
+        <button
+          onClick={onDone}
+          className="px-5 py-2.5 text-sm text-muted-foreground hover:text-foreground rounded-xl hover:bg-card-hover transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+
+      <p className="text-center text-xs text-muted">
+        Already have an account?{" "}
+        <button onClick={onSwitch} className="text-accent hover:text-accent-hover transition-colors">
+          Log in
+        </button>
+      </p>
     </div>
   );
 }

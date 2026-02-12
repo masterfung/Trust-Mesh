@@ -1,41 +1,104 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useAuth } from "@/lib/auth";
 import type { User } from "@/lib/api";
 
 const NAV_ITEMS = [
-  { href: "", label: "Dashboard", icon: "D" },
-  { href: "/chat", label: "Chat", icon: "Q" },
-  { href: "/vault", label: "Vault", icon: "V" },
-  { href: "/networks", label: "Networks", icon: "N" },
-  { href: "/connections", label: "Connections", icon: "C" },
+  {
+    href: "",
+    label: "Dashboard",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+        <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+      </svg>
+    ),
+  },
+  {
+    href: "/chat",
+    label: "Ask Agents",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+    ),
+  },
+  {
+    href: "/vault",
+    label: "Knowledge Vault",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+      </svg>
+    ),
+  },
+  {
+    href: "/networks",
+    label: "Networks",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/>
+        <line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/>
+      </svg>
+    ),
+  },
+  {
+    href: "/connections",
+    label: "Connections",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+        <line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/>
+      </svg>
+    ),
+  },
 ];
 
 export function Sidebar({ user }: { user: User }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { logout } = useAuth();
   const base = `/${user.id}`;
 
-  return (
-    <aside className="w-56 bg-card border-r border-card-border flex flex-col h-screen sticky top-0">
-      <Link href="/" className="block p-4 border-b border-card-border hover:bg-card-border/30">
-        <h1 className="text-accent font-bold text-lg">TrustMesh</h1>
-        <p className="text-xs text-muted mt-0.5">Trust-Aware Knowledge Sharing</p>
-      </Link>
+  const handleLogout = () => {
+    logout();
+    router.push("/");
+  };
 
-      <div className="p-4 border-b border-card-border">
+  return (
+    <aside className="w-60 bg-card/50 backdrop-blur-sm border-r border-card-border flex flex-col h-screen sticky top-0">
+      {/* Brand */}
+      <Link href="/" className="block p-5 border-b border-card-border hover:bg-card-hover transition-colors">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-accent-dim flex items-center justify-center text-white font-bold text-sm">
-            {user.display_name[0]}
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-purple-500 flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
           </div>
           <div>
-            <p className="text-sm font-medium">{user.display_name}</p>
-            <p className="text-xs text-muted">@{user.username}</p>
+            <h1 className="font-bold text-base tracking-tight">TrustMesh</h1>
+            <p className="text-[10px] text-muted leading-none">Trust-Aware AI Agents</p>
+          </div>
+        </div>
+      </Link>
+
+      {/* User Profile */}
+      <div className="p-4 border-b border-card-border">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-accent to-purple-500 flex items-center justify-center text-white font-bold text-sm shrink-0">
+            {user.display_name[0]}
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold truncate">{user.display_name}</p>
+            <p className="text-xs text-muted truncate">@{user.username}</p>
           </div>
         </div>
       </div>
 
-      <nav className="flex-1 p-2">
+      {/* Navigation */}
+      <nav className="flex-1 p-3 space-y-0.5">
         {NAV_ITEMS.map((item) => {
           const href = `${base}${item.href}`;
           const isActive = item.href === ""
@@ -45,29 +108,40 @@ export function Sidebar({ user }: { user: User }) {
             <Link
               key={item.href}
               href={href}
-              className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm mb-1 transition-colors ${
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-all ${
                 isActive
-                  ? "bg-accent/15 text-accent font-medium"
-                  : "text-muted hover:text-foreground hover:bg-card-border/30"
+                  ? "bg-accent/10 text-accent font-medium shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-card-hover"
               }`}
             >
-              <span className="w-5 h-5 flex items-center justify-center rounded bg-card-border text-xs font-bold">
-                {item.icon}
-              </span>
+              <span className={isActive ? "text-accent" : "text-muted"}>{item.icon}</span>
               {item.label}
             </Link>
           );
         })}
       </nav>
 
-      <div className="p-2 border-t border-card-border">
+      {/* Bottom */}
+      <div className="p-3 border-t border-card-border space-y-0.5">
         <Link
           href="/graph"
-          className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-muted hover:text-foreground hover:bg-card-border/30"
+          className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-muted-foreground hover:text-foreground hover:bg-card-hover transition-all"
         >
-          <span className="w-5 h-5 flex items-center justify-center rounded bg-card-border text-xs font-bold">G</span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
           Trust Graph
         </Link>
+        <button
+          onClick={handleLogout}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-muted-foreground hover:text-danger hover:bg-danger-dim transition-all"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+          Log Out
+        </button>
       </div>
     </aside>
   );
