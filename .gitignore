@@ -23,3 +23,9 @@ out/
 
 # UV
 .python-version
+
+# Reference repos (not part of TrustMesh)
+citadel-ref/
+
+# ChromaDB
+chroma_data/
