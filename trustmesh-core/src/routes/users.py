@@ -1,10 +1,13 @@
 """User signup, profile, discovery, and auth routes."""
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agents import extract_profile
 from src.auth import (
     COOKIE_NAME,
     check_rate_limit,
@@ -14,12 +17,13 @@ from src.auth import (
     invalidate_session,
     invalidate_user_sessions,
 )
-from src.crypto import decrypt, derive_vault_key, encrypt, generate_key
+from src.crypto import decrypt, derive_vault_key, encrypt, generate_key, generate_ed25519_keypair, public_key_to_did, public_key_to_b64
 from src.database import get_db
-from src.models import Agent, User
+from src.models import Agent, User, parse_profile_data
 from src.schemas import (
     AgentCard,
     AgentResponse,
+    AgentSkillSchema,
     LoginRequest,
     UserCreate,
     UserPublic,
@@ -58,21 +62,35 @@ async def create_user(data: UserCreate, db: AsyncSession = Depends(get_db)):
     derived_key, salt = derive_vault_key(data.password)
     encrypted_vault_key = encrypt(vault_master_key, derived_key)
 
+    # Extract structured profile from bio
+    profile = await extract_profile(data.bio, data.display_name)
+
     user = User(
         username=data.username,
         display_name=data.display_name,
         bio=data.bio,
+        user_type=data.user_type,
+        profile_data=json.dumps(profile) if profile else None,
         is_discoverable=data.is_discoverable,
         vault_key_salt=salt,
         encrypted_vault_key=encrypted_vault_key,
+        agent_personality=data.agent_personality,
     )
     db.add(user)
     await db.flush()
 
+    # Generate ed25519 keypair for agent identity
+    private_key_bytes, public_key_bytes = generate_ed25519_keypair()
+    agent_did = public_key_to_did(public_key_bytes)
+    encrypted_privkey = encrypt(private_key_bytes, vault_master_key)
+
     agent = Agent(
         owner_id=user.id,
         name=f"{data.display_name}'s Agent",
-        personality="Helpful, knowledgeable, and protective of private information",
+        personality=data.agent_personality or "Helpful, knowledgeable, and protective of private information",
+        public_key=public_key_bytes,
+        encrypted_private_key=encrypted_privkey,
+        did=agent_did,
     )
     db.add(agent)
     await db.commit()
@@ -122,11 +140,14 @@ async def login(data: LoginRequest, request: Request, db: AsyncSession = Depends
 
 @router.post("/auth/logout")
 async def logout(request: Request, user_id: str = Depends(get_current_user_id)):
-    """Invalidate session and clear httpOnly cookie."""
+    """Invalidate session, clear vault key from memory, and clear httpOnly cookie."""
+    from src.main import vault_keys
+
     token = get_session_token(request)
     if token:
         invalidate_session(token)
     invalidate_user_sessions(user_id)
+    vault_keys.pop(user_id, None)  # Clear decrypted vault key from memory
     response = JSONResponse(content={"status": "ok"})
     _clear_session_cookie(response)
     return response
@@ -142,25 +163,31 @@ async def get_me(
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
-    return user
+    return _user_response(user)
 
 
-@router.get("/users", response_model=list[UserPublic])
+@router.get("/users")
 async def list_users(db: AsyncSession = Depends(get_db)):
     """List discoverable users."""
     result = await db.execute(
         select(User).where(User.is_discoverable == True).order_by(User.display_name)  # noqa: E712
     )
-    return result.scalars().all()
+    users = result.scalars().all()
+    return [_user_response(u) for u in users]
 
 
-@router.get("/users/{user_id}", response_model=UserResponse)
+def _user_response(user: User) -> dict:
+    """Build a user response dict with parsed profile_data."""
+    return UserResponse.model_validate(user).model_dump(mode="json")
+
+
+@router.get("/users/{user_id}")
 async def get_user(user_id: str, db: AsyncSession = Depends(get_db)):
     """Get user profile."""
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
-    return user
+    return _user_response(user)
 
 
 @router.get("/users/{user_id}/agent", response_model=AgentResponse)
@@ -184,8 +211,25 @@ async def get_agent_card(user_id: str, db: AsyncSession = Depends(get_db)):
     if not agent:
         raise HTTPException(404, "Agent not found")
 
+    skills = []
+    pd = parse_profile_data(user.profile_data)
+    if pd:
+        for skill in pd.get("skills", []):
+            skills.append(AgentSkillSchema(
+                id=skill["name"].lower().replace(" ", "_"),
+                name=skill["name"],
+                description=f"{skill['name']} ({skill.get('category', 'general')})",
+                tags=[skill.get("category", "general")],
+            ))
+
     return AgentCard(
         name=agent.name,
         description=agent.personality,
+        url=f"/api/users/{user_id}/agent/a2a",
         owner=UserPublic.model_validate(user),
+        public_key_b64=public_key_to_b64(agent.public_key) if agent.public_key else None,
+        did=agent.did,
+        capabilities=["knowledge-query", "trust-aware-sharing"]
+        + (["quote-request", "availability-check"] if user.user_type == "service" else []),
+        skills=skills,
     )

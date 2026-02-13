@@ -1,13 +1,24 @@
-"""Network CRUD and membership management routes."""
+"""Network CRUD, membership management, discovery, and join request routes."""
+
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.crypto import encrypt, generate_key
 from src.database import get_db
-from src.models import Connection, Network, NetworkMembership, User
-from src.schemas import NetworkAddMember, NetworkCreate, NetworkResponse, UserPublic
+from src.models import Connection, Network, NetworkJoinRequest, NetworkMembership, Notification, User
+from src.schemas import (
+    NetworkAddMember,
+    NetworkCreate,
+    NetworkDiscoveryResponse,
+    NetworkJoinRequestCreate,
+    NetworkJoinRequestResponse,
+    NetworkJoinRequestUpdate,
+    NetworkResponse,
+    UserPublic,
+)
 
 router = APIRouter(prefix="/api", tags=["networks"])
 
@@ -29,6 +40,8 @@ async def _network_response(db: AsyncSession, network: Network) -> NetworkRespon
         name=network.name,
         description=network.description,
         network_type=network.network_type,
+        is_public=network.is_public,
+        join_policy=network.join_policy,
         created_at=network.created_at,
         members=members,
     )
@@ -50,6 +63,8 @@ async def create_network(data: NetworkCreate, db: AsyncSession = Depends(get_db)
         name=data.name,
         description=data.description,
         network_type=data.network_type,
+        is_public=data.is_public,
+        join_policy=data.join_policy,
         encrypted_network_key=encrypted_key,
     )
     db.add(network)
@@ -77,6 +92,38 @@ async def list_user_networks(user_id: str, db: AsyncSession = Depends(get_db)):
     )
     networks = result.scalars().all()
     return [await _network_response(db, n) for n in networks]
+
+
+# ── Network Discovery ─────────────────────────────
+# NOTE: This MUST be before /networks/{network_id} to avoid route shadowing
+
+@router.get("/networks/discover", response_model=list[NetworkDiscoveryResponse])
+async def discover_networks(db: AsyncSession = Depends(get_db)):
+    """List public networks available to join."""
+    result = await db.execute(
+        select(Network).where(Network.is_public == True).order_by(Network.name)  # noqa: E712
+    )
+    networks = result.scalars().all()
+    responses = []
+    for n in networks:
+        mem_result = await db.execute(
+            select(func.count(NetworkMembership.id)).where(
+                NetworkMembership.network_id == n.id
+            )
+        )
+        member_count = mem_result.scalar() or 0
+        owner = await db.get(User, n.owner_id)
+        owner_name = owner.display_name if owner else "Unknown"
+        responses.append(NetworkDiscoveryResponse(
+            id=n.id,
+            name=n.name,
+            description=n.description,
+            network_type=n.network_type,
+            join_policy=n.join_policy,
+            member_count=member_count,
+            owner_name=owner_name,
+        ))
+    return responses
 
 
 @router.get("/networks/{network_id}", response_model=NetworkResponse)
@@ -154,3 +201,137 @@ async def remove_member(
     await db.delete(membership)
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/networks/{network_id}/join-request", response_model=NetworkJoinRequestResponse)
+async def create_join_request(
+    network_id: str,
+    data: NetworkJoinRequestCreate,
+    user_id: str = "",  # In production, from auth
+    db: AsyncSession = Depends(get_db),
+):
+    """Request to join a public network."""
+    network = await db.get(Network, network_id)
+    if not network:
+        raise HTTPException(404, "Network not found")
+    if not network.is_public:
+        raise HTTPException(403, "Network is not public")
+
+    # Check if already a member
+    existing_mem = await db.execute(
+        select(NetworkMembership).where(
+            NetworkMembership.network_id == network_id,
+            NetworkMembership.user_id == user_id,
+        )
+    )
+    if existing_mem.scalar_one_or_none():
+        raise HTTPException(400, "Already a member")
+
+    # Check for existing pending request
+    existing_req = await db.execute(
+        select(NetworkJoinRequest).where(
+            NetworkJoinRequest.network_id == network_id,
+            NetworkJoinRequest.user_id == user_id,
+            NetworkJoinRequest.status == "pending",
+        )
+    )
+    if existing_req.scalar_one_or_none():
+        raise HTTPException(400, "Request already pending")
+
+    # If open join policy, auto-approve
+    if network.join_policy == "open":
+        membership = NetworkMembership(
+            network_id=network_id,
+            user_id=user_id,
+            role="member",
+        )
+        db.add(membership)
+        join_req = NetworkJoinRequest(
+            user_id=user_id,
+            network_id=network_id,
+            message=data.message,
+            status="approved",
+            reviewed_at=datetime.now(timezone.utc),
+        )
+        db.add(join_req)
+        await db.commit()
+        await db.refresh(join_req)
+        return join_req
+
+    # Create pending request
+    join_req = NetworkJoinRequest(
+        user_id=user_id,
+        network_id=network_id,
+        message=data.message,
+        status="pending",
+    )
+    db.add(join_req)
+
+    # Notify network owner
+    notification = Notification(
+        user_id=network.owner_id,
+        notification_type="join_request",
+        title=f"Join request for {network.name}",
+        body=data.message or "No message",
+        related_id=network_id,
+    )
+    db.add(notification)
+
+    await db.commit()
+    await db.refresh(join_req)
+    return join_req
+
+
+@router.get("/networks/{network_id}/join-requests", response_model=list[NetworkJoinRequestResponse])
+async def list_join_requests(network_id: str, db: AsyncSession = Depends(get_db)):
+    """List pending join requests for a network (owner only)."""
+    result = await db.execute(
+        select(NetworkJoinRequest).where(
+            NetworkJoinRequest.network_id == network_id,
+            NetworkJoinRequest.status == "pending",
+        ).order_by(NetworkJoinRequest.created_at.desc())
+    )
+    requests = result.scalars().all()
+    responses = []
+    for req in requests:
+        user = await db.get(User, req.user_id)
+        responses.append(NetworkJoinRequestResponse(
+            id=req.id,
+            user_id=req.user_id,
+            network_id=req.network_id,
+            message=req.message,
+            status=req.status,
+            created_at=req.created_at,
+            reviewed_at=req.reviewed_at,
+            user=UserPublic.model_validate(user) if user else None,
+        ))
+    return responses
+
+
+@router.put("/networks/{network_id}/join-requests/{request_id}")
+async def review_join_request(
+    network_id: str,
+    request_id: str,
+    data: NetworkJoinRequestUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve or decline a join request."""
+    join_req = await db.get(NetworkJoinRequest, request_id)
+    if not join_req or join_req.network_id != network_id:
+        raise HTTPException(404, "Join request not found")
+    if join_req.status != "pending":
+        raise HTTPException(400, "Request already reviewed")
+
+    join_req.status = data.status
+    join_req.reviewed_at = datetime.now(timezone.utc)
+
+    if data.status == "approved":
+        membership = NetworkMembership(
+            network_id=network_id,
+            user_id=join_req.user_id,
+            role="member",
+        )
+        db.add(membership)
+
+    await db.commit()
+    return {"ok": True, "status": data.status}

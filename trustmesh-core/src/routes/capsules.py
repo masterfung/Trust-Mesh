@@ -121,6 +121,8 @@ async def update_capsule(
 
     if data.title is not None:
         capsule.title = data.title
+    if data.capsule_type is not None:
+        capsule.capsule_type = data.capsule_type
     if data.content is not None:
         capsule.content_encrypted = encrypt_text(data.content, vault_key)
         capsule.content_hash = content_hash(data.content)
