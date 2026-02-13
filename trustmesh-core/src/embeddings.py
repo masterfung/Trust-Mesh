@@ -64,9 +64,11 @@ def search_capsules(
 
     collection = get_collection()
     try:
+        # Always filter by accessible_ids to enforce trust boundaries
+        where_filter = {"capsule_id": {"$in": accessible_ids}} if len(accessible_ids) > 1 else {"capsule_id": accessible_ids[0]}
         results = collection.query(
             query_texts=[query],
-            where={"capsule_id": {"$in": accessible_ids}} if len(accessible_ids) > 1 else None,
+            where=where_filter,
             n_results=min(top_k, len(accessible_ids)),
         )
     except Exception:
