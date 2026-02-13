@@ -1,9 +1,10 @@
 """Seed script: populate the database with demo data for the Johnson family scenario."""
 
 import asyncio
+import json
 from datetime import datetime, timezone
 
-from src.crypto import derive_vault_key, encrypt, encrypt_text, generate_key
+from src.crypto import derive_vault_key, encrypt, encrypt_text, generate_key, generate_ed25519_keypair, public_key_to_did
 from src.database import drop_db, init_db, async_session
 from src.embeddings import reset_collection, upsert_capsule_embedding
 from src.models import (
@@ -23,57 +24,388 @@ USERS = [
     {
         "username": "peter",
         "display_name": "Peter Johnson",
-        "bio": "Licensed electrician, dad of two. Ask me about home electrical.",
-        "agent_personality": "Helpful and practical. Expert in electrical work and home safety. Protective dad.",
+        "bio": "Licensed electrician, dad of two. Guitar player, loves classic rock. Active in the Riverside neighborhood.",
+        "agent_personality": "Helpful and practical. Expert in electrical work and home safety. Protective dad. Enjoys talking about music and guitars.",
     },
     {
         "username": "molly",
         "display_name": "Molly Johnson",
-        "bio": "Project manager at TechCorp. Mom, caretaker for Grandma Rose.",
+        "bio": "Project manager at TechCorp. Mom, caretaker for Grandma Rose. Salsa dancing enthusiast.",
         "agent_personality": "Organized and caring. Manages work projects and family care duties. Very detail-oriented about grandma's medical needs.",
     },
     {
         "username": "jane",
         "display_name": "Jane Johnson",
-        "bio": "10th grader at Lincoln High. Soccer and art.",
+        "bio": "10th grader at Lincoln High. Varsity soccer, watercolor painting, and debate club.",
         "agent_personality": "Friendly and energetic. Shares school and activity info openly with family.",
     },
     {
         "username": "bill",
         "display_name": "Bill Johnson",
-        "bio": "8th grader. Coding, gaming, and soccer.",
+        "bio": "8th grader at Roosevelt Middle. Learning Python, gaming, and soccer.",
         "agent_personality": "Casual and helpful. Shares school and activity info with family.",
     },
     {
         "username": "kyle",
         "display_name": "Kyle Rivera",
-        "bio": "Software engineer at TechCorp. Molly's colleague.",
+        "bio": "Software engineer at TechCorp. Open source contributor. Plays basketball on weekends.",
         "agent_personality": "Professional and technical. Shares work-related info with teammates.",
+    },
+    {
+        "username": "grandmarose",
+        "display_name": "Grandma Rose",
+        "bio": "Retired schoolteacher. Loves gardening, bridge club, and spoiling grandkids. Living in Riverside senior community.",
+        "agent_personality": "Warm and wise. Shares stories and advice freely. Protective of health info but open about social activities.",
+    },
+    {
+        "username": "linda",
+        "display_name": "Linda Chen",
+        "bio": "Architect at Chen Design. Neighbor to the Johnsons at 45 Oak St. Community garden organizer.",
+        "agent_personality": "Friendly and community-minded. Shares neighborhood info openly. Helpful with local knowledge.",
+    },
+    {
+        "username": "amy",
+        "display_name": "Amy Torres",
+        "bio": "10th grader at Lincoln High. Co-captain of varsity soccer with Jane. Wants to study marine biology.",
+        "agent_personality": "Outgoing and sporty. Shares team and school info openly.",
+    },
+    {
+        "username": "marcus",
+        "display_name": "Marcus Williams",
+        "bio": "8th grader at Roosevelt Middle. Coding club president, building a Minecraft mod. Science fair winner.",
+        "agent_personality": "Enthusiastic about tech. Shares coding projects and school activities.",
+    },
+    {
+        "username": "dorothy",
+        "display_name": "Dorothy Park",
+        "bio": "Retired librarian. Rose's best friend from bridge club. Volunteers at Riverside community center.",
+        "agent_personality": "Kind and well-read. Shares community events and book recommendations freely.",
+    },
+    # ── Healthcare Practitioners ──
+    {
+        "username": "dr_lee",
+        "display_name": "Dr. Sarah Lee",
+        "bio": "Emergency medicine physician at Riverside General Hospital. Board certified, 12 years experience. Specializes in cardiac emergencies.",
+        "agent_personality": "Calm under pressure, clinically precise. Requests only the data needed for treatment. Follows HIPAA protocols strictly.",
+    },
+    {
+        "username": "nurse_davis",
+        "display_name": "Nurse Rachel Davis",
+        "bio": "ER nurse at Riverside General Hospital. 8 years experience. Triage specialist. BLS/ACLS certified.",
+        "agent_personality": "Efficient and compassionate. Focuses on immediate patient needs — allergies, vitals, medications.",
+    },
+    {
+        "username": "emt_johnson",
+        "display_name": "EMT Mike Johnson",
+        "bio": "Paramedic with Riverside City Ambulance. 6 years experience. Advanced life support certified.",
+        "agent_personality": "Quick and focused. Needs critical info fast — allergies, DNR status, emergency contacts.",
+    },
+]
+
+SERVICE_PROVIDERS = [
+    {
+        "username": "sparkleclean",
+        "display_name": "SparkleClean Residential",
+        "bio": "Professional residential cleaning in the Bay Area. Standard, deep, and move-out cleans. Licensed and insured. Serving families since 2015.",
+        "user_type": "service",
+        "agent_personality": "Professional, detail-oriented. Provides clear quotes with breakdowns. Asks about home size, pets, and special requests.",
+        "profile_data": {
+            "occupation": {"title": "Cleaning Service", "industry": "Home Services"},
+            "skills": [
+                {"name": "Residential Cleaning", "category": "professional"},
+                {"name": "Deep Cleaning", "category": "professional"},
+                {"name": "Move-out Cleaning", "category": "professional"},
+            ],
+            "interests": [],
+            "family_status": "unknown",
+            "age_range": None,
+            "location_hints": ["Bay Area", "San Francisco", "Oakland"],
+        },
+        "capsules": [
+            {
+                "type": "skill",
+                "title": "Pricing & Services",
+                "content": "Standard clean: $150-250 (up to 2000sqft), $0.10/sqft above. Deep clean: 2x standard. Move-out: 2.5x standard. Add-ons: inside fridge $40, inside oven $35, windows $8/each. We bring all supplies. 2-person team, 2-3 hours standard.",
+                "tier": "public",
+            },
+            {
+                "type": "schedule",
+                "title": "Availability",
+                "content": "Available M-Sat, 8am-5pm. Book 3+ days ahead for standard, 1 week for deep clean. Same-day available for $50 surcharge. Holiday rates apply Dec 20-Jan 5.",
+                "tier": "public",
+            },
+            {
+                "type": "preference",
+                "title": "Service Area",
+                "content": "Bay Area: San Francisco, Oakland, Berkeley, San Mateo, Palo Alto, Mountain View. Travel fee $25 for South Bay beyond Sunnyvale.",
+                "tier": "public",
+            },
+        ],
+    },
+    {
+        "username": "acetutor",
+        "display_name": "AceTutor SAT Prep",
+        "bio": "SAT/ACT prep specialist. 15+ years experience, average 200-point improvement. Small groups and 1-on-1. Serving Bay Area students.",
+        "user_type": "service",
+        "agent_personality": "Encouraging, knowledgeable about test strategy. Asks about target score, weak areas, and timeline.",
+        "profile_data": {
+            "occupation": {"title": "SAT Tutor", "industry": "Education"},
+            "skills": [
+                {"name": "SAT Prep", "category": "professional"},
+                {"name": "ACT Prep", "category": "professional"},
+                {"name": "Reading Comprehension", "category": "professional"},
+                {"name": "Math Tutoring", "category": "professional"},
+            ],
+            "interests": [],
+            "family_status": "unknown",
+            "age_range": None,
+            "location_hints": ["Bay Area", "Roosevelt Middle"],
+        },
+        "capsules": [
+            {
+                "type": "skill",
+                "title": "SAT Prep Programs",
+                "content": "1-on-1 tutoring: $75/hr. Small group (3-5 students): $45/hr per student. Intensive 8-week program: $1200 (includes materials). Diagnostic test included free. Focus areas: Reading comprehension, Math problem-solving, Writing. Average improvement: 200 points over 10 sessions.",
+                "tier": "public",
+            },
+            {
+                "type": "schedule",
+                "title": "Availability & Location",
+                "content": "Evenings M-Th 4-8pm, Sat 9am-3pm. In-person at our center (456 Oak St, near Roosevelt Middle) or online via Zoom. 24hr cancellation policy.",
+                "tier": "public",
+            },
+            {
+                "type": "preference",
+                "title": "Tutor Profiles",
+                "content": "Sarah (lead tutor): Stanford grad, 15 years. Specializes in reading comp and essay. Marcus: Berkeley grad, 8 years. Math specialist, 800 math SAT. Lisa: Online-only, flexible hours, great with shy students.",
+                "tier": "public",
+            },
+        ],
+    },
+    {
+        "username": "handypro",
+        "display_name": "HandyPro Home Services",
+        "bio": "Licensed general contractor. Electrical, plumbing, carpentry, painting. Free estimates. Same-day emergency service available.",
+        "user_type": "service",
+        "agent_personality": "Practical, no-nonsense. Gives clear timelines and pricing. Asks about urgency and scope.",
+        "profile_data": {
+            "occupation": {"title": "General Contractor", "industry": "Home Services"},
+            "skills": [
+                {"name": "Electrical", "category": "certified"},
+                {"name": "Plumbing", "category": "certified"},
+                {"name": "Carpentry", "category": "professional"},
+                {"name": "Painting", "category": "professional"},
+            ],
+            "interests": [],
+            "family_status": "unknown",
+            "age_range": None,
+            "location_hints": ["Bay Area"],
+        },
+        "capsules": [
+            {
+                "type": "skill",
+                "title": "Services & Rates",
+                "content": "Hourly rate: $85/hr (2hr minimum). Electrical: outlets, panels, lighting. Plumbing: leaks, fixtures, water heaters. Carpentry: shelving, decks, repairs. Painting: interior/exterior. Free estimates for jobs over $500. Emergency surcharge: $50.",
+                "tier": "public",
+            },
+            {
+                "type": "schedule",
+                "title": "Availability",
+                "content": "M-F 7am-6pm, Sat 8am-2pm. Emergency service 24/7. Book 2+ days ahead for non-emergency. Currently 1-week backlog for large projects.",
+                "tier": "public",
+            },
+        ],
+    },
+    {
+        "username": "riverside_hospital",
+        "display_name": "Riverside General Hospital",
+        "bio": "Full-service community hospital. Emergency department, ICU, surgery, and specialist clinics. Serving the Riverside community since 1952.",
+        "user_type": "service",
+        "agent_personality": "Professional, urgent when needed. Handles emergency data requests with proper authorization. Follows HIPAA protocols.",
+        "profile_data": {
+            "occupation": {"title": "Hospital", "industry": "Healthcare"},
+            "skills": [
+                {"name": "Emergency Medicine", "category": "medical"},
+                {"name": "Surgery", "category": "medical"},
+                {"name": "Internal Medicine", "category": "medical"},
+                {"name": "Pediatrics", "category": "medical"},
+            ],
+            "interests": [],
+            "family_status": "unknown",
+            "age_range": None,
+            "location_hints": ["Riverside", "Bay Area"],
+        },
+        "capsules": [
+            {
+                "type": "skill",
+                "title": "Emergency Department",
+                "content": "24/7 emergency department. Level II trauma center. Average ER wait: 22 minutes. Accepts all major insurance and Medicare/Medicaid.",
+                "tier": "public",
+            },
+            {
+                "type": "procedure",
+                "title": "Emergency Data Access Protocol",
+                "content": "For emergency medical situations, authorized practitioners can request scoped access to patient data via UCAN tokens. Access is time-bounded, role-scoped, and fully audited. Patients are notified of all access.",
+                "tier": "public",
+            },
+        ],
+    },
+    {
+        "username": "riverside_ambulance",
+        "display_name": "Riverside City Ambulance",
+        "bio": "City ambulance service covering the Riverside district. 24/7 emergency response. Average response time: 7 minutes.",
+        "user_type": "service",
+        "agent_personality": "Rapid, protocol-driven. Requests only critical patient data for field treatment. Follows EMS protocols.",
+        "profile_data": {
+            "occupation": {"title": "Ambulance Service", "industry": "Healthcare"},
+            "skills": [
+                {"name": "Emergency Response", "category": "medical"},
+                {"name": "Advanced Life Support", "category": "medical"},
+                {"name": "Patient Transport", "category": "medical"},
+            ],
+            "interests": [],
+            "family_status": "unknown",
+            "age_range": None,
+            "location_hints": ["Riverside", "Bay Area"],
+        },
+        "capsules": [
+            {
+                "type": "skill",
+                "title": "Emergency Response",
+                "content": "24/7 emergency ambulance service. Average response time: 7 minutes. ALS-equipped units. Dispatch via 911 or direct at (555) 911-2000.",
+                "tier": "public",
+            },
+            {
+                "type": "procedure",
+                "title": "Field Data Access Protocol",
+                "content": "Paramedics can request scoped access to patient data via UCAN tokens issued by dispatch. Access limited to: allergies, blood type, DNR status, emergency contacts. All access is logged and auditable.",
+                "tier": "public",
+            },
+        ],
     },
 ]
 
 CONNECTIONS = [
+    # Johnson family
     ("peter", "molly"),
     ("peter", "jane"),
     ("peter", "bill"),
     ("molly", "jane"),
     ("molly", "bill"),
+    # Grandma Rose <-> family
+    ("molly", "grandmarose"),
+    ("peter", "grandmarose"),
+    ("jane", "grandmarose"),
+    ("bill", "grandmarose"),
+    # Work
     ("molly", "kyle"),
+    # Siblings
     ("jane", "bill"),
+    # Neighborhood
+    ("peter", "linda"),
+    ("molly", "linda"),
+    # Kids' friends
+    ("jane", "amy"),
+    ("bill", "marcus"),
+    # Grandma's circle
+    ("grandmarose", "dorothy"),
+    ("linda", "dorothy"),  # Both in community
+    # Healthcare team
+    ("dr_lee", "nurse_davis"),
+    ("dr_lee", "emt_johnson"),
+    ("nurse_davis", "emt_johnson"),
 ]
 
 NETWORKS = [
     {
         "name": "The Johnsons",
         "type": "family",
+        "description": "Johnson family knowledge sharing — health, schedules, and home info.",
         "owner": "peter",
         "members": ["peter", "molly", "jane", "bill"],
+        "is_public": False,
+        "join_policy": "invite_only",
     },
     {
         "name": "TechCorp PM Team",
         "type": "team",
+        "description": "TechCorp project management team — deadlines, reports, and API migration.",
         "owner": "molly",
         "members": ["molly", "kyle"],
+        "is_public": True,
+        "join_policy": "request_to_join",
+    },
+    {
+        "name": "Rose's Care Circle",
+        "type": "family",
+        "description": "Coordinating Grandma Rose's care — medications, appointments, and daily routines.",
+        "owner": "molly",
+        "members": ["molly", "peter", "grandmarose", "dorothy"],
+        "is_public": False,
+        "join_policy": "invite_only",
+    },
+    {
+        "name": "Lincoln High Soccer",
+        "type": "friends",
+        "description": "Lincoln High varsity soccer team — practice schedules, game info, and team news.",
+        "owner": "jane",
+        "members": ["jane", "amy"],
+        "is_public": True,
+        "join_policy": "request_to_join",
+    },
+    {
+        "name": "Roosevelt Coding Club",
+        "type": "friends",
+        "description": "Roosevelt Middle coding club — Python projects, Minecraft mods, and science fair prep.",
+        "owner": "marcus",
+        "members": ["marcus", "bill"],
+        "is_public": True,
+        "join_policy": "open",
+    },
+    {
+        "name": "Riverside Neighbors",
+        "type": "friends",
+        "description": "Riverside neighborhood community — block parties, safety alerts, local recommendations.",
+        "owner": "linda",
+        "members": ["linda", "peter", "molly"],
+        "is_public": True,
+        "join_policy": "request_to_join",
+    },
+    {
+        "name": "Bay Area Music Lovers",
+        "type": "custom",
+        "description": "Local music community — jam sessions, concert tips, and instrument swap. All genres welcome!",
+        "owner": "peter",
+        "members": ["peter"],
+        "is_public": True,
+        "join_policy": "open",
+    },
+    {
+        "name": "Riverside Bridge Club",
+        "type": "friends",
+        "description": "Weekly bridge games at the community center. Thursdays 2-5pm. All skill levels.",
+        "owner": "grandmarose",
+        "members": ["grandmarose", "dorothy"],
+        "is_public": True,
+        "join_policy": "open",
+    },
+    {
+        "name": "Riverside ER Team",
+        "type": "team",
+        "description": "Riverside General Hospital emergency department staff — doctors, nurses, paramedics. UCAN-authorized emergency access.",
+        "owner": "dr_lee",
+        "members": ["dr_lee", "nurse_davis", "emt_johnson"],
+        "is_public": False,
+        "join_policy": "invite_only",
+    },
+    {
+        "name": "Bay Area Salsa Social",
+        "type": "custom",
+        "description": "Salsa dancing community — classes, socials, and performances around the Bay Area.",
+        "owner": "molly",
+        "members": ["molly"],
+        "is_public": True,
+        "join_policy": "open",
     },
 ]
 
@@ -152,6 +484,7 @@ CAPSULES = [
             "If she's confused or slurring, call 911."
         ),
         "tier": "network",
+        "category": "health",
         "networks": ["The Johnsons"],
     },
     {
@@ -166,6 +499,7 @@ CAPSULES = [
             "Emergency: 911. Poison control: (800) 222-1222."
         ),
         "tier": "network",
+        "category": "health",
         "networks": ["The Johnsons"],
     },
     {
@@ -281,6 +615,7 @@ CAPSULES = [
             "Allergist: Dr. Wong, (555) 678-9012."
         ),
         "tier": "network",
+        "category": "health",
         "networks": ["The Johnsons"],
     },
     {
@@ -313,6 +648,7 @@ CAPSULES = [
             "Last physical: October 2025, all clear. Cholesterol trending down."
         ),
         "tier": "network",
+        "category": "health",
         "networks": ["The Johnsons"],
     },
     {
@@ -329,6 +665,7 @@ CAPSULES = [
             "Last mammogram: June 2025, normal. Thyroid checked annually."
         ),
         "tier": "network",
+        "category": "health",
         "networks": ["The Johnsons"],
     },
     {
@@ -345,6 +682,7 @@ CAPSULES = [
             "Tetanus booster due: March 2026."
         ),
         "tier": "network",
+        "category": "health",
         "networks": ["The Johnsons"],
     },
     {
@@ -363,6 +701,7 @@ CAPSULES = [
             "School nurse has copies of allergy action plan and inhaler authorization."
         ),
         "tier": "network",
+        "category": "health",
         "networks": ["The Johnsons"],
     },
     {
@@ -385,6 +724,7 @@ CAPSULES = [
             "Medicare ID: 1EG4-TE5-MK72. Supplemental: AARP United #UHG-99421."
         ),
         "tier": "network",
+        "category": "health",
         "networks": ["The Johnsons"],
     },
     {
@@ -401,9 +741,52 @@ CAPSULES = [
             "Family lawyer: Patricia Gomez, (555) 666-8888."
         ),
         "tier": "network",
+        "category": "health",
+        "networks": ["The Johnsons"],
+    },
+    # ── PROACTIVE SCENARIOS ─────────────────────
+    {
+        "owner": "peter",
+        "type": "schedule",
+        "title": "Grandma Rose's Visit",
+        "content": (
+            "Grandma Rose visiting Feb 20-27. Need to prepare guest room, stock low-sodium food, "
+            "set up dialysis machine. Molly handles medical prep, I handle house prep."
+        ),
+        "tier": "network",
+        "networks": ["The Johnsons"],
+    },
+    {
+        "owner": "molly",
+        "type": "schedule",
+        "title": "Johnson Family BBQ",
+        "content": (
+            "Annual BBQ March 8. Need cleaners March 7. Expecting 30 guests. Budget $500 for cleaning. "
+            "Peter's on the grill. Remember Bill's peanut allergy."
+        ),
+        "tier": "network",
+        "networks": ["The Johnsons"],
+    },
+    {
+        "owner": "molly",
+        "type": "memory",
+        "title": "Bill Needs SAT Prep Help",
+        "content": (
+            "Bill's practice SAT: 1050, needs 1200+ for state schools. Struggling with reading comprehension. "
+            "Look into tutors near Roosevelt Middle. Budget up to $60/hr."
+        ),
+        "tier": "network",
         "networks": ["The Johnsons"],
     },
     # ── KYLE ───────────────────────────────────
+    {
+        "owner": "kyle",
+        "type": "skill",
+        "title": "Open Source Contributor",
+        "content": "Maintaining react-query-builder on GitHub (2k stars). Looking for contributors who know TypeScript and testing.",
+        "tier": "public",
+        "networks": [],
+    },
     {
         "owner": "kyle",
         "type": "skill",
@@ -423,6 +806,220 @@ CAPSULES = [
         "content": "Kyle is a senior software engineer at TechCorp, specializing in backend systems and API design.",
         "tier": "public",
         "networks": [],
+    },
+    # ── GRANDMA ROSE ──────────────────────────
+    {
+        "owner": "grandmarose",
+        "type": "preference",
+        "title": "Rose's Daily Routine",
+        "content": (
+            "Wake at 7am. Breakfast: oatmeal with banana (no dairy — lactose intolerant). "
+            "Morning walk in the garden if weather permits. Bridge club Thursdays at 2pm. "
+            "Nap 2-4pm. Dinner at 6pm — low sodium. Bed by 9:30pm after dialysis prep."
+        ),
+        "tier": "network",
+        "networks": ["Rose's Care Circle"],
+    },
+    {
+        "owner": "grandmarose",
+        "type": "memory",
+        "title": "Rose's Garden Tips",
+        "content": (
+            "Best time to plant tomatoes in Bay Area: April. Use raised beds — easier on my knees. "
+            "Compost from the community garden is free on Saturdays. My prize-winning roses are "
+            "English Heritage variety, need deadheading every two weeks."
+        ),
+        "tier": "public",
+        "networks": [],
+    },
+    {
+        "owner": "grandmarose",
+        "type": "schedule",
+        "title": "Rose's Visiting Plans",
+        "content": (
+            "Visiting the Johnsons Feb 20-27. Molly set up the guest room. "
+            "Need dialysis machine — Peter bringing it over Feb 19. "
+            "Dorothy will water my plants while I'm away."
+        ),
+        "tier": "network",
+        "networks": ["Rose's Care Circle", "The Johnsons"],
+    },
+    # ── LINDA CHEN (neighbor) ─────────────────
+    {
+        "owner": "linda",
+        "type": "skill",
+        "title": "Architect & Community Organizer",
+        "content": (
+            "Licensed architect at Chen Design. Specializing in sustainable residential design. "
+            "Also organize the Riverside community garden and annual block party."
+        ),
+        "tier": "public",
+        "networks": [],
+    },
+    {
+        "owner": "linda",
+        "type": "schedule",
+        "title": "Riverside Block Party",
+        "content": (
+            "Annual Riverside block party: March 15, 2-6pm on Oak Street. "
+            "Need volunteers for setup at noon. Potluck — sign up sheet on the community board. "
+            "Live music this year (Peter offered to play guitar!)."
+        ),
+        "tier": "network",
+        "networks": ["Riverside Neighbors"],
+    },
+    {
+        "owner": "linda",
+        "type": "preference",
+        "title": "Neighborhood Safety Notes",
+        "content": (
+            "Package thefts reported on Elm St last week — ring cameras recommended. "
+            "Street sweeping: Tuesdays (even side) and Thursdays (odd side). "
+            "Backup key for the Johnsons at our house (45 Oak St)."
+        ),
+        "tier": "network",
+        "networks": ["Riverside Neighbors"],
+    },
+    # ── AMY TORRES (Jane's friend) ────────────
+    {
+        "owner": "amy",
+        "type": "schedule",
+        "title": "Soccer Season Schedule",
+        "content": (
+            "Lincoln High varsity soccer: Practice T/Th 3:30-5pm. "
+            "Games: Saturdays, alternating home/away. Next game: Feb 15 vs. Lakewood (home). "
+            "Playoffs start March 1. Team dinner at Olive Garden after each win."
+        ),
+        "tier": "network",
+        "networks": ["Lincoln High Soccer"],
+    },
+    {
+        "owner": "amy",
+        "type": "preference",
+        "title": "Amy's Bio",
+        "content": "Varsity soccer co-captain with Jane. Planning to study marine biology at UCSC. Volunteers at the aquarium on weekends.",
+        "tier": "public",
+        "networks": [],
+    },
+    # ── MARCUS WILLIAMS (Bill's friend) ───────
+    {
+        "owner": "marcus",
+        "type": "skill",
+        "title": "Coding Club Projects",
+        "content": (
+            "Current project: Minecraft mod that adds real-world physics (gravity, buoyancy). "
+            "Using Java and Forge API. Next science fair project: AI that plays tic-tac-toe "
+            "using minimax algorithm. Teaching Bill Python basics on Fridays."
+        ),
+        "tier": "network",
+        "networks": ["Roosevelt Coding Club"],
+    },
+    {
+        "owner": "marcus",
+        "type": "schedule",
+        "title": "Coding Club Schedule",
+        "content": (
+            "Roosevelt Coding Club: Fridays 3-4pm in the computer lab. "
+            "Hackathon coming up March 22 — need 3-person teams. "
+            "Bill and I are looking for a third member."
+        ),
+        "tier": "network",
+        "networks": ["Roosevelt Coding Club"],
+    },
+    {
+        "owner": "marcus",
+        "type": "skill",
+        "title": "Marcus's Bio",
+        "content": "8th grader at Roosevelt Middle. Coding club president. Building Minecraft mods and AI projects. Science fair county winner 2025.",
+        "tier": "public",
+        "networks": [],
+    },
+    # ── DOROTHY PARK (Rose's friend) ──────────
+    {
+        "owner": "dorothy",
+        "type": "preference",
+        "title": "Dorothy's Community Activities",
+        "content": (
+            "Volunteer at Riverside Community Center M/W/F 10am-2pm. Run the book club (first Tuesday each month). "
+            "Bridge club with Rose on Thursdays. Rose and I have been friends for 40 years — "
+            "we taught at the same school."
+        ),
+        "tier": "public",
+        "networks": [],
+    },
+    {
+        "owner": "dorothy",
+        "type": "schedule",
+        "title": "Community Center Events",
+        "content": (
+            "Feb events: Valentine's craft fair Feb 14. Movie night Feb 21 (showing Casablanca). "
+            "March: Spring gardening workshop March 1 (Linda Chen leading). "
+            "Tai chi classes starting March 10, Mondays 9am."
+        ),
+        "tier": "network",
+        "networks": ["Riverside Bridge Club"],
+    },
+    # ── HEALTHCARE PRACTITIONERS ───────────────
+    {
+        "owner": "dr_lee",
+        "type": "skill",
+        "title": "Dr. Lee's Credentials",
+        "content": "Board certified in Emergency Medicine (ABEM). MD from UCSF, residency at Stanford. NPI: 1234567890. Specializes in cardiac emergencies and trauma.",
+        "tier": "public",
+        "networks": [],
+    },
+    {
+        "owner": "dr_lee",
+        "type": "procedure",
+        "title": "ER Shift Schedule",
+        "content": "Current rotation: Mon/Wed/Fri 7am-7pm, alternating weekends. On-call for cardiac emergencies. Backup: Dr. Patel (cardiology).",
+        "tier": "network",
+        "networks": ["Riverside ER Team"],
+    },
+    {
+        "owner": "nurse_davis",
+        "type": "skill",
+        "title": "Nurse Davis's Credentials",
+        "content": "RN, BSN. 8 years ER experience. Triage specialist. BLS/ACLS/PALS certified. Riverside General Hospital employee since 2018.",
+        "tier": "public",
+        "networks": [],
+    },
+    {
+        "owner": "nurse_davis",
+        "type": "procedure",
+        "title": "Triage Protocols",
+        "content": "Standard triage: check vitals, allergies, current medications, chief complaint. For cardiac: immediate 12-lead EKG, check for STEMI. For anaphylaxis: check allergy history, administer epi if needed.",
+        "tier": "network",
+        "networks": ["Riverside ER Team"],
+    },
+    {
+        "owner": "emt_johnson",
+        "type": "skill",
+        "title": "EMT Johnson's Credentials",
+        "content": "NREMT-Paramedic. Advanced Life Support certified. 6 years field experience with Riverside City Ambulance. Specializes in cardiac and trauma response.",
+        "tier": "public",
+        "networks": [],
+    },
+    {
+        "owner": "emt_johnson",
+        "type": "procedure",
+        "title": "Field Assessment Protocol",
+        "content": "On-scene: ABCs first. Check for medical alert bracelet/necklace. Query TrustMesh for patient data if identity confirmed. Critical info needed: allergies (especially drug allergies), DNR status, blood type, emergency contacts.",
+        "tier": "network",
+        "networks": ["Riverside ER Team"],
+    },
+    # ── BAY AREA MUSIC (Peter's hobby) ────────
+    {
+        "owner": "peter",
+        "type": "preference",
+        "title": "Peter's Music Interests",
+        "content": (
+            "Play guitar — mostly classic rock (Hendrix, Clapton, Santana). "
+            "Looking for jam partners in Riverside area. Have a Fender Stratocaster and a Marshall amp. "
+            "Open to blues, rock, and funk. Practice in the garage weekday evenings."
+        ),
+        "tier": "network",
+        "networks": ["Bay Area Music Lovers"],
     },
 ]
 
@@ -452,6 +1049,7 @@ async def seed():
                 username=u["username"],
                 display_name=u["display_name"],
                 bio=u["bio"],
+                is_demo=True,
                 vault_key_salt=salt,
                 encrypted_vault_key=encrypted_vault_key,
             )
@@ -460,13 +1058,21 @@ async def seed():
             user_map[u["username"]] = user
             vault_keys[user.id] = vault_master_key
 
+            # Generate ed25519 keypair for agent identity
+            private_key_bytes, public_key_bytes = generate_ed25519_keypair()
+            agent_did = public_key_to_did(public_key_bytes)
+            encrypted_privkey = encrypt(private_key_bytes, vault_master_key)
+
             agent = Agent(
                 owner_id=user.id,
                 name=f"{u['display_name']}'s Agent",
                 personality=u["agent_personality"],
+                public_key=public_key_bytes,
+                encrypted_private_key=encrypted_privkey,
+                did=agent_did,
             )
             db.add(agent)
-            print(f"  Created user: {u['display_name']} ({user.id})")
+            print(f"  Created user: {u['display_name']} ({user.id}) DID: {agent_did}")
 
         # ── Create Connections ──
         for from_name, to_name in CONNECTIONS:
@@ -487,7 +1093,10 @@ async def seed():
             network = Network(
                 owner_id=user_map[n["owner"]].id,
                 name=n["name"],
+                description=n.get("description", ""),
                 network_type=n["type"],
+                is_public=n.get("is_public", False),
+                join_policy=n.get("join_policy", "invite_only"),
                 encrypted_network_key=encrypted_key,
             )
             db.add(network)
@@ -514,6 +1123,7 @@ async def seed():
                 title=c["title"],
                 content_encrypted=encrypt_text(c["content"], vault_key),
                 tier=c["tier"],
+                category=c.get("category", ""),
                 freshness="permanent" if c["type"] in ("skill", "procedure", "preference", "contact") else "temporary",
             )
             db.add(capsule)
@@ -535,10 +1145,68 @@ async def seed():
             )
             print(f"  Created capsule: [{c['tier']}] {c['title']} ({c['owner']})")
 
+        # ── Create Service Providers ──
+        for sp in SERVICE_PROVIDERS:
+            vault_master_key = generate_key()
+            derived_key, salt = derive_vault_key(DEMO_PASSWORD)
+            encrypted_vault_key = encrypt(vault_master_key, derived_key)
+
+            service_user = User(
+                username=sp["username"],
+                display_name=sp["display_name"],
+                bio=sp["bio"],
+                user_type="service",
+                is_demo=True,
+                profile_data=json.dumps(sp.get("profile_data")) if sp.get("profile_data") else None,
+                vault_key_salt=salt,
+                encrypted_vault_key=encrypted_vault_key,
+                agent_personality=sp["agent_personality"],
+            )
+            db.add(service_user)
+            await db.flush()
+            vault_keys[service_user.id] = vault_master_key
+
+            # Generate ed25519 keypair for service agent identity
+            private_key_bytes, public_key_bytes = generate_ed25519_keypair()
+            agent_did = public_key_to_did(public_key_bytes)
+            encrypted_privkey = encrypt(private_key_bytes, vault_master_key)
+
+            agent = Agent(
+                owner_id=service_user.id,
+                name=f"{sp['display_name']} Agent",
+                personality=sp["agent_personality"],
+                public_key=public_key_bytes,
+                encrypted_private_key=encrypted_privkey,
+                did=agent_did,
+            )
+            db.add(agent)
+
+            # Create capsules for service
+            for cap in sp.get("capsules", []):
+                capsule = KnowledgeCapsule(
+                    owner_id=service_user.id,
+                    capsule_type=cap["type"],
+                    title=cap["title"],
+                    content_encrypted=encrypt_text(cap["content"], vault_master_key),
+                    tier=cap["tier"],
+                    freshness="permanent",
+                )
+                db.add(capsule)
+                await db.flush()
+                upsert_capsule_embedding(
+                    capsule.id,
+                    f"{cap['title']}: {cap['content']}",
+                    {"capsule_id": capsule.id, "owner_id": service_user.id, "tier": cap["tier"]},
+                )
+                print(f"  Created service capsule: [{cap['tier']}] {cap['title']} ({sp['username']})")
+
+            print(f"  Created service: {sp['display_name']} ({service_user.id})")
+
         await db.commit()
 
-    print(f"\nSeed complete! {len(USERS)} users, {len(CONNECTIONS)} connections, "
-          f"{len(NETWORKS)} networks, {len(CAPSULES)} capsules.")
+    total_users = len(USERS) + len(SERVICE_PROVIDERS)
+    print(f"\nSeed complete! {total_users} users ({len(USERS)} people + {len(SERVICE_PROVIDERS)} services), "
+          f"{len(CONNECTIONS)} connections, {len(NETWORKS)} networks, {len(CAPSULES)} capsules.")
     print(f"Vault keys loaded for {len(vault_keys)} users.")
 
 
