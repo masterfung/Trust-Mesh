@@ -1,5 +1,6 @@
 """SQLAlchemy models for TrustMesh."""
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -15,6 +16,18 @@ def new_uuid() -> str:
     return str(uuid.uuid4())
 
 
+def parse_profile_data(raw) -> dict | None:
+    """Parse profile_data from DB (stored as JSON string) into a dict. DRY helper."""
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return raw
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -26,9 +39,13 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
     bio: Mapped[str] = mapped_column(Text, default="")
+    user_type: Mapped[str] = mapped_column(String(20), default="person")  # "person" | "service"
+    profile_data: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON structured profile
     is_discoverable: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     vault_key_salt: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     encrypted_vault_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    agent_personality: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     agent: Mapped["Agent | None"] = relationship(back_populates="owner", uselist=False)
@@ -42,6 +59,9 @@ class Agent(Base):
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     personality: Mapped[str] = mapped_column(Text, default="Helpful and knowledgeable")
+    public_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    encrypted_private_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    did: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     owner: Mapped["User"] = relationship(back_populates="agent")
@@ -55,6 +75,8 @@ class Network(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     network_type: Mapped[str] = mapped_column(String(20), default="custom")
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False)
+    join_policy: Mapped[str] = mapped_column(String(20), default="invite_only")  # invite_only | request_to_join | open
     encrypted_network_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -151,3 +173,80 @@ class Query(Base):
     citadel_output_findings: Mapped[str | None] = mapped_column(Text, nullable=True)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AgentTask(Base):
+    __tablename__ = "agent_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | in_progress | completed | failed
+    task_type: Mapped[str] = mapped_column(String(20), default="search")  # search | compare | compile | follow_up
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON result
+    source_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    notification_type: Mapped[str] = mapped_column(String(30), nullable=False)  # query_received | task_completed | connection_request | quote_received
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, default="")
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    related_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class NetworkJoinRequest(Base):
+    __tablename__ = "network_join_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    network_id: Mapped[str] = mapped_column(ForeignKey("networks.id"), nullable=False)
+    message: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | approved | declined
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    actor_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actor_did: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    actor_role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    actor_institution: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    target_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    action: Mapped[str] = mapped_column(String(50), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False)  # emergency | query | auth | capsule
+    capsule_ids_accessed: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
+    categories_accessed: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
+    token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    token_role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    case_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    query_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    decision: Mapped[str] = mapped_column(String(20), default="allowed")  # allowed | denied
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class NetworkInvite(Base):
+    __tablename__ = "network_invites"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    network_id: Mapped[str] = mapped_column(ForeignKey("networks.id"), nullable=False)
+    invited_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | accepted | expired
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
