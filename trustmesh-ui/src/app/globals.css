@@ -8,10 +8,11 @@
   --card: #18181b;
   --card-hover: #1f1f23;
   --card-border: #27272a;
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --accent-dim: #4f46e5;
-  --accent-glow: rgba(99, 102, 241, 0.15);
+  --accent: #FEDC25;
+  --accent-hover: #ffe44d;
+  --accent-dim: #d4b820;
+  --accent-glow: rgba(254, 220, 37, 0.15);
+  --accent-fg: #09090b;
   --success: #22c55e;
   --success-dim: rgba(34, 197, 94, 0.1);
   --danger: #ef4444;
@@ -21,13 +22,13 @@
   --muted: #71717a;
   --muted-foreground: #a1a1aa;
   --trust-public: #f59e0b;
-  --trust-network: #6366f1;
+  --trust-network: #FEDC25;
   --trust-private: #ef4444;
-  --ring: #6366f1;
+  --ring: #FEDC25;
   --border: #27272a;
-  --gradient-start: #6366f1;
-  --gradient-mid: #8b5cf6;
-  --gradient-end: #a855f7;
+  --gradient-start: #FEDC25;
+  --gradient-mid: #ffb800;
+  --gradient-end: #ff9500;
 }
 
 @theme inline {
@@ -41,6 +42,7 @@
   --color-accent-hover: var(--accent-hover);
   --color-accent-dim: var(--accent-dim);
   --color-accent-glow: var(--accent-glow);
+  --color-accent-fg: var(--accent-fg);
   --color-success: var(--success);
   --color-success-dim: var(--success-dim);
   --color-danger: var(--danger);

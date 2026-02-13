@@ -15,12 +15,24 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 // ── Types ──
 
+export interface ProfileData {
+  occupation?: { title: string; industry: string } | null;
+  skills?: { name: string; category: string }[];
+  interests?: { name: string; category: string }[];
+  family_status?: string | null;
+  age_range?: string | null;
+  location_hints?: string[];
+}
+
 export interface User {
   id: string;
   username: string;
   display_name: string;
   bio: string;
+  user_type?: string;
+  profile_data?: ProfileData | null;
   is_discoverable?: boolean;
+  is_demo?: boolean;
   created_at?: string;
 }
 
@@ -29,6 +41,24 @@ export interface Agent {
   owner_id: string;
   name: string;
   personality: string;
+}
+
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+}
+
+export interface AgentCard {
+  name: string;
+  description: string;
+  url: string;
+  version: string;
+  owner: User;
+  capabilities: string[];
+  skills: AgentSkill[];
+  protocol: string;
 }
 
 export interface Connection {
@@ -59,8 +89,20 @@ export interface Network {
   name: string;
   description: string;
   network_type: string;
+  is_public?: boolean;
+  join_policy?: string;
   created_at: string;
   members: User[];
+}
+
+export interface NetworkDiscovery {
+  id: string;
+  name: string;
+  description: string;
+  network_type: string;
+  join_policy: string;
+  member_count: number;
+  owner_name: string;
 }
 
 export interface Capsule {
@@ -87,6 +129,22 @@ export interface CitadelResult {
   findings?: string[];
 }
 
+export interface AgentAction {
+  type: "capsule_created" | "capsule_updated" | "task_created" | "peer_queried" | "quotes_requested";
+  capsule_id?: string;
+  task_id?: string;
+  title?: string;
+  old_title?: string;
+  capsule_type?: string;
+  tier?: string;
+  category?: string;
+  networks?: string[];
+  target_username?: string;
+  question?: string;
+  service_type?: string;
+  providers_queried?: number;
+}
+
 export interface QueryResult {
   id: string;
   from_user_id: string;
@@ -98,14 +156,104 @@ export interface QueryResult {
   decision: string;
   citadel_input?: CitadelResult;
   citadel_output?: CitadelResult;
+  agent_actions?: AgentAction[];
   latency_ms: number;
   created_at: string;
 }
 
+export interface AgentTask {
+  id: string;
+  owner_id: string;
+  title: string;
+  description: string;
+  status: string;
+  task_type: string;
+  result?: string;
+  source_message?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+export interface Notification {
+  id: string;
+  user_id: string;
+  notification_type: string;
+  title: string;
+  body: string;
+  is_read: boolean;
+  related_id?: string;
+  created_at: string;
+}
+
+export interface ServiceProvider {
+  id: string;
+  username: string;
+  display_name: string;
+  bio: string;
+  user_type: string;
+  profile_data?: ProfileData | null;
+  agent_card?: AgentCard | null;
+}
+
+export interface Briefing {
+  user_id: string;
+  briefing: string;
+  generated_at: string;
+  sections?: Record<string, unknown>;
+}
+
+export interface HealthStatus {
+  status: string;
+  providers: {
+    anthropic: boolean;
+    tee: { enabled: boolean; provider: string | null };
+    tavily: boolean;
+    citadel: { configured: boolean; reachable: boolean; heuristic_active?: boolean; active?: boolean };
+    google_oauth: boolean;
+  };
+}
+
+export interface NetworkInvite {
+  id: string;
+  email: string;
+  token: string;
+  status: string;
+  network_name: string;
+}
+
+export interface NetworkInviteListItem {
+  id: string;
+  email: string;
+  status: string;
+  created_at: string | null;
+}
+
 export interface GraphData {
-  nodes: { id: string; username: string; display_name: string; bio: string }[];
+  nodes: { id: string; username: string; display_name: string; bio: string; user_type?: string; profile_data?: ProfileData | null }[];
   edges: { source: string; target: string; type: string }[];
   networks: { id: string; name: string; network_type: string; members: string[] }[];
+}
+
+export interface AuditLogEntry {
+  id: string;
+  actor_user_id?: string;
+  actor_did?: string;
+  actor_role?: string;
+  actor_institution?: string;
+  target_user_id?: string;
+  action: string;
+  event_type: string;
+  capsule_ids_accessed: string[];
+  categories_accessed: string[];
+  token_hash?: string;
+  token_role?: string;
+  token_expires_at?: string;
+  case_id?: string;
+  reason?: string;
+  query_id?: string;
+  decision: string;
+  details?: Record<string, unknown>;
+  created_at: string;
 }
 
 // ── API Functions ──
@@ -120,13 +268,14 @@ export const api = {
   logout: () =>
     apiFetch<{ status: string }>("/api/auth/logout", { method: "POST" }),
   getMe: () => apiFetch<User>("/api/auth/me"),
-  createUser: (data: { username: string; display_name: string; bio: string; password: string }) =>
+  createUser: (data: { username: string; display_name: string; bio: string; password: string; user_type?: string }) =>
     apiFetch<User>("/api/users", { method: "POST", body: JSON.stringify(data) }),
 
   // Users
   listUsers: () => apiFetch<User[]>("/api/users"),
   getUser: (id: string) => apiFetch<User>(`/api/users/${id}`),
   getAgent: (id: string) => apiFetch<Agent>(`/api/users/${id}/agent`),
+  getAgentCard: (id: string) => apiFetch<AgentCard>(`/api/users/${id}/agent/card`),
 
   // Connections
   listConnections: (userId: string) =>
@@ -148,7 +297,7 @@ export const api = {
   listNetworks: (userId: string) =>
     apiFetch<Network[]>(`/api/users/${userId}/networks`),
   getNetwork: (id: string) => apiFetch<Network>(`/api/networks/${id}`),
-  createNetwork: (data: { name: string; description: string; network_type: string; owner_id: string }) =>
+  createNetwork: (data: { name: string; description: string; network_type: string; owner_id: string; is_public?: boolean; join_policy?: string }) =>
     apiFetch<Network>("/api/networks", { method: "POST", body: JSON.stringify(data) }),
   addNetworkMember: (networkId: string, userId: string) =>
     apiFetch<Network>(`/api/networks/${networkId}/members`, {
@@ -157,6 +306,31 @@ export const api = {
     }),
   removeNetworkMember: (networkId: string, userId: string) =>
     apiFetch(`/api/networks/${networkId}/members/${userId}`, { method: "DELETE" }),
+  discoverNetworks: () =>
+    apiFetch<NetworkDiscovery[]>("/api/networks/discover"),
+  requestJoinNetwork: (networkId: string, userId: string, message: string) =>
+    apiFetch(`/api/networks/${networkId}/join-request?user_id=${userId}`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
+  listJoinRequests: (networkId: string) =>
+    apiFetch<{ id: string; user_id: string; network_id: string; message: string; status: string; created_at: string; user?: User }[]>(
+      `/api/networks/${networkId}/join-requests`
+    ),
+  reviewJoinRequest: (networkId: string, requestId: string, status: "approved" | "declined") =>
+    apiFetch<{ ok: boolean; status: string }>(`/api/networks/${networkId}/join-requests/${requestId}`, {
+      method: "PUT",
+      body: JSON.stringify({ status }),
+    }),
+
+  // Invites
+  sendInvite: (networkId: string, email: string, message?: string) =>
+    apiFetch<NetworkInvite>(`/api/networks/${networkId}/invite`, {
+      method: "POST",
+      body: JSON.stringify({ email, message: message || "" }),
+    }),
+  listInvites: (networkId: string) =>
+    apiFetch<NetworkInviteListItem[]>(`/api/networks/${networkId}/invites`),
 
   // Capsules
   listCapsules: (userId: string) =>
@@ -182,6 +356,64 @@ export const api = {
     }),
   listQueries: (userId: string) =>
     apiFetch<QueryResult[]>(`/api/users/${userId}/queries`),
+
+  // Tasks
+  listTasks: (userId: string) =>
+    apiFetch<AgentTask[]>(`/api/users/${userId}/tasks`),
+  getTask: (taskId: string) =>
+    apiFetch<AgentTask>(`/api/tasks/${taskId}`),
+
+  // Notifications
+  listNotifications: (userId: string) =>
+    apiFetch<Notification[]>(`/api/users/${userId}/notifications`),
+  getUnreadCount: (userId: string) =>
+    apiFetch<{ count: number }>(`/api/users/${userId}/notifications/unread-count`),
+  markNotificationRead: (notificationId: string) =>
+    apiFetch(`/api/notifications/${notificationId}/read`, { method: "PUT" }),
+  markAllNotificationsRead: (userId: string) =>
+    apiFetch(`/api/users/${userId}/notifications/read-all`, { method: "PUT" }),
+
+  // Briefing
+  getBriefing: (userId: string) =>
+    apiFetch<Briefing>(`/api/users/${userId}/briefing`),
+
+  // Services
+  listServices: () =>
+    apiFetch<ServiceProvider[]>("/api/services"),
+
+  // Health / Status
+  getHealthFull: () => apiFetch<HealthStatus>("/health/full"),
+
+  // Streaming query
+  queryStream: (fromUserId: string, toUserId: string, question: string, conversationHistory?: { role: string; content: string }[]) => {
+    return fetch(`${API_BASE}/api/query/stream`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from_user_id: fromUserId,
+        to_user_id: toUserId,
+        question,
+        conversation_history: conversationHistory?.length ? conversationHistory : undefined,
+      }),
+    });
+  },
+
+  // Intake onboarding
+  intakeStep: (userId: string, message: string, conversationHistory: { role: string; content: string }[]) => {
+    return fetch(`${API_BASE}/api/users/${userId}/intake`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, conversation_history: conversationHistory }),
+    });
+  },
+
+  // Audit
+  listAuditLogs: (userId: string, eventType?: string) =>
+    apiFetch<AuditLogEntry[]>(`/api/users/${userId}/audit${eventType ? `?event_type=${eventType}` : ""}`),
+  listEmergencyLogs: (userId: string) =>
+    apiFetch<AuditLogEntry[]>(`/api/users/${userId}/audit/emergency`),
 
   // Graph
   getGraph: () => apiFetch<GraphData>("/api/graph"),

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type User } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -11,11 +11,23 @@ const DEMO_PASSWORD = "TrustMesh-demo-2026";
 
 const USER_COLORS: Record<string, string> = {
   peter: "from-blue-500 to-cyan-400",
-  molly: "from-violet-500 to-purple-400",
+  molly: "from-amber-500 to-yellow-400",
   jane: "from-pink-500 to-rose-400",
   bill: "from-emerald-500 to-green-400",
   kyle: "from-orange-500 to-amber-400",
 };
+
+const SERVICE_ICON = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
+  </svg>
+);
+
+const PERSON_ICON = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+  </svg>
+);
 
 function validatePasswordComplexity(pw: string): string | null {
   if (pw.length < 16) return "Password must be at least 16 characters";
@@ -27,20 +39,13 @@ function validatePasswordComplexity(pw: string): string | null {
 }
 
 export default function Home() {
-  const { user: authUser, isLoading: authLoading } = useAuth();
+  const { user: authUser, isLoading: authLoading, logout } = useAuth();
   const router = useRouter();
   const { data: users, isLoading } = useQuery({
     queryKey: ["users"],
     queryFn: api.listUsers,
   });
   const [authMode, setAuthMode] = useState<"none" | "login" | "signup">("none");
-
-  // If already logged in, redirect to dashboard
-  useEffect(() => {
-    if (authUser && !authLoading) {
-      router.push(`/${authUser.id}`);
-    }
-  }, [authUser, authLoading, router]);
 
   if (authLoading) {
     return (
@@ -89,7 +94,22 @@ export default function Home() {
 
         {/* Auth Forms */}
         <div className="w-full max-w-lg mb-12">
-          {authMode === "login" ? (
+          {authUser ? (
+            <div className="flex gap-3">
+              <button
+                onClick={() => router.push(`/${authUser.id}`)}
+                className="flex-1 py-3.5 bg-accent hover:bg-accent-hover text-accent-fg font-semibold rounded-xl text-base transition-all hover:shadow-lg hover:shadow-accent/25"
+              >
+                Continue as {authUser.display_name}
+              </button>
+              <button
+                onClick={() => logout()}
+                className="px-5 py-3.5 bg-card border border-card-border hover:border-accent/50 text-muted-foreground hover:text-foreground font-medium rounded-xl text-sm transition-all hover:bg-card-hover"
+              >
+                Log Out
+              </button>
+            </div>
+          ) : authMode === "login" ? (
             <LoginForm onDone={() => setAuthMode("none")} onSwitch={() => setAuthMode("signup")} />
           ) : authMode === "signup" ? (
             <SignupForm onDone={() => setAuthMode("none")} onSwitch={() => setAuthMode("login")} />
@@ -97,7 +117,7 @@ export default function Home() {
             <div className="flex gap-3">
               <button
                 onClick={() => setAuthMode("login")}
-                className="flex-1 py-3.5 bg-accent hover:bg-accent-hover text-white font-semibold rounded-xl text-base transition-all hover:shadow-lg hover:shadow-accent/25"
+                className="flex-1 py-3.5 bg-accent hover:bg-accent-hover text-accent-fg font-semibold rounded-xl text-base transition-all hover:shadow-lg hover:shadow-accent/25"
               >
                 Log In
               </button>
@@ -115,7 +135,7 @@ export default function Home() {
         <div className="w-full max-w-4xl">
           <div className="text-center mb-6">
             <p className="text-sm text-muted">
-              Or explore the demo — pick a family member to see their perspective:
+              Or explore the demo — pick a person or service to see their perspective:
             </p>
           </div>
 
@@ -159,6 +179,10 @@ function DemoUserGrid({ users }: { users: User[] }) {
   const [loadingUser, setLoadingUser] = useState<string | null>(null);
   const [error, setError] = useState("");
 
+  const demoUsers = users.filter((u) => u.is_demo);
+  const people = demoUsers.filter((u) => u.user_type !== "service");
+  const services = demoUsers.filter((u) => u.user_type === "service");
+
   const handleDemoLogin = async (user: User) => {
     setLoadingUser(user.id);
     setError("");
@@ -171,6 +195,13 @@ function DemoUserGrid({ users }: { users: User[] }) {
     }
   };
 
+  const Spinner = () => (
+    <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+    </svg>
+  );
+
   return (
     <div>
       {error && (
@@ -178,34 +209,65 @@ function DemoUserGrid({ users }: { users: User[] }) {
           {error}
         </div>
       )}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        {users.map((user: User) => (
-          <button
-            key={user.id}
-            onClick={() => handleDemoLogin(user)}
-            disabled={loadingUser !== null}
-            className="group relative p-4 rounded-xl bg-card border border-card-border hover:border-accent/50 transition-all hover:bg-card-hover text-left disabled:opacity-60"
-          >
-            <div
-              className={`w-12 h-12 rounded-xl bg-gradient-to-br ${USER_COLORS[user.username] || "from-zinc-600 to-zinc-400"} flex items-center justify-center text-white font-bold text-lg mb-3 transition-transform group-hover:scale-110`}
+
+      {/* People */}
+      <div className="mb-6">
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-muted-foreground">{PERSON_ICON}</span>
+          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">People</h3>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          {people.map((user: User) => (
+            <button
+              key={user.id}
+              onClick={() => handleDemoLogin(user)}
+              disabled={loadingUser !== null}
+              className="group relative p-4 rounded-xl bg-card border border-card-border hover:border-accent/50 transition-all hover:bg-card-hover text-left disabled:opacity-60"
             >
-              {loadingUser === user.id ? (
-                <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-              ) : (
-                user.display_name[0]
-              )}
-            </div>
-            <h2 className="text-foreground font-semibold text-sm">{user.display_name}</h2>
-            <p className="text-xs text-muted mt-1 line-clamp-2">{user.bio}</p>
-            <span className="absolute top-2 right-2 text-[10px] text-muted bg-card-hover px-1.5 py-0.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
-              Demo
-            </span>
-          </button>
-        ))}
+              <div
+                className={`w-12 h-12 rounded-full bg-gradient-to-br ${USER_COLORS[user.username] || "from-zinc-600 to-zinc-400"} flex items-center justify-center text-white font-bold text-lg mb-3 transition-transform group-hover:scale-110 ring-2 ring-transparent group-hover:ring-accent/30`}
+              >
+                {loadingUser === user.id ? <Spinner /> : user.display_name[0]}
+              </div>
+              <h2 className="text-foreground font-semibold text-sm">{user.display_name}</h2>
+              <p className="text-xs text-muted mt-1 line-clamp-2">{user.bio}</p>
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* Services */}
+      {services.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-accent">{SERVICE_ICON}</span>
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Service Providers</h3>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {services.map((user: User) => (
+              <button
+                key={user.id}
+                onClick={() => handleDemoLogin(user)}
+                disabled={loadingUser !== null}
+                className="group relative flex items-start gap-3 p-4 rounded-xl bg-card border border-accent/15 hover:border-accent/40 transition-all hover:bg-card-hover text-left disabled:opacity-60"
+              >
+                <div className="w-10 h-10 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center text-accent shrink-0 transition-transform group-hover:scale-110">
+                  {loadingUser === user.id ? <Spinner /> : SERVICE_ICON}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-foreground font-semibold text-sm truncate">{user.display_name}</h2>
+                    <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-accent bg-accent/10 px-1.5 py-0.5 rounded">
+                      Service
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted mt-1 line-clamp-2">{user.bio}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -273,7 +335,7 @@ function LoginForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => v
         <button
           onClick={handleSubmit}
           disabled={!username.trim() || !password.trim() || isPending}
-          className="flex-1 py-2.5 bg-accent hover:bg-accent-hover text-white font-semibold rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/25"
+          className="flex-1 py-2.5 bg-accent hover:bg-accent-hover text-accent-fg font-semibold rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/25"
         >
           {isPending ? (
             <span className="flex items-center justify-center gap-2">
@@ -319,7 +381,8 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
       signup({ username, display_name: displayName, bio, password }),
     onSuccess: (newUser) => {
       queryClient.invalidateQueries({ queryKey: ["users"] });
-      router.push(`/${newUser.id}`);
+      // Use window.location to avoid race with Home's auth redirect useEffect
+      window.location.href = `/${newUser.id}/onboard`;
     },
     onError: (err: Error) => setError(err.message),
   });
@@ -395,7 +458,7 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
         <button
           onClick={() => mutation.mutate()}
           disabled={!isValid || mutation.isPending}
-          className="flex-1 py-2.5 bg-accent hover:bg-accent-hover text-white font-semibold rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/25"
+          className="flex-1 py-2.5 bg-accent hover:bg-accent-hover text-accent-fg font-semibold rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/25"
         >
           {mutation.isPending ? (
             <span className="flex items-center justify-center gap-2">

@@ -2,22 +2,25 @@
 
 import { useEffect, useRef, useCallback, useState } from "react";
 import * as d3 from "d3";
-import type { GraphData, QueryResult } from "@/lib/api";
+import type { GraphData, QueryResult, ProfileData } from "@/lib/api";
 
 const NETWORK_COLORS: Record<string, string> = {
-  family: "#6366f1",
-  team: "#a78bfa",
+  family: "#FEDC25",
+  team: "#ffb800",
   friends: "#22c55e",
   custom: "#f59e0b",
 };
 
 const USER_COLORS: Record<string, string> = {
   peter: "#3b82f6",
-  molly: "#a855f7",
+  molly: "#FEDC25",
   jane: "#ec4899",
   bill: "#22c55e",
   kyle: "#f97316",
 };
+
+const SERVICE_COLOR = "#f59e0b"; // Amber for service providers
+const PERSON_COLOR_FALLBACK = "#06b6d4"; // Cyan fallback for persons
 
 const DECISION_COLORS: Record<string, string> = {
   allowed: "#22c55e",
@@ -30,6 +33,8 @@ interface SimNode extends d3.SimulationNodeDatum {
   username: string;
   display_name: string;
   bio: string;
+  user_type?: string;
+  profile_data?: ProfileData | null;
 }
 
 interface SimLink extends d3.SimulationLinkDatum<SimNode> {
@@ -44,6 +49,24 @@ interface QueryAnimation {
   id: string;
 }
 
+interface TooltipState {
+  visible: boolean;
+  x: number;
+  y: number;
+  node: SimNode | null;
+}
+
+/** Returns the fill color for a node, accounting for user_type and username overrides. */
+function getNodeColor(d: SimNode): string {
+  if (d.user_type === "service") return SERVICE_COLOR;
+  return USER_COLORS[d.username] || PERSON_COLOR_FALLBACK;
+}
+
+/** Draws a diamond (rotated square) SVG path centered at 0,0 with the given size. */
+function diamondPath(size: number): string {
+  return `M 0 ${-size} L ${size} 0 L 0 ${size} L ${-size} 0 Z`;
+}
+
 export function TrustGraph({
   data,
   queries,
@@ -54,9 +77,16 @@ export function TrustGraph({
   onTriggerQuery?: (fromId: string, toId: string) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const gRef = useRef<SVGGElement | null>(null);
   const nodesRef = useRef<SimNode[]>([]);
   const [selectedNode, setSelectedNode] = useState<SimNode | null>(null);
+  const [tooltip, setTooltip] = useState<TooltipState>({
+    visible: false,
+    x: 0,
+    y: 0,
+    node: null,
+  });
   const animationQueueRef = useRef<QueryAnimation[]>([]);
   const lastAnimatedRef = useRef<string>("");
 
@@ -85,10 +115,10 @@ export function TrustGraph({
       if (!fromNode || !toNode || fromNode.x == null || toNode.x == null)
         return;
 
-      const queryColor = "#6366f1"; // Indigo: outgoing question
+      const queryColor = "#FEDC25"; // Mighty yellow: outgoing question
       const replyColor = getQueryColor(decision, trustLevel);
 
-      // === Phase 1: Query dot (indigo) from sender → receiver ===
+      // === Phase 1: Query dot (yellow) from sender -> receiver ===
       const dot = gSel
         .append("circle")
         .attr("cx", fromNode.x)
@@ -134,7 +164,7 @@ export function TrustGraph({
         .attr("opacity", 0)
         .remove();
 
-      // === Phase 2: Reply dot (color-coded) from receiver → sender ===
+      // === Phase 2: Reply dot (color-coded) from receiver -> sender ===
       const replyDot = gSel
         .append("circle")
         .attr("cx", toNode.x)
@@ -252,6 +282,16 @@ export function TrustGraph({
     const feMerge = glow.append("feMerge");
     feMerge.append("feMergeNode").attr("in", "coloredBlur");
     feMerge.append("feMergeNode").attr("in", "SourceGraphic");
+
+    // Service glow filter (warmer)
+    const serviceGlow = defs.append("filter").attr("id", "serviceGlow");
+    serviceGlow
+      .append("feGaussianBlur")
+      .attr("stdDeviation", "4")
+      .attr("result", "coloredBlur");
+    const serviceFeMerge = serviceGlow.append("feMerge");
+    serviceFeMerge.append("feMergeNode").attr("in", "coloredBlur");
+    serviceFeMerge.append("feMergeNode").attr("in", "SourceGraphic");
 
     const g = svg.append("g");
     gRef.current = g.node();
@@ -383,35 +423,86 @@ export function TrustGraph({
       )
       .on("click", (_event, d) => {
         setSelectedNode((prev) => (prev?.id === d.id ? null : d));
+      })
+      .on("mouseenter", (event: MouseEvent, d: SimNode) => {
+        // Get position relative to the container
+        const container = containerRef.current;
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        setTooltip({
+          visible: true,
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top,
+          node: d,
+        });
+      })
+      .on("mousemove", (event: MouseEvent, d: SimNode) => {
+        const container = containerRef.current;
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        setTooltip({
+          visible: true,
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top,
+          node: d,
+        });
+      })
+      .on("mouseleave", () => {
+        setTooltip({ visible: false, x: 0, y: 0, node: null });
       });
 
-    // Outer glow ring (subtle)
+    // --- Service provider nodes: diamond shape ---
+    // Outer glow ring for service nodes
     node
+      .filter((d) => d.user_type === "service")
+      .append("path")
+      .attr("d", diamondPath(34))
+      .attr("fill", "none")
+      .attr("stroke", SERVICE_COLOR)
+      .attr("stroke-width", 1)
+      .attr("stroke-opacity", 0.25);
+
+    // Diamond shape for service nodes
+    node
+      .filter((d) => d.user_type === "service")
+      .append("path")
+      .attr("d", diamondPath(27))
+      .attr("fill", SERVICE_COLOR)
+      .attr("stroke", "#09090b")
+      .attr("stroke-width", 3)
+      .style("filter", "url(#serviceGlow)");
+
+    // --- Person nodes: circle shape ---
+    // Outer glow ring for person nodes
+    node
+      .filter((d) => d.user_type !== "service")
       .append("circle")
       .attr("r", 32)
       .attr("fill", "none")
-      .attr("stroke", (d) => USER_COLORS[d.username] || "#6b7280")
+      .attr("stroke", (d) => getNodeColor(d))
       .attr("stroke-width", 1)
       .attr("stroke-opacity", 0.2);
 
-    // Node circles
+    // Circle for person nodes
     node
+      .filter((d) => d.user_type !== "service")
       .append("circle")
       .attr("r", 26)
-      .attr("fill", (d) => USER_COLORS[d.username] || "#6b7280")
+      .attr("fill", (d) => getNodeColor(d))
       .attr("stroke", "#09090b")
       .attr("stroke-width", 3)
       .style("filter", "url(#glow)");
 
-    // Node labels (initials)
+    // Node labels (initials) -- for all nodes
     node
       .append("text")
       .attr("text-anchor", "middle")
       .attr("dy", "0.35em")
-      .attr("fill", "white")
+      .attr("fill", (d) => (d.user_type === "service" ? "#09090b" : "white"))
       .attr("font-size", "12px")
       .attr("font-weight", "bold")
       .attr("font-family", "system-ui, sans-serif")
+      .attr("pointer-events", "none")
       .text((d) =>
         d.display_name
           .split(" ")
@@ -419,7 +510,7 @@ export function TrustGraph({
           .join("")
       );
 
-    // Name labels below
+    // Name labels below -- for all nodes
     node
       .append("text")
       .attr("text-anchor", "middle")
@@ -428,7 +519,22 @@ export function TrustGraph({
       .attr("font-size", "11px")
       .attr("font-family", "system-ui, sans-serif")
       .attr("font-weight", "500")
+      .attr("pointer-events", "none")
       .text((d) => d.display_name);
+
+    // Small user_type label beneath the name for service nodes
+    node
+      .filter((d) => d.user_type === "service")
+      .append("text")
+      .attr("text-anchor", "middle")
+      .attr("dy", "57px")
+      .attr("fill", SERVICE_COLOR)
+      .attr("font-size", "9px")
+      .attr("font-family", "system-ui, sans-serif")
+      .attr("font-weight", "600")
+      .attr("pointer-events", "none")
+      .attr("opacity", 0.7)
+      .text("SERVICE");
 
     // Tick
     simulation.on("tick", () => {
@@ -455,11 +561,12 @@ export function TrustGraph({
       const bboxWidth = maxX - minX;
       const bboxHeight = maxY - minY;
 
-      const scale = Math.min(
-        width / bboxWidth,
-        height / bboxHeight,
-        1.8 // Don't zoom in too much
-      ) * 0.85; // Leave some padding
+      const scale =
+        Math.min(
+          width / bboxWidth,
+          height / bboxHeight,
+          1.8 // Don't zoom in too much
+        ) * 0.85; // Leave some padding
 
       const cx = (minX + maxX) / 2;
       const cy = (minY + maxY) / 2;
@@ -470,7 +577,10 @@ export function TrustGraph({
         .transition()
         .duration(800)
         .ease(d3.easeCubicOut)
-        .call(zoomBehavior.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+        .call(
+          zoomBehavior.transform,
+          d3.zoomIdentity.translate(tx, ty).scale(scale)
+        );
 
       // Process any queued animations
       const queue = animationQueueRef.current;
@@ -495,9 +605,42 @@ export function TrustGraph({
     };
   }, [data, animateQuery]);
 
+  // Compute tooltip position to keep it within bounds
+  const getTooltipStyle = (): React.CSSProperties => {
+    if (!tooltip.visible) return { display: "none" };
+    const tooltipWidth = 280;
+    const tooltipOffset = 16;
+    const containerWidth = containerRef.current?.clientWidth ?? 800;
+
+    // Position to the right by default; flip left if it would overflow
+    let left = tooltip.x + tooltipOffset;
+    if (left + tooltipWidth > containerWidth) {
+      left = tooltip.x - tooltipWidth - tooltipOffset;
+    }
+
+    return {
+      position: "absolute",
+      left: `${left}px`,
+      top: `${tooltip.y - 20}px`,
+      pointerEvents: "none" as const,
+      zIndex: 50,
+    };
+  };
+
   return (
-    <div className="relative w-full" style={{ height: "calc(100vh - 80px)" }}>
+    <div
+      ref={containerRef}
+      className="relative w-full"
+      style={{ height: "calc(100vh - 80px)" }}
+    >
       <svg ref={svgRef} className="w-full h-full" />
+
+      {/* Hover Tooltip */}
+      {tooltip.visible && tooltip.node && (
+        <div style={getTooltipStyle()}>
+          <NodeTooltip node={tooltip.node} networks={data.networks} />
+        </div>
+      )}
 
       {/* Legend */}
       <div className="absolute bottom-4 left-4 bg-card/95 backdrop-blur-sm border border-card-border rounded-2xl p-4 shadow-lg">
@@ -518,23 +661,53 @@ export function TrustGraph({
         ))}
         <div className="border-t border-card-border mt-3 pt-3">
           <p className="text-xs font-semibold text-muted-foreground mb-2">
+            Node Types
+          </p>
+          <div className="flex items-center gap-2.5 mb-1.5">
+            <div className="w-3 h-3 rounded-full bg-cyan-500" />
+            <span className="text-xs text-muted-foreground">Person</span>
+          </div>
+          <div className="flex items-center gap-2.5 mb-1.5">
+            <svg width="14" height="14" viewBox="0 0 14 14">
+              <path
+                d="M 7 1 L 13 7 L 7 13 L 1 7 Z"
+                fill="#f59e0b"
+                stroke="#09090b"
+                strokeWidth="1"
+              />
+            </svg>
+            <span className="text-xs text-muted-foreground">
+              Service Provider
+            </span>
+          </div>
+        </div>
+        <div className="border-t border-card-border mt-3 pt-3">
+          <p className="text-xs font-semibold text-muted-foreground mb-2">
             Query Flow
           </p>
           <div className="flex items-center gap-2.5 mb-1.5">
-            <div className="w-3 h-3 rounded-full bg-indigo-500" />
-            <span className="text-xs text-muted-foreground">Question sent</span>
+            <div className="w-3 h-3 rounded-full bg-[#FEDC25]" />
+            <span className="text-xs text-muted-foreground">
+              Question sent
+            </span>
           </div>
           <div className="flex items-center gap-2.5 mb-1.5">
             <div className="w-3 h-3 rounded-full bg-green-500" />
-            <span className="text-xs text-muted-foreground">Knowledge shared</span>
+            <span className="text-xs text-muted-foreground">
+              Knowledge shared
+            </span>
           </div>
           <div className="flex items-center gap-2.5 mb-1.5">
             <div className="w-3 h-3 rounded-full bg-yellow-500" />
-            <span className="text-xs text-muted-foreground">Limited (public only)</span>
+            <span className="text-xs text-muted-foreground">
+              Limited (public only)
+            </span>
           </div>
           <div className="flex items-center gap-2.5">
             <div className="w-3 h-3 rounded-full bg-red-500" />
-            <span className="text-xs text-muted-foreground">Blocked (Citadel)</span>
+            <span className="text-xs text-muted-foreground">
+              Blocked (Citadel)
+            </span>
           </div>
         </div>
       </div>
@@ -546,8 +719,7 @@ export function TrustGraph({
             <div
               className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold text-sm"
               style={{
-                backgroundColor:
-                  USER_COLORS[selectedNode.username] || "#6b7280",
+                backgroundColor: getNodeColor(selectedNode),
               }}
             >
               {selectedNode.display_name
@@ -595,6 +767,185 @@ export function TrustGraph({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// NodeTooltip - Rich HTML tooltip shown on node hover
+// ---------------------------------------------------------------------------
+
+function NodeTooltip({
+  node,
+  networks,
+}: {
+  node: SimNode;
+  networks: GraphData["networks"];
+}) {
+  const isService = node.user_type === "service";
+  const pd = node.profile_data;
+
+  const nodeNetworks = networks.filter((n) => n.members.includes(node.id));
+
+  const truncatedBio =
+    node.bio && node.bio.length > 100
+      ? node.bio.slice(0, 100) + "..."
+      : node.bio;
+
+  return (
+    <div
+      className="w-[280px] bg-card/98 backdrop-blur-md border border-card-border rounded-xl shadow-2xl overflow-hidden"
+      style={{ backdropFilter: "blur(12px)" }}
+    >
+      {/* Header with color strip */}
+      <div
+        className="px-3.5 pt-3 pb-2.5"
+        style={{
+          borderBottom: `2px solid ${getNodeColor(node)}25`,
+        }}
+      >
+        <div className="flex items-center gap-2.5">
+          {/* Avatar */}
+          <div
+            className="flex-shrink-0 w-9 h-9 flex items-center justify-center text-xs font-bold"
+            style={{
+              backgroundColor: getNodeColor(node),
+              color: isService ? "#09090b" : "white",
+              borderRadius: isService ? "4px" : "50%",
+              transform: isService ? "rotate(45deg)" : "none",
+            }}
+          >
+            <span style={{ transform: isService ? "rotate(-45deg)" : "none", display: "block" }}>
+              {node.display_name
+                .split(" ")
+                .map((w) => w[0])
+                .join("")}
+            </span>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-foreground truncate">
+              {node.display_name}
+            </p>
+            <p className="text-[11px] text-muted">@{node.username}</p>
+          </div>
+
+          {/* User type badge */}
+          <span
+            className="flex-shrink-0 text-[10px] font-semibold uppercase px-2 py-0.5 rounded-md"
+            style={{
+              backgroundColor: isService
+                ? `${SERVICE_COLOR}20`
+                : `${PERSON_COLOR_FALLBACK}20`,
+              color: isService ? SERVICE_COLOR : PERSON_COLOR_FALLBACK,
+            }}
+          >
+            {isService ? "Service" : "Person"}
+          </span>
+        </div>
+      </div>
+
+      {/* Profile data section */}
+      <div className="px-3.5 py-2.5 space-y-2">
+        {/* Occupation */}
+        {pd?.occupation && (
+          <div>
+            <p className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-0.5">
+              Occupation
+            </p>
+            <p className="text-xs text-foreground">
+              {pd.occupation.title}
+              {pd.occupation.industry && (
+                <span className="text-muted-foreground">
+                  {" "}
+                  -- {pd.occupation.industry}
+                </span>
+              )}
+            </p>
+          </div>
+        )}
+
+        {/* Age range + Family status on the same line */}
+        {(pd?.age_range || pd?.family_status) && (
+          <div className="flex items-center gap-3">
+            {pd.age_range && (
+              <div>
+                <p className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-0.5">
+                  Age
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {pd.age_range}
+                </p>
+              </div>
+            )}
+            {pd.family_status && (
+              <div>
+                <p className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-0.5">
+                  Family
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {pd.family_status}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Skills as tags */}
+        {pd?.skills && pd.skills.length > 0 && (
+          <div>
+            <p className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-1">
+              Skills
+            </p>
+            <div className="flex flex-wrap gap-1">
+              {pd.skills.slice(0, 4).map((skill, i) => (
+                <span
+                  key={i}
+                  className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent-hover"
+                >
+                  {skill.name}
+                </span>
+              ))}
+              {pd.skills.length > 4 && (
+                <span className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-card-hover text-muted">
+                  +{pd.skills.length - 4}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Networks the node belongs to */}
+        {nodeNetworks.length > 0 && (
+          <div>
+            <p className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-1">
+              Networks
+            </p>
+            <div className="flex flex-wrap gap-1">
+              {nodeNetworks.map((n) => (
+                <span
+                  key={n.id}
+                  className="inline-block text-[10px] px-1.5 py-0.5 rounded"
+                  style={{
+                    backgroundColor: `${NETWORK_COLORS[n.network_type] || NETWORK_COLORS.custom}20`,
+                    color:
+                      NETWORK_COLORS[n.network_type] || NETWORK_COLORS.custom,
+                  }}
+                >
+                  {n.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Bio (truncated) */}
+        {truncatedBio && (
+          <p className="text-[11px] text-muted-foreground leading-relaxed border-t border-card-border pt-2">
+            {truncatedBio}
+          </p>
+        )}
+      </div>
     </div>
   );
 }

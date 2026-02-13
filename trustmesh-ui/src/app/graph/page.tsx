@@ -155,13 +155,13 @@ export default function GraphPage() {
     <div className="min-h-screen bg-background">
       <div className="flex items-center justify-between p-4 border-b border-card-border">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-purple-500 flex items-center justify-center">
+          <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center">
             <svg
               width="14"
               height="14"
               viewBox="0 0 24 24"
               fill="none"
-              stroke="white"
+              stroke="#09090b"
               strokeWidth="2.5"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -180,7 +180,7 @@ export default function GraphPage() {
           <button
             onClick={runAllScenarios}
             disabled={isRunningAll || !users}
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-accent hover:bg-accent-hover text-white font-medium rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-accent hover:bg-accent-hover text-accent-fg font-medium rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           >
             {isRunningAll ? (
               <>

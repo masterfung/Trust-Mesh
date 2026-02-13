@@ -52,7 +52,7 @@ export default function ConnectionsPage() {
           className={`px-4 py-2.5 font-medium rounded-xl text-sm transition-all ${
             showConnect
               ? "bg-card-hover text-muted-foreground border border-card-border"
-              : "bg-accent hover:bg-accent-hover text-white hover:shadow-lg hover:shadow-accent/20"
+              : "bg-accent hover:bg-accent-hover text-accent-fg hover:shadow-lg hover:shadow-accent/20"
           }`}
         >
           {showConnect ? "Cancel" : "+ Connect"}
@@ -117,7 +117,7 @@ export default function ConnectionsPage() {
       <div className="space-y-2">
         {connections?.map((c: Connection) => (
           <div key={c.id} className="bg-card border border-card-border rounded-2xl p-4 flex items-center gap-3 hover:bg-card-hover transition-colors">
-            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-accent to-purple-500 flex items-center justify-center text-white font-bold">
+            <div className="w-11 h-11 rounded-xl bg-accent flex items-center justify-center text-accent-fg font-bold">
               {c.peer?.display_name?.[0] || "?"}
             </div>
             <div className="flex-1 min-w-0">
@@ -192,7 +192,7 @@ function SendConnectionForm({
       <button
         onClick={() => mutation.mutate()}
         disabled={!targetId || mutation.isPending}
-        className="w-full bg-accent hover:bg-accent-hover text-white font-semibold py-3 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/20"
+        className="w-full bg-accent hover:bg-accent-hover text-accent-fg font-semibold py-3 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/20"
       >
         {mutation.isPending ? "Sending..." : "Send Request"}
       </button>

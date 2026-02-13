@@ -22,8 +22,12 @@ export default function VaultPage() {
   const { userId } = useParams<{ userId: string }>();
   const queryClient = useQueryClient();
   const [showForm, setShowForm] = useState(false);
+  const [editingCapsule, setEditingCapsule] = useState<Capsule | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<string>("all");
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [tierFilter, setTierFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
+  const [showCount, setShowCount] = useState(20);
 
   const { data: capsules, isLoading } = useQuery({
     queryKey: ["capsules", userId],
@@ -39,56 +43,101 @@ export default function VaultPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["capsules", userId] }),
   });
 
-  const filtered = filter === "all"
-    ? capsules
-    : capsules?.filter((c) => c.capsule_type === filter || c.tier === filter);
+  const filtered = capsules?.filter((c) => {
+    if (typeFilter !== "all" && c.capsule_type !== typeFilter) return false;
+    if (tierFilter !== "all" && c.tier !== tierFilter) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return c.title.toLowerCase().includes(q) || c.content.toLowerCase().includes(q);
+    }
+    return true;
+  });
+
+  const visible = filtered?.slice(0, showCount);
 
   return (
     <div className="max-w-4xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold">Knowledge Vault</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold">Knowledge Vault</h1>
+            {capsules && (
+              <span className="text-xs bg-card-hover text-muted-foreground px-2.5 py-1 rounded-lg font-medium">
+                {capsules.length} capsules
+              </span>
+            )}
+          </div>
           <p className="text-muted-foreground text-sm">Your encrypted knowledge capsules &mdash; AES-256-GCM protected</p>
         </div>
         <button
-          onClick={() => setShowForm(!showForm)}
+          onClick={() => { setShowForm(!showForm); setEditingCapsule(null); }}
           className={`px-4 py-2.5 font-medium rounded-xl text-sm transition-all ${
             showForm
               ? "bg-card-hover text-muted-foreground border border-card-border"
-              : "bg-accent hover:bg-accent-hover text-white hover:shadow-lg hover:shadow-accent/20"
+              : "bg-accent hover:bg-accent-hover text-accent-fg hover:shadow-lg hover:shadow-accent/20"
           }`}
         >
           {showForm ? "Cancel" : "+ Add Capsule"}
         </button>
       </div>
 
-      {showForm && (
+      {(showForm || editingCapsule) && (
         <CapsuleForm
           userId={userId}
           networks={networks ?? []}
+          capsule={editingCapsule}
           onDone={() => {
             setShowForm(false);
+            setEditingCapsule(null);
             queryClient.invalidateQueries({ queryKey: ["capsules", userId] });
           }}
         />
       )}
 
+      {/* Search */}
+      <div className="mb-4">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setShowCount(20); }}
+          placeholder="Search capsules..."
+          className="w-full bg-card border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted"
+        />
+      </div>
+
       {/* Filters */}
-      <div className="flex gap-2 mb-5 flex-wrap">
-        {["all", ...CAPSULE_TYPES, ...TIERS].map((f) => (
+      <div className="flex flex-wrap items-center gap-2 mb-5">
+        {["all", ...CAPSULE_TYPES].map((f) => (
           <button
             key={f}
-            onClick={() => setFilter(f)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              filter === f
-                ? "bg-accent text-white shadow-sm"
+            onClick={() => { setTypeFilter(f); setShowCount(20); }}
+            className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+              typeFilter === f
+                ? "bg-accent text-accent-fg shadow-sm"
                 : "bg-card border border-card-border text-muted-foreground hover:text-foreground hover:border-accent/30"
             }`}
           >
             {f}
           </button>
         ))}
+        <span className="w-px h-4 bg-card-border mx-1" />
+        {TIERS.map((t) => (
+          <button
+            key={t}
+            onClick={() => { setTierFilter(tierFilter === t ? "all" : t); setShowCount(20); }}
+            className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+              tierFilter === t
+                ? "bg-accent text-accent-fg shadow-sm"
+                : "bg-card border border-card-border text-muted-foreground hover:text-foreground hover:border-accent/30"
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+        {(typeFilter !== "all" || tierFilter !== "all" || search) && filtered && (
+          <span className="text-[11px] text-muted ml-2">{filtered.length} results</span>
+        )}
       </div>
 
       {/* Capsule List */}
@@ -96,7 +145,7 @@ export default function VaultPage() {
         <div className="text-muted animate-pulse text-center py-12">Loading vault...</div>
       ) : (
         <div className="space-y-2">
-          {filtered?.map((c: Capsule) => (
+          {visible?.map((c: Capsule) => (
             <div
               key={c.id}
               className="bg-card border border-card-border rounded-2xl overflow-hidden hover:border-card-border transition-all"
@@ -108,13 +157,13 @@ export default function VaultPage() {
                 <CapsuleTypeBadge type={c.capsule_type} />
                 <div className="flex-1 min-w-0">
                   <span className="text-sm font-medium block truncate">{c.title}</span>
-                  <span className="text-[11px] text-muted">{c.capsule_type} &middot; {c.freshness}</span>
+                  <span className="text-[11px] text-muted truncate block">{c.content.slice(0, 80)}{c.content.length > 80 ? "..." : ""}</span>
                 </div>
                 <TrustBadge tier={c.tier} />
                 <svg
                   width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                   strokeLinecap="round" strokeLinejoin="round"
-                  className={`text-muted transition-transform ${expandedId === c.id ? "rotate-180" : ""}`}
+                  className={`text-muted transition-transform shrink-0 ${expandedId === c.id ? "rotate-180" : ""}`}
                 >
                   <polyline points="6 9 12 15 18 9"/>
                 </svg>
@@ -137,6 +186,17 @@ export default function VaultPage() {
                   </div>
                   <div className="mt-3 flex gap-2">
                     <button
+                      onClick={() => {
+                        setEditingCapsule(c);
+                        setShowForm(false);
+                        setExpandedId(null);
+                        window.scrollTo({ top: 0, behavior: "smooth" });
+                      }}
+                      className="px-3 py-1.5 text-xs bg-accent/10 text-accent rounded-lg hover:bg-accent/20 transition-colors border border-accent/20"
+                    >
+                      Edit
+                    </button>
+                    <button
                       onClick={() => deleteMutation.mutate(c.id)}
                       className="px-3 py-1.5 text-xs bg-danger/10 text-danger rounded-lg hover:bg-danger/20 transition-colors border border-danger/20"
                     >
@@ -147,15 +207,30 @@ export default function VaultPage() {
               )}
             </div>
           ))}
+
+          {/* Show more button */}
+          {filtered && filtered.length > showCount && (
+            <button
+              onClick={() => setShowCount((prev) => prev + 20)}
+              className="w-full py-3 text-sm text-accent hover:text-accent-hover font-medium bg-card border border-card-border rounded-2xl hover:bg-card-hover transition-all"
+            >
+              Show more ({filtered.length - showCount} remaining)
+            </button>
+          )}
+
           {!filtered?.length && (
             <div className="text-center py-12">
-              <p className="text-muted text-sm">No capsules match this filter.</p>
-              <button
-                onClick={() => { setFilter("all"); setShowForm(true); }}
-                className="mt-3 text-accent text-sm hover:text-accent-hover transition-colors"
-              >
-                Add your first capsule &rarr;
-              </button>
+              <p className="text-muted text-sm">
+                {search ? "No capsules match your search." : "No capsules match this filter."}
+              </p>
+              {!search && (
+                <button
+                  onClick={() => { setTypeFilter("all"); setTierFilter("all"); setShowForm(true); }}
+                  className="mt-3 text-accent text-sm hover:text-accent-hover transition-colors"
+                >
+                  Add your first capsule &rarr;
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -167,34 +242,45 @@ export default function VaultPage() {
 function CapsuleForm({
   userId,
   networks,
+  capsule,
   onDone,
 }: {
   userId: string;
   networks: Network[];
+  capsule?: Capsule | null;
   onDone: () => void;
 }) {
-  const [type, setType] = useState("memory");
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-  const [tier, setTier] = useState("private");
-  const [selectedNetworks, setSelectedNetworks] = useState<string[]>([]);
+  const isEdit = !!capsule;
+  const [type, setType] = useState(capsule?.capsule_type || "memory");
+  const [title, setTitle] = useState(capsule?.title || "");
+  const [content, setContent] = useState(capsule?.content || "");
+  const [tier, setTier] = useState(capsule?.tier || "private");
+  const [selectedNetworks, setSelectedNetworks] = useState<string[]>(capsule?.network_ids || []);
 
   const mutation = useMutation({
     mutationFn: () =>
-      api.createCapsule(userId, {
-        capsule_type: type,
-        title,
-        content,
-        tier,
-        network_ids: tier === "network" ? selectedNetworks : [],
-      }),
+      isEdit
+        ? api.updateCapsule(capsule!.id, {
+            capsule_type: type,
+            title,
+            content,
+            tier,
+            network_ids: tier === "network" ? selectedNetworks : [],
+          })
+        : api.createCapsule(userId, {
+            capsule_type: type,
+            title,
+            content,
+            tier,
+            network_ids: tier === "network" ? selectedNetworks : [],
+          }),
     onSuccess: onDone,
   });
 
   return (
     <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
-      <h2 className="text-base font-semibold mb-1">Add Knowledge Capsule</h2>
-      <p className="text-xs text-muted mb-5">Your agent will use this knowledge when responding to queries.</p>
+      <h2 className="text-base font-semibold mb-1">{isEdit ? "Edit Capsule" : "Add Knowledge Capsule"}</h2>
+      <p className="text-xs text-muted mb-5">{isEdit ? `Editing "${capsule!.title}" — changes are re-encrypted automatically.` : "Your agent will use this knowledge when responding to queries."}</p>
 
       {/* Type Selection */}
       <div className="mb-4">
@@ -301,7 +387,7 @@ function CapsuleForm({
       <button
         onClick={() => mutation.mutate()}
         disabled={!title.trim() || !content.trim() || mutation.isPending}
-        className="w-full bg-accent hover:bg-accent-hover text-white font-semibold py-3 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/20"
+        className="w-full bg-accent hover:bg-accent-hover text-accent-fg font-semibold py-3 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/20"
       >
         {mutation.isPending ? (
           <span className="flex items-center justify-center gap-2">
@@ -309,9 +395,9 @@ function CapsuleForm({
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
             </svg>
-            Encrypting &amp; storing...
+            {isEdit ? "Saving..." : "Encrypting & storing..."}
           </span>
-        ) : "Add to Vault"}
+        ) : isEdit ? "Save Changes" : "Add to Vault"}
       </button>
     </div>
   );

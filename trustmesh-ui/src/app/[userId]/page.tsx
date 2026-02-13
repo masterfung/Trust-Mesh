@@ -1,13 +1,15 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, type AgentTask, type HealthStatus, type ServiceProvider } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { TrustBadge, CapsuleTypeBadge } from "@/components/TrustBadge";
 import Link from "next/link";
+import ReactMarkdown from "react-markdown";
 
 export default function Dashboard() {
   const { userId } = useParams<{ userId: string }>();
+  const queryClient = useQueryClient();
 
   const { data: user } = useQuery({
     queryKey: ["user", userId],
@@ -34,6 +36,32 @@ export default function Dashboard() {
     queryFn: () => api.listQueries(userId),
   });
 
+  // New queries: briefing, tasks, services
+  const {
+    data: briefing,
+    isLoading: briefingLoading,
+    isError: briefingError,
+  } = useQuery({
+    queryKey: ["briefing", userId],
+    queryFn: () => api.getBriefing(userId),
+  });
+
+  const { data: tasks } = useQuery({
+    queryKey: ["tasks", userId],
+    queryFn: () => api.listTasks(userId),
+  });
+
+  const { data: services } = useQuery({
+    queryKey: ["services"],
+    queryFn: () => api.listServices(),
+  });
+
+  const { data: health } = useQuery({
+    queryKey: ["health"],
+    queryFn: () => api.getHealthFull(),
+    staleTime: 60_000,
+  });
+
   const stats = [
     {
       label: "Knowledge Capsules",
@@ -56,7 +84,7 @@ export default function Dashboard() {
           <line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/>
         </svg>
       ),
-      color: "text-purple-400",
+      color: "text-accent",
     },
     {
       label: "Connections",
@@ -89,6 +117,23 @@ export default function Dashboard() {
     private: capsules?.filter((c) => c.tier === "private").length ?? 0,
   };
 
+  const pendingTasks = tasks?.filter(
+    (t: AgentTask) => t.status === "pending" || t.status === "in_progress"
+  ) ?? [];
+
+  const taskStatusColor = (status: string) => {
+    switch (status) {
+      case "pending":
+        return "bg-yellow-500/15 text-yellow-400 border-yellow-500/20";
+      case "in_progress":
+        return "bg-blue-500/15 text-blue-400 border-blue-500/20";
+      case "completed":
+        return "bg-green-500/15 text-green-400 border-green-500/20";
+      default:
+        return "bg-muted/15 text-muted-foreground border-card-border";
+    }
+  };
+
   return (
     <div className="max-w-5xl mx-auto">
       {/* Header */}
@@ -99,10 +144,10 @@ export default function Dashboard() {
 
       {/* Agent Card */}
       {agent && (
-        <div className="bg-gradient-to-r from-accent/5 to-purple-500/5 border border-accent/20 rounded-2xl p-5 mb-6">
+        <div className="bg-gradient-to-r from-accent/5 to-accent-dim/5 border border-accent/20 rounded-2xl p-5 mb-6">
           <div className="flex items-start gap-4">
-            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-accent to-purple-500 flex items-center justify-center shrink-0">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <div className="w-11 h-11 rounded-xl bg-accent flex items-center justify-center shrink-0">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#09090b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.27A7 7 0 0 1 14 22h-4a7 7 0 0 1-6.73-3H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/>
                 <circle cx="10" cy="16" r="1"/><circle cx="14" cy="16" r="1"/>
               </svg>
@@ -122,13 +167,131 @@ export default function Dashboard() {
             </div>
             <Link
               href={`/${userId}/chat`}
-              className="px-4 py-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-xl transition-all hover:shadow-lg hover:shadow-accent/20"
+              className="px-4 py-2 bg-accent hover:bg-accent-hover text-accent-fg text-sm font-medium rounded-xl transition-all hover:shadow-lg hover:shadow-accent/20"
             >
               Ask Agents
             </Link>
           </div>
         </div>
       )}
+
+      {/* System Status Bar */}
+      {health && (
+        <div className="flex flex-wrap items-center gap-3 mb-6 px-1">
+          {[
+            { label: "Anthropic", ok: health.providers.anthropic, detail: "Claude Opus 4.6" },
+            { label: "TEE", ok: health.providers.tee.enabled, detail: health.providers.tee.provider ? `via ${health.providers.tee.provider}` : "not configured" },
+            { label: "Web Search", ok: health.providers.tavily, detail: "Tavily" },
+            { label: "Citadel", ok: (health.providers.citadel as Record<string, unknown>).active ?? health.providers.citadel.reachable, detail: health.providers.citadel.reachable ? "sidecar active" : (health.providers.citadel as Record<string, unknown>).heuristic_active ? "heuristic active" : health.providers.citadel.configured ? "configured, offline" : "not configured" },
+          ].map((p) => (
+            <span
+              key={p.label}
+              className={`inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border font-medium ${
+                p.ok
+                  ? "bg-green-500/10 text-green-400 border-green-500/20"
+                  : "bg-muted/10 text-muted-foreground border-card-border"
+              }`}
+              title={p.detail}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${p.ok ? "bg-green-400" : "bg-muted-foreground/40"}`} />
+              {p.label}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Morning Briefing Card */}
+      <div className="bg-gradient-to-r from-amber-500/5 to-orange-500/5 border border-amber-500/20 rounded-2xl p-5 mb-6">
+        <div className="flex items-start gap-4">
+          <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shrink-0">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="5"/>
+              <line x1="12" y1="1" x2="12" y2="3"/>
+              <line x1="12" y1="21" x2="12" y2="23"/>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+              <line x1="1" y1="12" x2="3" y2="12"/>
+              <line x1="21" y1="12" x2="23" y2="12"/>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-semibold text-sm">Morning Briefing</h2>
+              <button
+                onClick={() =>
+                  queryClient.invalidateQueries({ queryKey: ["briefing", userId] })
+                }
+                className="inline-flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 transition-colors"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="23 4 23 10 17 10"/>
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                </svg>
+                Refresh
+              </button>
+            </div>
+            {briefingLoading ? (
+              <div className="space-y-2 animate-pulse">
+                <div className="h-3 bg-amber-500/10 rounded w-3/4" />
+                <div className="h-3 bg-amber-500/10 rounded w-1/2" />
+                <div className="h-3 bg-amber-500/10 rounded w-5/6" />
+                <p className="text-xs text-amber-400/60 mt-2">Generating briefing...</p>
+              </div>
+            ) : briefingError ? (
+              <p className="text-xs text-muted-foreground">Unable to load briefing. Click Refresh to try again.</p>
+            ) : briefing ? (
+              <div className="prose prose-sm prose-invert max-w-none text-sm leading-relaxed [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_p]:text-sm [&_li]:text-sm [&_ul]:my-1 [&_ol]:my-1 [&_p]:my-1">
+                <ReactMarkdown>{briefing.briefing}</ReactMarkdown>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">No briefing available.</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Pending Tasks Card */}
+      <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold">Agent Tasks</h2>
+          <span className="text-xs text-muted-foreground">
+            {pendingTasks.length} pending
+          </span>
+        </div>
+        {tasks && tasks.length > 0 ? (
+          <div className="space-y-2">
+            {tasks.slice(0, 8).map((task: AgentTask) => (
+              <div
+                key={task.id}
+                className="flex items-center gap-3 py-2.5 px-3 rounded-xl hover:bg-card-hover transition-colors"
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{task.title}</p>
+                  {task.description && (
+                    <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                      {task.description}
+                    </p>
+                  )}
+                </div>
+                <span
+                  className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${taskStatusColor(
+                    task.status
+                  )}`}
+                >
+                  {task.status.replace("_", " ")}
+                </span>
+                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-card-hover text-muted-foreground">
+                  {task.task_type}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted text-center py-6">No tasks yet. Your agent will create tasks from conversations.</p>
+        )}
+      </div>
 
       {/* Stats Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
@@ -211,7 +374,7 @@ export default function Dashboard() {
                 <div className="flex items-center gap-3">
                   <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${
                     n.network_type === "family" ? "bg-blue-500/15 text-blue-400" :
-                    n.network_type === "team" ? "bg-purple-500/15 text-purple-400" :
+                    n.network_type === "team" ? "bg-amber-500/15 text-amber-400" :
                     "bg-green-500/15 text-green-400"
                   }`}>
                     {n.name[0]}
@@ -228,6 +391,61 @@ export default function Dashboard() {
               <p className="text-sm text-muted text-center py-6">No networks yet.</p>
             )}
           </div>
+        </div>
+
+        {/* Service Providers */}
+        <div className="bg-card border border-card-border rounded-2xl p-5 lg:col-span-2">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold">Service Providers</h2>
+            <span className="text-xs text-muted-foreground">
+              {services?.length ?? 0} available
+            </span>
+          </div>
+          {services && services.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {services.map((sp: ServiceProvider) => (
+                <div
+                  key={sp.id}
+                  className="flex items-start gap-3 p-3 rounded-xl border border-card-border hover:border-accent/20 hover:bg-card-hover transition-all"
+                >
+                  <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center text-accent font-bold text-sm shrink-0">
+                    {sp.display_name[0]}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium">{sp.display_name}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
+                      {sp.bio}
+                    </p>
+                    {sp.agent_card?.skills && sp.agent_card.skills.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {sp.agent_card.skills.slice(0, 4).map((skill) => (
+                          <span
+                            key={skill.id}
+                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent/80"
+                          >
+                            {skill.name}
+                          </span>
+                        ))}
+                        {sp.agent_card.skills.length > 4 && (
+                          <span className="text-[10px] text-muted-foreground">
+                            +{sp.agent_card.skills.length - 4} more
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <Link
+                    href={`/${userId}/chat`}
+                    className="shrink-0 px-3 py-1.5 text-xs font-medium text-accent hover:text-accent-hover bg-accent/5 hover:bg-accent/10 rounded-lg transition-all"
+                  >
+                    Request Quote
+                  </Link>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted text-center py-6">No service providers available yet.</p>
+          )}
         </div>
       </div>
     </div>

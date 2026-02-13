@@ -54,6 +54,26 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    href: "/services",
+    label: "Services",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M20 7h-9"/><path d="M14 17H5"/>
+        <circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>
+      </svg>
+    ),
+  },
+  {
+    href: "/audit",
+    label: "Audit Log",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        <path d="M9 12l2 2 4-4"/>
+      </svg>
+    ),
+  },
 ];
 
 export function Sidebar({ user }: { user: User }) {
@@ -72,8 +92,8 @@ export function Sidebar({ user }: { user: User }) {
       {/* Brand */}
       <Link href="/" className="block p-5 border-b border-card-border hover:bg-card-hover transition-colors">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-purple-500 flex items-center justify-center">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#09090b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
             </svg>
           </div>
@@ -87,7 +107,7 @@ export function Sidebar({ user }: { user: User }) {
       {/* User Profile */}
       <div className="p-4 border-b border-card-border">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-accent to-purple-500 flex items-center justify-center text-white font-bold text-sm shrink-0">
+          <div className="w-9 h-9 rounded-xl bg-accent flex items-center justify-center text-accent-fg font-bold text-sm shrink-0">
             {user.display_name[0]}
           </div>
           <div className="min-w-0">

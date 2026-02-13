@@ -44,7 +44,7 @@ export function TrustBadge({ tier }: { tier: string }) {
 }
 
 const TYPE_CONFIG: Record<string, { icon: string; color: string; bg: string }> = {
-  memory: { icon: "💭", color: "text-purple-400", bg: "bg-purple-500/15 border-purple-500/25" },
+  memory: { icon: "💭", color: "text-amber-400", bg: "bg-amber-500/15 border-amber-500/25" },
   skill: { icon: "⚡", color: "text-blue-400", bg: "bg-blue-500/15 border-blue-500/25" },
   procedure: { icon: "📋", color: "text-red-400", bg: "bg-red-500/15 border-red-500/25" },
   schedule: { icon: "📅", color: "text-green-400", bg: "bg-green-500/15 border-green-500/25" },
