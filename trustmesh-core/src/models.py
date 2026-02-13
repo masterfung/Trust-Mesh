@@ -46,6 +46,7 @@ class User(Base):
     vault_key_salt: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     encrypted_vault_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     agent_personality: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active_context: Mapped[str] = mapped_column(String(20), default="all")  # work | personal | all
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     agent: Mapped["Agent | None"] = relationship(back_populates="owner", uselist=False)
@@ -77,6 +78,7 @@ class Network(Base):
     network_type: Mapped[str] = mapped_column(String(20), default="custom")
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     join_policy: Mapped[str] = mapped_column(String(20), default="invite_only")  # invite_only | request_to_join | open
+    context: Mapped[str] = mapped_column(String(20), default="personal")  # work | personal | both
     encrypted_network_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -90,6 +92,7 @@ class Connection(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     from_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     to_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    context: Mapped[str] = mapped_column(String(20), default="personal")  # work | personal | both
     status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -119,6 +122,7 @@ class KnowledgeCapsule(Base):
     content_hash: Mapped[str] = mapped_column(String(64), default="")
     tier: Mapped[str] = mapped_column(String(20), default="private")
     category: Mapped[str] = mapped_column(String(50), default="")
+    context: Mapped[str] = mapped_column(String(20), default="personal")  # work | personal | both
     freshness: Mapped[str] = mapped_column(String(20), default="permanent")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

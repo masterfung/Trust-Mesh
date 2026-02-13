@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, Notification as NotificationType } from "@/lib/api";
+import { api, Notification as NotificationType, ContextMode } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Sidebar } from "@/components/Sidebar";
 import { useParams, useRouter } from "next/navigation";
@@ -91,6 +91,46 @@ function timeAgo(dateStr: string): string {
   const weeks = Math.floor(days / 7);
   if (weeks < 4) return `${weeks}w ago`;
   return date.toLocaleDateString();
+}
+
+// -- Context Switcher --
+
+const CONTEXT_OPTIONS: { value: ContextMode; label: string; icon: string }[] = [
+  { value: "all", label: "All", icon: "◉" },
+  { value: "work", label: "Work", icon: "💼" },
+  { value: "personal", label: "Personal", icon: "🏠" },
+];
+
+function ContextSwitcher({ userId, currentContext }: { userId: string; currentContext: ContextMode }) {
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (ctx: ContextMode) => api.switchContext(userId, ctx),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["user", userId] });
+      queryClient.invalidateQueries({ queryKey: ["networks"] });
+      queryClient.invalidateQueries({ queryKey: ["connections"] });
+    },
+  });
+
+  return (
+    <div className="flex items-center gap-1 bg-card rounded-lg border border-card-border p-0.5">
+      {CONTEXT_OPTIONS.map((opt) => (
+        <button
+          key={opt.value}
+          onClick={() => mutation.mutate(opt.value)}
+          className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+            currentContext === opt.value
+              ? "bg-accent text-accent-fg shadow-sm"
+              : "text-muted-foreground hover:text-foreground hover:bg-hover"
+          }`}
+          title={`Switch to ${opt.label} mode`}
+        >
+          <span className="mr-1">{opt.icon}</span>
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 // -- Notification color for type --
@@ -309,15 +349,15 @@ function NotificationBell({ userId }: { userId: string }) {
           <div className="flex-1 overflow-y-auto">
             {notificationsLoading ? (
               <div className="flex items-center justify-center py-12">
-                <div className="text-muted text-sm animate-pulse">Loading notifications...</div>
+                <div className="text-muted-foreground text-sm animate-pulse">Loading notifications...</div>
               </div>
             ) : !notifications || notifications.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 px-4">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted mb-2">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground mb-2">
                   <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
                   <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                 </svg>
-                <p className="text-sm text-muted">No notifications yet</p>
+                <p className="text-sm text-muted-foreground">No notifications yet</p>
               </div>
             ) : (
               notifications.map((notification) => (
@@ -344,10 +384,10 @@ function NotificationBell({ userId }: { userId: string }) {
                         <span className="w-2 h-2 rounded-full bg-accent shrink-0 mt-1" />
                       )}
                     </div>
-                    <p className="text-xs text-muted mt-0.5 line-clamp-2 leading-relaxed">
+                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2 leading-relaxed">
                       {notification.body}
                     </p>
-                    <p className="text-[10px] text-muted mt-1">
+                    <p className="text-[10px] text-muted-foreground mt-1">
                       {timeAgo(notification.created_at)}
                     </p>
                   </div>
@@ -359,7 +399,7 @@ function NotificationBell({ userId }: { userId: string }) {
           {/* Footer */}
           {notifications && notifications.length > 0 && (
             <div className="px-4 py-2.5 border-t border-card-border bg-card/80 backdrop-blur-sm text-center">
-              <span className="text-xs text-muted">
+              <span className="text-xs text-muted-foreground">
                 {notifications.length} notification{notifications.length !== 1 ? "s" : ""}
               </span>
             </div>
@@ -400,7 +440,7 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
   if (authLoading || isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-muted animate-pulse">Loading...</div>
+        <div className="text-muted-foreground animate-pulse">Loading...</div>
       </div>
     );
   }
@@ -427,7 +467,8 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
             <span className="text-sm text-muted-foreground">Welcome back,</span>
             <span className="text-sm font-semibold text-foreground">{user.display_name}</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            <ContextSwitcher userId={userId} currentContext={(user.active_context as ContextMode) || "all"} />
             <NotificationBell userId={userId} />
           </div>
         </header>

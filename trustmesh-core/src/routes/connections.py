@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.auth import get_current_user_id
 from src.database import get_db
 from src.models import Connection, ConnectionRequest, User
 from src.rate_limit import check_connection_rate, record_connection_request
@@ -22,9 +23,12 @@ router = APIRouter(prefix="/api", tags=["connections"])
 
 @router.post("/connections/request", response_model=ConnectionRequestResponse)
 async def send_connection_request(
-    data: ConnectionRequestCreate, db: AsyncSession = Depends(get_db)
+    data: ConnectionRequestCreate, db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
 ):
     """Send a connection request to another user."""
+    if auth_user_id != data.from_user_id:
+        raise HTTPException(403, "Access denied")
     if data.from_user_id == data.to_user_id:
         raise HTTPException(400, "Cannot connect to yourself")
 
@@ -86,8 +90,11 @@ async def send_connection_request(
 
 
 @router.get("/users/{user_id}/connections", response_model=list[ConnectionResponse])
-async def list_connections(user_id: str, db: AsyncSession = Depends(get_db)):
+async def list_connections(user_id: str, db: AsyncSession = Depends(get_db),
+                           auth_user_id: str = Depends(get_current_user_id)):
     """List accepted connections for a user."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
     result = await db.execute(
         select(Connection).where(
             Connection.status == "accepted",
@@ -112,8 +119,11 @@ async def list_connections(user_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/users/{user_id}/connection-requests", response_model=list[ConnectionRequestResponse])
-async def list_connection_requests(user_id: str, db: AsyncSession = Depends(get_db)):
+async def list_connection_requests(user_id: str, db: AsyncSession = Depends(get_db),
+                                   auth_user_id: str = Depends(get_current_user_id)):
     """List pending connection requests for a user."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
     result = await db.execute(
         select(ConnectionRequest).where(
             ConnectionRequest.to_user_id == user_id,
@@ -138,12 +148,15 @@ async def list_connection_requests(user_id: str, db: AsyncSession = Depends(get_
 
 @router.put("/connection-requests/{request_id}", response_model=ConnectionRequestResponse)
 async def update_connection_request(
-    request_id: str, data: ConnectionRequestUpdate, db: AsyncSession = Depends(get_db)
+    request_id: str, data: ConnectionRequestUpdate, db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
 ):
     """Accept or decline a connection request."""
     req = await db.get(ConnectionRequest, request_id)
     if not req:
         raise HTTPException(404, "Request not found")
+    if req.to_user_id != auth_user_id:
+        raise HTTPException(403, "Access denied")
     if req.status != "pending":
         raise HTTPException(400, "Request already processed")
 

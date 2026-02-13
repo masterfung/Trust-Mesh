@@ -35,7 +35,7 @@ const TIER_LABELS: Record<string, string> = {
 export function TrustBadge({ tier }: { tier: string }) {
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold border ${TIER_STYLES[tier] || "bg-muted/15 text-muted border-muted/25"}`}
+      className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold border ${TIER_STYLES[tier] || "bg-muted/15 text-muted-foreground border-muted/25"}`}
     >
       {TIER_ICONS[tier]}
       {TIER_LABELS[tier] || tier}
@@ -53,7 +53,7 @@ const TYPE_CONFIG: Record<string, { icon: string; color: string; bg: string }> =
 };
 
 export function CapsuleTypeBadge({ type }: { type: string }) {
-  const config = TYPE_CONFIG[type] || { icon: "?", color: "text-muted", bg: "bg-muted/15 border-muted/25" };
+  const config = TYPE_CONFIG[type] || { icon: "?", color: "text-muted-foreground", bg: "bg-muted/15 border-muted/25" };
   return (
     <span
       className={`inline-flex items-center justify-center w-7 h-7 rounded-lg text-xs border ${config.bg}`}
@@ -72,7 +72,7 @@ const DECISION_STYLES: Record<string, string> = {
 
 export function DecisionBadge({ decision }: { decision: string }) {
   return (
-    <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold border ${DECISION_STYLES[decision] || "bg-muted/15 text-muted border-muted/25"}`}>
+    <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold border ${DECISION_STYLES[decision] || "bg-muted/15 text-muted-foreground border-muted/25"}`}>
       {decision === "allowed" ? "✓" : decision === "denied" ? "✗" : "~"} {decision.toUpperCase()}
     </span>
   );

@@ -286,34 +286,34 @@ SERVICE_PROVIDERS = [
 ]
 
 CONNECTIONS = [
-    # Johnson family
-    ("peter", "molly"),
-    ("peter", "jane"),
-    ("peter", "bill"),
-    ("molly", "jane"),
-    ("molly", "bill"),
-    # Grandma Rose <-> family
-    ("molly", "grandmarose"),
-    ("peter", "grandmarose"),
-    ("jane", "grandmarose"),
-    ("bill", "grandmarose"),
+    # Johnson family (personal)
+    ("peter", "molly", "personal"),
+    ("peter", "jane", "personal"),
+    ("peter", "bill", "personal"),
+    ("molly", "jane", "personal"),
+    ("molly", "bill", "personal"),
+    # Grandma Rose <-> family (personal)
+    ("molly", "grandmarose", "personal"),
+    ("peter", "grandmarose", "personal"),
+    ("jane", "grandmarose", "personal"),
+    ("bill", "grandmarose", "personal"),
     # Work
-    ("molly", "kyle"),
-    # Siblings
-    ("jane", "bill"),
-    # Neighborhood
-    ("peter", "linda"),
-    ("molly", "linda"),
-    # Kids' friends
-    ("jane", "amy"),
-    ("bill", "marcus"),
-    # Grandma's circle
-    ("grandmarose", "dorothy"),
-    ("linda", "dorothy"),  # Both in community
-    # Healthcare team
-    ("dr_lee", "nurse_davis"),
-    ("dr_lee", "emt_johnson"),
-    ("nurse_davis", "emt_johnson"),
+    ("molly", "kyle", "work"),
+    # Siblings (personal)
+    ("jane", "bill", "personal"),
+    # Neighborhood (personal)
+    ("peter", "linda", "personal"),
+    ("molly", "linda", "personal"),
+    # Kids' friends (personal)
+    ("jane", "amy", "personal"),
+    ("bill", "marcus", "personal"),
+    # Grandma's circle (personal)
+    ("grandmarose", "dorothy", "personal"),
+    ("linda", "dorothy", "personal"),
+    # Healthcare team (work)
+    ("dr_lee", "nurse_davis", "work"),
+    ("dr_lee", "emt_johnson", "work"),
+    ("nurse_davis", "emt_johnson", "work"),
 ]
 
 NETWORKS = [
@@ -325,6 +325,7 @@ NETWORKS = [
         "members": ["peter", "molly", "jane", "bill"],
         "is_public": False,
         "join_policy": "invite_only",
+        "context": "personal",
     },
     {
         "name": "TechCorp PM Team",
@@ -334,6 +335,7 @@ NETWORKS = [
         "members": ["molly", "kyle"],
         "is_public": True,
         "join_policy": "request_to_join",
+        "context": "work",
     },
     {
         "name": "Rose's Care Circle",
@@ -343,6 +345,7 @@ NETWORKS = [
         "members": ["molly", "peter", "grandmarose", "dorothy"],
         "is_public": False,
         "join_policy": "invite_only",
+        "context": "personal",
     },
     {
         "name": "Lincoln High Soccer",
@@ -352,6 +355,7 @@ NETWORKS = [
         "members": ["jane", "amy"],
         "is_public": True,
         "join_policy": "request_to_join",
+        "context": "personal",
     },
     {
         "name": "Roosevelt Coding Club",
@@ -361,6 +365,7 @@ NETWORKS = [
         "members": ["marcus", "bill"],
         "is_public": True,
         "join_policy": "open",
+        "context": "personal",
     },
     {
         "name": "Riverside Neighbors",
@@ -370,6 +375,7 @@ NETWORKS = [
         "members": ["linda", "peter", "molly"],
         "is_public": True,
         "join_policy": "request_to_join",
+        "context": "personal",
     },
     {
         "name": "Bay Area Music Lovers",
@@ -379,6 +385,7 @@ NETWORKS = [
         "members": ["peter"],
         "is_public": True,
         "join_policy": "open",
+        "context": "personal",
     },
     {
         "name": "Riverside Bridge Club",
@@ -388,6 +395,7 @@ NETWORKS = [
         "members": ["grandmarose", "dorothy"],
         "is_public": True,
         "join_policy": "open",
+        "context": "personal",
     },
     {
         "name": "Riverside ER Team",
@@ -397,6 +405,7 @@ NETWORKS = [
         "members": ["dr_lee", "nurse_davis", "emt_johnson"],
         "is_public": False,
         "join_policy": "invite_only",
+        "context": "work",
     },
     {
         "name": "Bay Area Salsa Social",
@@ -406,6 +415,7 @@ NETWORKS = [
         "members": ["molly"],
         "is_public": True,
         "join_policy": "open",
+        "context": "personal",
     },
 ]
 
@@ -633,6 +643,49 @@ CAPSULES = [
         "content": "Bill got a D+ in English this semester. Parents don't know yet. He's worried about it.",
         "tier": "private",
         "networks": [],
+    },
+    # ── PETER'S DETAILED MEDICAL DATA (no category — uses keyword matching for role scoping) ──
+    {
+        "owner": "peter",
+        "type": "memory",
+        "title": "Peter's Surgical History",
+        "content": (
+            "Appendectomy in 2018 at Riverside General — surgery performed by Dr. Torres, "
+            "no complications, discharged same day. Wisdom teeth extraction 2005. "
+            "Shoulder arthroscopy 2012 (rotator cuff repair, left shoulder) — full recovery "
+            "after 4 months of physical therapy. Pre-op bloodwork always normal. "
+            "No adverse reactions to general anesthesia. No family history of surgical complications."
+        ),
+        "tier": "network",
+        "networks": ["The Johnsons"],
+    },
+    {
+        "owner": "peter",
+        "type": "memory",
+        "title": "Peter's Prescription Details",
+        "content": (
+            "Current prescription: Atorvastatin 20mg daily for cholesterol management, "
+            "started June 2024 after routine physical showed LDL at 165. Refill at CVS on "
+            "Main St, auto-refill enabled. Previous medication: tried Rosuvastatin 10mg first "
+            "but switched due to muscle aches. No other current prescriptions. "
+            "OTC supplements: fish oil 1000mg and multivitamin daily."
+        ),
+        "tier": "network",
+        "networks": ["The Johnsons"],
+    },
+    {
+        "owner": "peter",
+        "type": "memory",
+        "title": "Peter's Chronic Conditions",
+        "content": (
+            "Mild hypercholesterolemia — diagnosed 2024, managed with Atorvastatin. "
+            "Condition is improving: LDL dropped from 165 to 128 as of October 2025 physical. "
+            "No hypertension. No diabetes. BMI 27.2 (slightly overweight). "
+            "Family history: father had heart attack at 62, mother has type 2 diabetes. "
+            "Monitoring cardiac risk factors annually. EKG normal as of last checkup."
+        ),
+        "tier": "network",
+        "networks": ["The Johnsons"],
     },
     # ── FAMILY MEDICAL RECORDS (The Johnsons) ──
     {
@@ -1075,15 +1128,16 @@ async def seed():
             print(f"  Created user: {u['display_name']} ({user.id}) DID: {agent_did}")
 
         # ── Create Connections ──
-        for from_name, to_name in CONNECTIONS:
+        for from_name, to_name, conn_ctx in CONNECTIONS:
             conn = Connection(
                 from_user_id=user_map[from_name].id,
                 to_user_id=user_map[to_name].id,
+                context=conn_ctx,
                 status="accepted",
                 accepted_at=datetime.now(timezone.utc),
             )
             db.add(conn)
-            print(f"  Connected: {from_name} <-> {to_name}")
+            print(f"  Connected: {from_name} <-> {to_name} ({conn_ctx})")
 
         # ── Create Networks ──
         for n in NETWORKS:
@@ -1097,6 +1151,7 @@ async def seed():
                 network_type=n["type"],
                 is_public=n.get("is_public", False),
                 join_policy=n.get("join_policy", "invite_only"),
+                context=n.get("context", "personal"),
                 encrypted_network_key=encrypted_key,
             )
             db.add(network)
@@ -1113,9 +1168,20 @@ async def seed():
             print(f"  Created network: {n['name']} ({', '.join(n['members'])})")
 
         # ── Create Capsules ──
+        # Work networks for auto-context detection
+        work_networks = {n["name"] for n in NETWORKS if n.get("context") == "work"}
+
         for c in CAPSULES:
             owner = user_map[c["owner"]]
             vault_key = vault_keys[owner.id]
+
+            # Infer context: explicit > network-based > default personal
+            if "context" in c:
+                ctx = c["context"]
+            elif any(n in work_networks for n in c.get("networks", [])):
+                ctx = "work"
+            else:
+                ctx = "personal"
 
             capsule = KnowledgeCapsule(
                 owner_id=owner.id,
@@ -1124,6 +1190,7 @@ async def seed():
                 content_encrypted=encrypt_text(c["content"], vault_key),
                 tier=c["tier"],
                 category=c.get("category", ""),
+                context=ctx,
                 freshness="permanent" if c["type"] in ("skill", "procedure", "preference", "contact") else "temporary",
             )
             db.add(capsule)

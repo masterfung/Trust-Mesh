@@ -554,6 +554,7 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
         to_user_id=target_user.id,
         question=question,
         vault_keys=vault_keys,
+        query_depth=ctx.query_depth + 1,
     )
 
     # Note: gossip.query_agent() already creates a notification for cross-queries,
@@ -1462,13 +1463,56 @@ async def run_intake_step(
     return "I've saved what we've discussed so far.", tool_context.actions
 
 
-BRIEFING_SYSTEM_PROMPT = """You are {owner_name}'s personal agent. Create a concise morning briefing.
+BRIEFING_SYSTEM_PROMPT = """You are {owner_name}'s personal agent. Create a concise {time_of_day} briefing.
+
+Current time context: {time_of_day} on a {day_type}.
+{day_guidance}
 
 Prioritize: health/safety, time-sensitive items, then social.
 Be warm but concise. Include specific times, dates, names.
-Group by: Today's Schedule, Upcoming, Action Items, Network Updates.
-Use markdown formatting with headers. Keep it under 500 words.
+Use markdown formatting with headers (NOT tables — use lists instead). Keep it under 500 words.
 If there's little to report, keep it brief — no filler."""
+
+
+def _get_briefing_time_context() -> tuple[str, str, str]:
+    """Return (time_of_day, day_type, day_guidance) based on current local time."""
+    from datetime import datetime
+    now = datetime.now()
+    hour = now.hour
+    weekday = now.weekday()  # 0=Mon, 6=Sun
+
+    if hour < 12:
+        time_of_day = "morning"
+    elif hour < 17:
+        time_of_day = "afternoon"
+    else:
+        time_of_day = "evening"
+
+    is_weekend = weekday >= 5
+    day_type = "weekend" if is_weekend else "weekday"
+
+    if is_weekend:
+        day_guidance = (
+            "It's the weekend — focus on personal plans, family activities, rest, and any fun events. "
+            "De-emphasize work tasks unless they're truly urgent deadlines."
+        )
+    elif time_of_day == "morning":
+        day_guidance = (
+            "Group by: Today's Schedule, Action Items, Upcoming, Network Updates. "
+            "Focus on what needs attention today."
+        )
+    elif time_of_day == "afternoon":
+        day_guidance = (
+            "Group by: Remaining Today, Evening Plans, Tomorrow Preview, Updates. "
+            "Focus on what's left today and what's coming up."
+        )
+    else:
+        day_guidance = (
+            "Group by: Tonight, Tomorrow Preview, This Week Ahead, Updates. "
+            "Help wind down — summarize what happened and what's next."
+        )
+
+    return time_of_day, day_type, day_guidance
 
 
 async def generate_briefing(
@@ -1479,7 +1523,9 @@ async def generate_briefing(
     pending_requests: int,
     unread_notifications: int,
 ) -> str:
-    """Generate a morning briefing using Opus 4.6."""
+    """Generate a time-aware briefing using Opus 4.6."""
+    time_of_day, day_type, day_guidance = _get_briefing_time_context()
+
     context_parts = []
 
     if capsules:
@@ -1503,17 +1549,24 @@ async def generate_briefing(
     if unread_notifications:
         context_parts.append(f"\n## Unread: {unread_notifications} notification(s)")
 
+    greeting = {"morning": "Good morning", "afternoon": "Good afternoon", "evening": "Good evening"}[time_of_day]
+
     if not context_parts:
-        return f"Good morning, {owner_name}! Your schedule is clear and there are no pending items. Enjoy your day!"
+        return f"{greeting}, {owner_name}! Your schedule is clear and there are no pending items. Enjoy your {'weekend' if day_type == 'weekend' else 'day'}!"
 
     context = "\n".join(context_parts)
 
     router = get_router()
     response = await router.complete(
         messages=[{"role": "user", "content": f"Here's what I know. Generate my briefing:\n\n{context}"}],
-        system=BRIEFING_SYSTEM_PROMPT.format(owner_name=owner_name),
+        system=BRIEFING_SYSTEM_PROMPT.format(
+            owner_name=owner_name,
+            time_of_day=time_of_day,
+            day_type=day_type,
+            day_guidance=day_guidance,
+        ),
         model="default",
         max_tokens=1024,
     )
 
-    return response.text or f"Good morning, {owner_name}!"
+    return response.text or f"{greeting}, {owner_name}!"

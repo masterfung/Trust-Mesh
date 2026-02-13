@@ -24,6 +24,7 @@ from src.schemas import (
     AgentCard,
     AgentResponse,
     AgentSkillSchema,
+    ContextSwitch,
     LoginRequest,
     UserCreate,
     UserPublic,
@@ -233,3 +234,17 @@ async def get_agent_card(user_id: str, db: AsyncSession = Depends(get_db)):
         + (["quote-request", "availability-check"] if user.user_type == "service" else []),
         skills=skills,
     )
+
+
+@router.put("/users/{user_id}/context")
+async def switch_context(user_id: str, data: ContextSwitch, db: AsyncSession = Depends(get_db),
+                         auth_user_id: str = Depends(get_current_user_id)):
+    """Switch user's active context mode (work/personal/all)."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    user.active_context = data.context
+    await db.commit()
+    return {"context": data.context}

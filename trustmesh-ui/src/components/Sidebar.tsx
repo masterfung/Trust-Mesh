@@ -99,7 +99,7 @@ export function Sidebar({ user }: { user: User }) {
           </div>
           <div>
             <h1 className="font-bold text-base tracking-tight">TrustMesh</h1>
-            <p className="text-[10px] text-muted leading-none">Trust-Aware AI Agents</p>
+            <p className="text-[10px] text-muted-foreground leading-none">Trust-Aware AI Agents</p>
           </div>
         </div>
       </Link>
@@ -112,7 +112,7 @@ export function Sidebar({ user }: { user: User }) {
           </div>
           <div className="min-w-0">
             <p className="text-sm font-semibold truncate">{user.display_name}</p>
-            <p className="text-xs text-muted truncate">@{user.username}</p>
+            <p className="text-xs text-muted-foreground truncate">@{user.username}</p>
           </div>
         </div>
       </div>
@@ -134,7 +134,7 @@ export function Sidebar({ user }: { user: User }) {
                   : "text-muted-foreground hover:text-foreground hover:bg-card-hover"
               }`}
             >
-              <span className={isActive ? "text-accent" : "text-muted"}>{item.icon}</span>
+              <span className={isActive ? "text-accent" : "text-muted-foreground"}>{item.icon}</span>
               {item.label}
             </Link>
           );

@@ -50,7 +50,7 @@ export default function Home() {
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-muted animate-pulse">Loading...</div>
+        <div className="text-muted-foreground animate-pulse">Loading...</div>
       </div>
     );
   }
@@ -134,22 +134,31 @@ export default function Home() {
         {/* Demo Users */}
         <div className="w-full max-w-4xl">
           <div className="text-center mb-6">
-            <p className="text-sm text-muted">
+            <p className="text-sm text-muted-foreground">
               Or explore the demo — pick a person or service to see their perspective:
             </p>
           </div>
 
           {isLoading ? (
             <div className="flex justify-center">
-              <div className="text-muted animate-pulse">Loading...</div>
+              <div className="text-muted-foreground animate-pulse">Loading...</div>
             </div>
           ) : (
             <DemoUserGrid users={users || []} />
           )}
         </div>
 
-        {/* Graph Link */}
-        <div className="mt-10">
+        {/* Navigation Links */}
+        <div className="mt-10 flex gap-3">
+          <Link
+            href="/about"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-accent hover:bg-accent-hover text-accent-fg text-sm font-medium transition-all hover:shadow-lg hover:shadow-accent/20"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            Why TrustMesh?
+          </Link>
           <Link
             href="/graph"
             className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-card border border-card-border text-sm text-muted-foreground hover:text-foreground hover:border-accent/50 transition-all"
@@ -165,7 +174,7 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="py-6 px-4 border-t border-card-border text-center">
-        <p className="text-xs text-muted">
+        <p className="text-xs text-muted-foreground">
           Built with Claude Opus 4.6 for the Claude Code Hackathon &middot; AES-256-GCM Encryption &middot; Citadel Security Scanning
         </p>
       </footer>
@@ -230,7 +239,7 @@ function DemoUserGrid({ users }: { users: User[] }) {
                 {loadingUser === user.id ? <Spinner /> : user.display_name[0]}
               </div>
               <h2 className="text-foreground font-semibold text-sm">{user.display_name}</h2>
-              <p className="text-xs text-muted mt-1 line-clamp-2">{user.bio}</p>
+              <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{user.bio}</p>
             </button>
           ))}
         </div>
@@ -261,7 +270,7 @@ function DemoUserGrid({ users }: { users: User[] }) {
                       Service
                     </span>
                   </div>
-                  <p className="text-xs text-muted mt-1 line-clamp-2">{user.bio}</p>
+                  <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{user.bio}</p>
                 </div>
               </button>
             ))}
@@ -296,7 +305,7 @@ function LoginForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => v
   return (
     <div className="bg-card border border-card-border rounded-2xl p-6 shadow-xl shadow-black/20">
       <h2 className="text-xl font-bold mb-1">Welcome Back</h2>
-      <p className="text-sm text-muted mb-5">
+      <p className="text-sm text-muted-foreground mb-5">
         Log in to access your AI agent and encrypted vault.
       </p>
 
@@ -314,7 +323,7 @@ function LoginForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => v
             value={username}
             onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
             placeholder="e.g., peter"
-            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foregroundfocus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
             onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
           />
         </div>
@@ -325,7 +334,7 @@ function LoginForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => v
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Your password"
-            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foregroundfocus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
             onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
           />
         </div>
@@ -355,7 +364,7 @@ function LoginForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => v
         </button>
       </div>
 
-      <p className="text-center text-xs text-muted">
+      <p className="text-center text-xs text-muted-foreground">
         Don&apos;t have an account?{" "}
         <button onClick={onSwitch} className="text-accent hover:text-accent-hover transition-colors">
           Sign up
@@ -392,7 +401,7 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
   return (
     <div className="bg-card border border-card-border rounded-2xl p-6 shadow-xl shadow-black/20">
       <h2 className="text-xl font-bold mb-1">Create Your Account</h2>
-      <p className="text-sm text-muted mb-5">
+      <p className="text-sm text-muted-foreground mb-5">
         A personal AI agent and encrypted vault will be created for you.
       </p>
 
@@ -410,7 +419,7 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
             value={username}
             onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
             placeholder="e.g., alice"
-            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foregroundfocus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
           />
         </div>
         <div>
@@ -420,7 +429,7 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
             placeholder="e.g., Alice Chen"
-            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foregroundfocus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
           />
         </div>
         <div>
@@ -430,7 +439,7 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Min 16 chars, mixed case + digit + special"
-            className={`w-full bg-background border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 ${
+            className={`w-full bg-background border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foregroundfocus:outline-none focus:ring-2 focus:ring-accent/50 ${
               passwordError ? "border-danger/50" : "border-card-border focus:border-accent/50"
             }`}
           />
@@ -439,17 +448,17 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
           ) : password.length > 0 ? (
             <p className="text-xs text-green-400 mt-1">Password meets complexity requirements</p>
           ) : (
-            <p className="text-xs text-muted mt-1">Argon2id derives your AES-256 vault key</p>
+            <p className="text-xs text-muted-foreground mt-1">Argon2id derives your AES-256 vault key</p>
           )}
         </div>
         <div>
-          <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Bio <span className="text-muted">(optional)</span></label>
+          <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Bio <span className="text-muted-foreground">(optional)</span></label>
           <input
             type="text"
             value={bio}
             onChange={(e) => setBio(e.target.value)}
             placeholder="Tell others about yourself..."
-            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foregroundfocus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
           />
         </div>
       </div>
@@ -478,7 +487,7 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
         </button>
       </div>
 
-      <p className="text-center text-xs text-muted">
+      <p className="text-center text-xs text-muted-foreground">
         Already have an account?{" "}
         <button onClick={onSwitch} className="text-accent hover:text-accent-hover transition-colors">
           Log in

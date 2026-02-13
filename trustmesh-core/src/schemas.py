@@ -11,11 +11,11 @@ from pydantic import BaseModel, Field, field_validator
 class UserCreate(BaseModel):
     username: str = Field(min_length=2, max_length=50)
     display_name: str = Field(min_length=1, max_length=100)
-    bio: str = ""
+    bio: str = Field(default="", max_length=5000)
     user_type: str = "person"  # "person" | "service"
     is_discoverable: bool = True
     password: str = Field(min_length=16, max_length=128)
-    agent_personality: str | None = None
+    agent_personality: str | None = Field(default=None, max_length=1000)
 
     @field_validator("password")
     @classmethod
@@ -41,6 +41,10 @@ class ProfileData(BaseModel):
     location_hints: list[str] = []
 
 
+class ContextSwitch(BaseModel):
+    context: str = Field(pattern=r"^(work|personal|all)$")
+
+
 class UserResponse(BaseModel):
     id: str
     username: str
@@ -50,6 +54,7 @@ class UserResponse(BaseModel):
     profile_data: dict | None = None
     is_discoverable: bool
     is_demo: bool = False
+    active_context: str = "all"
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -87,8 +92,8 @@ class UserPublic(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(max_length=50)
+    password: str = Field(max_length=128)
 
 
 class AuthResponse(BaseModel):
@@ -136,7 +141,8 @@ class AgentCard(BaseModel):
 class ConnectionRequestCreate(BaseModel):
     from_user_id: str
     to_user_id: str
-    message: str = ""
+    message: str = Field(default="", max_length=500)
+    context: str = "personal"  # work | personal | both
 
 
 class ConnectionRequestResponse(BaseModel):
@@ -162,6 +168,7 @@ class ConnectionResponse(BaseModel):
     from_user_id: str
     to_user_id: str
     status: str
+    context: str = "personal"
     created_at: datetime
     accepted_at: datetime | None = None
     peer: UserPublic | None = None
@@ -173,11 +180,12 @@ class ConnectionResponse(BaseModel):
 
 class NetworkCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    description: str = ""
+    description: str = Field(default="", max_length=2000)
     network_type: str = "custom"
     owner_id: str
     is_public: bool = False
     join_policy: str = "invite_only"
+    context: str = "personal"  # work | personal | both
 
 
 class NetworkResponse(BaseModel):
@@ -188,6 +196,7 @@ class NetworkResponse(BaseModel):
     network_type: str
     is_public: bool = False
     join_policy: str = "invite_only"
+    context: str = "personal"
     created_at: datetime
     members: list[UserPublic] = []
 
@@ -200,12 +209,13 @@ class NetworkDiscoveryResponse(BaseModel):
     description: str
     network_type: str
     join_policy: str
+    context: str = "personal"
     member_count: int
     owner_name: str
 
 
 class NetworkJoinRequestCreate(BaseModel):
-    message: str = ""
+    message: str = Field(default="", max_length=500)
 
 
 class NetworkJoinRequestResponse(BaseModel):
@@ -234,9 +244,10 @@ class NetworkAddMember(BaseModel):
 class CapsuleCreate(BaseModel):
     capsule_type: str = Field(pattern=r"^(memory|skill|procedure|schedule|preference|contact)$")
     title: str = Field(min_length=1, max_length=200)
-    content: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=100000)
     tier: str = Field(default="private", pattern=r"^(public|network|private)$")
-    category: str = ""
+    category: str = Field(default="", max_length=100)
+    context: str = "personal"  # work | personal | both
     freshness: str = "permanent"
     expires_at: datetime | None = None
     auto_archive_days: int | None = None
@@ -244,14 +255,15 @@ class CapsuleCreate(BaseModel):
 
 
 class CapsuleUpdate(BaseModel):
-    title: str | None = None
-    content: str | None = None
-    capsule_type: str | None = None
-    tier: str | None = None
-    category: str | None = None
-    freshness: str | None = None
+    title: str | None = Field(default=None, max_length=200)
+    content: str | None = Field(default=None, max_length=100000)
+    capsule_type: str | None = Field(default=None, pattern=r"^(memory|skill|procedure|schedule|preference|contact)$")
+    tier: str | None = Field(default=None, pattern=r"^(public|network|private)$")
+    category: str | None = Field(default=None, max_length=100)
+    context: str | None = Field(default=None, pattern=r"^(work|personal|both)$")
+    freshness: str | None = Field(default=None, max_length=50)
     expires_at: datetime | None = None
-    auto_archive_days: int | None = None
+    auto_archive_days: int | None = Field(default=None, ge=1, le=365)
     network_ids: list[str] | None = None
 
 
@@ -263,6 +275,7 @@ class CapsuleResponse(BaseModel):
     content: str  # Decrypted for owner view
     tier: str
     category: str
+    context: str = "personal"
     freshness: str
     expires_at: datetime | None = None
     last_verified_at: datetime
@@ -283,13 +296,13 @@ class CapsuleShareRequest(BaseModel):
 
 class ConversationMessage(BaseModel):
     role: str = Field(pattern=r"^(user|assistant)$")
-    content: str
+    content: str = Field(max_length=50000)
 
 
 class QueryCreate(BaseModel):
     from_user_id: str
     to_user_id: str
-    question: str = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=10000)
     conversation_history: list[ConversationMessage] | None = None
 
 
@@ -384,11 +397,11 @@ class NotificationResponse(BaseModel):
 class ServiceCreate(BaseModel):
     username: str = Field(min_length=2, max_length=50)
     display_name: str = Field(min_length=1, max_length=100)
-    bio: str = ""
-    agent_personality: str = ""
+    bio: str = Field(default="", max_length=5000)
+    agent_personality: str = Field(default="", max_length=1000)
     password: str = Field(min_length=16, max_length=128)
-    skills: list[AgentSkillSchema] = []
-    capsules: list[dict] = []  # [{type, title, content, tier}]
+    skills: list[AgentSkillSchema] = Field(default=[], max_length=50)
+    capsules: list[dict] = Field(default=[], max_length=100)
 
 
 class ServiceResponse(BaseModel):
@@ -479,12 +492,12 @@ class EmergencyRoleInfo(BaseModel):
 class EmergencyTokenRequest(BaseModel):
     issuer_user_id: str
     patient_username: str
-    role: str
+    role: str = Field(pattern=r"^(attending_physician|er_nurse|paramedic|admin)$")
     duration_seconds: int = Field(default=3600, ge=-1, le=3600)  # Max 1 hour; -1 for testing expired tokens
-    practitioner_name: str = ""
-    npi: str = ""
-    case_id: str = ""
-    reason: str = ""
+    practitioner_name: str = Field(default="", max_length=200)
+    npi: str = Field(default="", max_length=20)
+    case_id: str = Field(default="", max_length=100)
+    reason: str = Field(default="", max_length=500)
 
 
 class EmergencyTokenResponse(BaseModel):
@@ -497,8 +510,8 @@ class EmergencyTokenResponse(BaseModel):
 
 
 class EmergencyAccessRequest(BaseModel):
-    token: str
-    patient_username: str
+    token: str = Field(max_length=4096)
+    patient_username: str = Field(max_length=50)
 
 
 class EmergencyAccessResponse(BaseModel):

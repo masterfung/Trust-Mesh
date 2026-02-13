@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { api } from "@/lib/api";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import ReactMarkdown from "react-markdown";
+import { Markdown } from "@/components/Markdown";
 
 interface Message {
   role: "assistant" | "user";
@@ -198,7 +198,7 @@ export default function OnboardPage() {
         <p className="text-muted-foreground text-center max-w-md mb-2">
           Your personal AI agent is ready. Let&apos;s take a minute to get to know you so your agent can help you better.
         </p>
-        <p className="text-xs text-muted text-center max-w-md mb-8">
+        <p className="text-xs text-muted-foreground text-center max-w-md mb-8">
           Everything you share is encrypted in your personal vault (AES-256-GCM). Only you control who sees what.
         </p>
         <div className="flex gap-3">
@@ -242,7 +242,7 @@ export default function OnboardPage() {
           </div>
           <div>
             <h2 className="text-sm font-semibold">Getting to know you</h2>
-            <p className="text-[11px] text-muted">
+            <p className="text-[11px] text-muted-foreground">
               Your agent is saving info to your encrypted vault
             </p>
           </div>
@@ -270,9 +270,7 @@ export default function OnboardPage() {
               }`}
             >
               {msg.role === "assistant" ? (
-                <div className="prose prose-sm prose-invert max-w-none [&_p]:my-1 [&_ul]:my-1 [&_li]:text-sm">
-                  <ReactMarkdown>{msg.content || "..."}</ReactMarkdown>
-                </div>
+                <Markdown>{msg.content || "..."}</Markdown>
               ) : (
                 msg.content
               )}
@@ -299,7 +297,7 @@ export default function OnboardPage() {
       {savedCapsules.length > 0 && (
         <div className="shrink-0 mb-3">
           <div className="flex items-center gap-2 overflow-x-auto pb-1">
-            <span className="text-[10px] text-muted shrink-0">Saved:</span>
+            <span className="text-[10px] text-muted-foreground shrink-0">Saved:</span>
             {savedCapsules.map((cap, i) => (
               <span
                 key={i}
@@ -324,7 +322,7 @@ export default function OnboardPage() {
           onChange={(e) => setInput(e.target.value)}
           placeholder={isStreaming ? "Agent is thinking..." : "Tell your agent about yourself..."}
           disabled={isStreaming}
-          className="flex-1 bg-card border border-card-border rounded-xl px-4 py-3 text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 disabled:opacity-50"
+          className="flex-1 bg-card border border-card-border rounded-xl px-4 py-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 disabled:opacity-50"
         />
         <button
           type="submit"

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.auth import get_current_user_id
 from src.crypto import encrypt, generate_key
 from src.database import get_db
 from src.models import Connection, Network, NetworkJoinRequest, NetworkMembership, Notification, User
@@ -48,15 +49,22 @@ async def _network_response(db: AsyncSession, network: Network) -> NetworkRespon
 
 
 @router.post("/networks", response_model=NetworkResponse)
-async def create_network(data: NetworkCreate, db: AsyncSession = Depends(get_db)):
+async def create_network(data: NetworkCreate, db: AsyncSession = Depends(get_db),
+                         auth_user_id: str = Depends(get_current_user_id)):
     """Create a new network."""
+    if auth_user_id != data.owner_id:
+        raise HTTPException(403, "Access denied")
     owner = await db.get(User, data.owner_id)
     if not owner:
         raise HTTPException(404, "Owner not found")
 
     network_key = generate_key()
-    # Encrypt network key with owner's vault key (simplified for hackathon)
-    encrypted_key = encrypt(network_key, network_key)  # Self-encrypted placeholder
+    # Encrypt network key with owner's vault key
+    from src.main import vault_keys
+    vault_key = vault_keys.get(data.owner_id)
+    if not vault_key:
+        raise HTTPException(500, "Vault key not loaded — log in first")
+    encrypted_key = encrypt(network_key, vault_key)
 
     network = Network(
         owner_id=data.owner_id,
@@ -65,6 +73,7 @@ async def create_network(data: NetworkCreate, db: AsyncSession = Depends(get_db)
         network_type=data.network_type,
         is_public=data.is_public,
         join_policy=data.join_policy,
+        context=data.context,
         encrypted_network_key=encrypted_key,
     )
     db.add(network)
@@ -83,8 +92,11 @@ async def create_network(data: NetworkCreate, db: AsyncSession = Depends(get_db)
 
 
 @router.get("/users/{user_id}/networks", response_model=list[NetworkResponse])
-async def list_user_networks(user_id: str, db: AsyncSession = Depends(get_db)):
+async def list_user_networks(user_id: str, db: AsyncSession = Depends(get_db),
+                             auth_user_id: str = Depends(get_current_user_id)):
     """List networks a user belongs to."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
     result = await db.execute(
         select(Network)
         .join(NetworkMembership, NetworkMembership.network_id == Network.id)
@@ -127,22 +139,35 @@ async def discover_networks(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/networks/{network_id}", response_model=NetworkResponse)
-async def get_network(network_id: str, db: AsyncSession = Depends(get_db)):
-    """Get network details with members."""
+async def get_network(network_id: str, db: AsyncSession = Depends(get_db),
+                      auth_user_id: str = Depends(get_current_user_id)):
+    """Get network details with members (must be a member)."""
     network = await db.get(Network, network_id)
     if not network:
         raise HTTPException(404, "Network not found")
+    # Check membership
+    result = await db.execute(
+        select(NetworkMembership).where(
+            NetworkMembership.network_id == network_id,
+            NetworkMembership.user_id == auth_user_id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(403, "Not a member of this network")
     return await _network_response(db, network)
 
 
 @router.post("/networks/{network_id}/members", response_model=NetworkResponse)
 async def add_member(
-    network_id: str, data: NetworkAddMember, db: AsyncSession = Depends(get_db)
+    network_id: str, data: NetworkAddMember, db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
 ):
     """Add a connected user to a network."""
     network = await db.get(Network, network_id)
     if not network:
         raise HTTPException(404, "Network not found")
+    if network.owner_id != auth_user_id:
+        raise HTTPException(403, "Only the network owner can add members")
 
     user = await db.get(User, data.user_id)
     if not user:
@@ -183,7 +208,8 @@ async def add_member(
 
 @router.delete("/networks/{network_id}/members/{user_id}")
 async def remove_member(
-    network_id: str, user_id: str, db: AsyncSession = Depends(get_db)
+    network_id: str, user_id: str, db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
 ):
     """Remove a user from a network."""
     result = await db.execute(
@@ -198,6 +224,11 @@ async def remove_member(
     if membership.role == "owner":
         raise HTTPException(400, "Cannot remove the network owner")
 
+    # Only owner or the user themselves can remove
+    network = await db.get(Network, network_id)
+    if auth_user_id != network.owner_id and auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
+
     await db.delete(membership)
     await db.commit()
     return {"ok": True}
@@ -207,8 +238,8 @@ async def remove_member(
 async def create_join_request(
     network_id: str,
     data: NetworkJoinRequestCreate,
-    user_id: str = "",  # In production, from auth
     db: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Request to join a public network."""
     network = await db.get(Network, network_id)
@@ -283,8 +314,12 @@ async def create_join_request(
 
 
 @router.get("/networks/{network_id}/join-requests", response_model=list[NetworkJoinRequestResponse])
-async def list_join_requests(network_id: str, db: AsyncSession = Depends(get_db)):
+async def list_join_requests(network_id: str, db: AsyncSession = Depends(get_db),
+                             auth_user_id: str = Depends(get_current_user_id)):
     """List pending join requests for a network (owner only)."""
+    network = await db.get(Network, network_id)
+    if not network or network.owner_id != auth_user_id:
+        raise HTTPException(403, "Only network owner can view join requests")
     result = await db.execute(
         select(NetworkJoinRequest).where(
             NetworkJoinRequest.network_id == network_id,
@@ -314,8 +349,12 @@ async def review_join_request(
     request_id: str,
     data: NetworkJoinRequestUpdate,
     db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
 ):
     """Approve or decline a join request."""
+    network = await db.get(Network, network_id)
+    if not network or network.owner_id != auth_user_id:
+        raise HTTPException(403, "Only network owner can review join requests")
     join_req = await db.get(NetworkJoinRequest, request_id)
     if not join_req or join_req.network_id != network_id:
         raise HTTPException(404, "Join request not found")

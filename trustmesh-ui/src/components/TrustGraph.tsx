@@ -731,7 +731,7 @@ export function TrustGraph({
               <p className="text-sm font-semibold">
                 {selectedNode.display_name}
               </p>
-              <p className="text-[11px] text-muted">
+              <p className="text-[11px] text-muted-foreground">
                 @{selectedNode.username}
               </p>
             </div>
@@ -827,7 +827,7 @@ function NodeTooltip({
             <p className="text-sm font-semibold text-foreground truncate">
               {node.display_name}
             </p>
-            <p className="text-[11px] text-muted">@{node.username}</p>
+            <p className="text-[11px] text-muted-foreground">@{node.username}</p>
           </div>
 
           {/* User type badge */}
@@ -850,7 +850,7 @@ function NodeTooltip({
         {/* Occupation */}
         {pd?.occupation && (
           <div>
-            <p className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-0.5">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-0.5">
               Occupation
             </p>
             <p className="text-xs text-foreground">
@@ -870,7 +870,7 @@ function NodeTooltip({
           <div className="flex items-center gap-3">
             {pd.age_range && (
               <div>
-                <p className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-0.5">
+                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-0.5">
                   Age
                 </p>
                 <p className="text-xs text-muted-foreground">
@@ -880,7 +880,7 @@ function NodeTooltip({
             )}
             {pd.family_status && (
               <div>
-                <p className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-0.5">
+                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-0.5">
                   Family
                 </p>
                 <p className="text-xs text-muted-foreground">
@@ -894,7 +894,7 @@ function NodeTooltip({
         {/* Skills as tags */}
         {pd?.skills && pd.skills.length > 0 && (
           <div>
-            <p className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-1">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
               Skills
             </p>
             <div className="flex flex-wrap gap-1">
@@ -907,7 +907,7 @@ function NodeTooltip({
                 </span>
               ))}
               {pd.skills.length > 4 && (
-                <span className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-card-hover text-muted">
+                <span className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-card-hover text-muted-foreground">
                   +{pd.skills.length - 4}
                 </span>
               )}
@@ -918,7 +918,7 @@ function NodeTooltip({
         {/* Networks the node belongs to */}
         {nodeNetworks.length > 0 && (
           <div>
-            <p className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-1">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
               Networks
             </p>
             <div className="flex flex-wrap gap-1">

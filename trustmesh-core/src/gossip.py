@@ -2,6 +2,7 @@
 
 import json
 import time
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -81,7 +82,7 @@ async def load_capsules_decrypted(
         try:
             content = decrypt_text(c.content_encrypted, vault_key)
         except Exception:
-            content = "[Decryption error]"
+            content = "Content is securely encrypted. Owner's vault key is required to view."
         decrypted.append({
             "id": c.id,
             "capsule_type": c.capsule_type,
@@ -109,12 +110,40 @@ async def get_user_networks(db: AsyncSession, user_id: str) -> list[dict]:
     ]
 
 
+def _error_result(
+    from_user_id: str,
+    to_user_id: str,
+    question: str,
+    response: str,
+    *,
+    trust_level: str = "public",
+    shared_networks: list[str] | None = None,
+    latency_ms: int = 0,
+) -> dict:
+    """Build a consistent denied-query result dict. DRY helper for all error paths."""
+    return {
+        "id": f"err-{int(time.time() * 1000)}",
+        "from_user_id": from_user_id,
+        "to_user_id": to_user_id,
+        "question": question,
+        "trust_level": trust_level,
+        "shared_networks": shared_networks or [],
+        "response": response,
+        "decision": "denied",
+        "citadel_input": None,
+        "citadel_output": None,
+        "latency_ms": latency_ms,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 async def query_agent(
     db: AsyncSession,
     from_user_id: str,
     to_user_id: str,
     question: str,
     vault_keys: dict[str, bytes],
+    query_depth: int = 0,
 ) -> dict:
     """The core inter-agent query flow.
 
@@ -138,14 +167,14 @@ async def query_agent(
     from_user = await db.get(User, from_user_id)
     to_user = await db.get(User, to_user_id)
     if not from_user or not to_user:
-        return {"decision": "denied", "response": "User not found", "latency_ms": 0}
+        return _error_result(from_user_id, to_user_id, question, "User not found")
 
     agent_result = await db.execute(
         select(Agent).where(Agent.owner_id == to_user_id)
     )
     agent = agent_result.scalar_one_or_none()
     if not agent:
-        return {"decision": "denied", "response": "Agent not found", "latency_ms": 0}
+        return _error_result(from_user_id, to_user_id, question, "Agent not found")
 
     # 1. Resolve trust
     if is_self_query:
@@ -160,10 +189,10 @@ async def query_agent(
     if not is_self_query:
         rate_ok, rate_reason = check_query_rate(from_user_id, to_user_id, trust_level)
         if not rate_ok:
-            return {"decision": "denied", "response": rate_reason, "latency_ms": 0,
-                    "from_user_id": from_user_id, "to_user_id": to_user_id,
-                    "question": question, "trust_level": trust_level,
-                    "shared_networks": network_names}
+            return _error_result(
+                from_user_id, to_user_id, question, rate_reason,
+                trust_level=trust_level, shared_networks=network_names,
+            )
 
     # 2. Citadel: scan input (skip for self-query — you can't inject yourself)
     input_scan = None
@@ -213,7 +242,11 @@ async def query_agent(
     # 5. Load and decrypt capsules
     vault_key = vault_keys.get(to_user_id)
     if not vault_key:
-        return {"decision": "denied", "response": "Vault key not available", "latency_ms": 0}
+        return _error_result(
+            from_user_id, to_user_id, question,
+            "Vault key not available — target user needs to log in first",
+            trust_level=trust_level, shared_networks=network_names,
+        )
 
     capsules = await load_capsules_decrypted(db, relevant_ids, vault_key)
 
@@ -229,6 +262,7 @@ async def query_agent(
                 owner_id=to_user_id,
                 owner_name=to_user.display_name,
                 networks=user_networks,
+                query_depth=query_depth,
             )
             response_text, actions = await agent_respond_with_tools(
                 agent=agent,

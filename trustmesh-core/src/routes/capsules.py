@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.auth import get_current_user_id
 from src.crypto import content_hash, decrypt_text, encrypt_text
 from src.database import get_db
 from src.embeddings import delete_capsule_embedding, upsert_capsule_embedding
@@ -31,6 +32,7 @@ def _capsule_to_response(capsule: KnowledgeCapsule, content: str, network_ids: l
         content=content,
         tier=capsule.tier,
         category=capsule.category,
+        context=capsule.context,
         freshness=capsule.freshness,
         expires_at=capsule.expires_at,
         last_verified_at=capsule.last_verified_at,
@@ -44,9 +46,12 @@ def _capsule_to_response(capsule: KnowledgeCapsule, content: str, network_ids: l
 
 @router.post("/users/{user_id}/capsules", response_model=CapsuleResponse)
 async def create_capsule(
-    user_id: str, data: CapsuleCreate, db: AsyncSession = Depends(get_db)
+    user_id: str, data: CapsuleCreate, db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
 ):
     """Add a knowledge capsule to a user's vault."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
     vault_key = _vault_key_for_user(user_id)
 
     capsule = KnowledgeCapsule(
@@ -57,6 +62,7 @@ async def create_capsule(
         content_hash=content_hash(data.content),
         tier=data.tier,
         category=data.category,
+        context=data.context,
         freshness=data.freshness,
         expires_at=data.expires_at,
         auto_archive_days=data.auto_archive_days,
@@ -82,8 +88,11 @@ async def create_capsule(
 
 
 @router.get("/users/{user_id}/capsules", response_model=list[CapsuleResponse])
-async def list_capsules(user_id: str, db: AsyncSession = Depends(get_db)):
+async def list_capsules(user_id: str, db: AsyncSession = Depends(get_db),
+                        auth_user_id: str = Depends(get_current_user_id)):
     """List all capsules for a user (owner view)."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
     vault_key = _vault_key_for_user(user_id)
     result = await db.execute(
         select(KnowledgeCapsule)
@@ -96,7 +105,7 @@ async def list_capsules(user_id: str, db: AsyncSession = Depends(get_db)):
         try:
             content = decrypt_text(c.content_encrypted, vault_key)
         except Exception:
-            content = "[Decryption error]"
+            content = "Content is securely encrypted. Please log in again to refresh your vault key."
         # Get network IDs
         na_result = await db.execute(
             select(CapsuleNetworkAccess.network_id).where(
@@ -110,12 +119,15 @@ async def list_capsules(user_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.put("/capsules/{capsule_id}", response_model=CapsuleResponse)
 async def update_capsule(
-    capsule_id: str, data: CapsuleUpdate, db: AsyncSession = Depends(get_db)
+    capsule_id: str, data: CapsuleUpdate, db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
 ):
     """Update a capsule."""
     capsule = await db.get(KnowledgeCapsule, capsule_id)
     if not capsule:
         raise HTTPException(404, "Capsule not found")
+    if capsule.owner_id != auth_user_id:
+        raise HTTPException(403, "Access denied")
 
     vault_key = _vault_key_for_user(capsule.owner_id)
 
@@ -169,11 +181,14 @@ async def update_capsule(
 
 
 @router.delete("/capsules/{capsule_id}")
-async def delete_capsule(capsule_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_capsule(capsule_id: str, db: AsyncSession = Depends(get_db),
+                         auth_user_id: str = Depends(get_current_user_id)):
     """Delete a capsule."""
     capsule = await db.get(KnowledgeCapsule, capsule_id)
     if not capsule:
         raise HTTPException(404, "Capsule not found")
+    if capsule.owner_id != auth_user_id:
+        raise HTTPException(403, "Access denied")
 
     # Delete network access
     na_result = await db.execute(
@@ -190,12 +205,15 @@ async def delete_capsule(capsule_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/capsules/{capsule_id}/share", response_model=CapsuleResponse)
 async def share_capsule(
-    capsule_id: str, data: CapsuleShareRequest, db: AsyncSession = Depends(get_db)
+    capsule_id: str, data: CapsuleShareRequest, db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
 ):
     """Share a capsule to network(s)."""
     capsule = await db.get(KnowledgeCapsule, capsule_id)
     if not capsule:
         raise HTTPException(404, "Capsule not found")
+    if capsule.owner_id != auth_user_id:
+        raise HTTPException(403, "Access denied")
 
     for nid in data.network_ids:
         existing = await db.execute(
@@ -217,7 +235,7 @@ async def share_capsule(
     try:
         content = decrypt_text(capsule.content_encrypted, vault_key)
     except Exception:
-        content = "[Decryption error]"
+        content = "Content is securely encrypted. Please log in again to refresh your vault key."
 
     na_result = await db.execute(
         select(CapsuleNetworkAccess.network_id).where(CapsuleNetworkAccess.capsule_id == capsule_id)

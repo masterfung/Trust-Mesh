@@ -87,6 +87,13 @@ app.include_router(emergency.router)
 app.include_router(audit.router)
 
 
+@app.post("/api/demo/warmup")
+async def demo_warmup():
+    """Reload vault keys for all demo users. Called by graph page before running scenarios."""
+    await _load_vault_keys()
+    return {"status": "ok", "keys_loaded": len(vault_keys)}
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "trustmesh-core"}
@@ -122,56 +129,95 @@ async def health_full():
     }
 
 
-@app.get("/api/graph", response_model=GraphResponse)
-async def get_graph():
-    """Full trust graph: users as nodes, connections as edges, networks as groups."""
-    async with async_session() as db:
-        # Nodes: all users
-        user_result = await db.execute(select(User).order_by(User.display_name))
-        all_users = user_result.scalars().all()
-        nodes = []
-        for u in all_users:
-            profile = parse_profile_data(u.profile_data)
-            nodes.append(GraphNode(
-                id=u.id,
-                username=u.username,
-                display_name=u.display_name,
-                bio=u.bio,
-                user_type=u.user_type,
-                profile_data=profile,
-            ))
+async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
+    """Build trust graph. If user_id is given, scope to that user's connections and networks only."""
 
-        # Edges: accepted connections
+    if user_id:
+        # Scoped graph: only nodes connected to this user + networks they belong to
+        conn_result = await db.execute(
+            select(Connection).where(
+                Connection.status == "accepted",
+                or_(Connection.from_user_id == user_id, Connection.to_user_id == user_id),
+            )
+        )
+        user_connections = conn_result.scalars().all()
+
+        # Collect all peer IDs + self
+        peer_ids = {user_id}
+        for c in user_connections:
+            peer_ids.add(c.from_user_id)
+            peer_ids.add(c.to_user_id)
+
+        # Nodes: only peers
+        user_result = await db.execute(
+            select(User).where(User.id.in_(peer_ids)).order_by(User.display_name)
+        )
+        visible_users = user_result.scalars().all()
+
+        edges = [
+            GraphEdge(source=c.from_user_id, target=c.to_user_id)
+            for c in user_connections
+        ]
+
+        # Networks: only those user is a member of
+        mem_result = await db.execute(
+            select(NetworkMembership.network_id).where(NetworkMembership.user_id == user_id)
+        )
+        my_network_ids = set(mem_result.scalars().all())
+    else:
+        # Full graph: all users, connections, networks
+        user_result = await db.execute(select(User).order_by(User.display_name))
+        visible_users = user_result.scalars().all()
+
         conn_result = await db.execute(
             select(Connection).where(Connection.status == "accepted")
         )
-        all_connections = conn_result.scalars().all()
         edges = [
             GraphEdge(source=c.from_user_id, target=c.to_user_id)
-            for c in all_connections
+            for c in conn_result.scalars().all()
         ]
+        my_network_ids = None  # show all
 
-        # Networks with members
-        net_result = await db.execute(select(Network))
-        all_networks = net_result.scalars().all()
-        graph_networks = []
-        for n in all_networks:
-            mem_result = await db.execute(
-                select(NetworkMembership.user_id).where(
-                    NetworkMembership.network_id == n.id
-                )
-            )
-            member_ids = list(mem_result.scalars().all())
-            graph_networks.append(
-                GraphNetwork(
-                    id=n.id,
-                    name=n.name,
-                    network_type=n.network_type,
-                    members=member_ids,
-                )
-            )
+    nodes = []
+    for u in visible_users:
+        profile = parse_profile_data(u.profile_data)
+        nodes.append(GraphNode(
+            id=u.id, username=u.username, display_name=u.display_name,
+            bio=u.bio, user_type=u.user_type, profile_data=profile,
+        ))
 
-        return GraphResponse(nodes=nodes, edges=edges, networks=graph_networks)
+    # Networks with members
+    net_query = select(Network)
+    if my_network_ids is not None:
+        if not my_network_ids:
+            return GraphResponse(nodes=nodes, edges=edges, networks=[])
+        net_query = net_query.where(Network.id.in_(my_network_ids))
+    net_result = await db.execute(net_query)
+    graph_networks = []
+    for n in net_result.scalars().all():
+        mem_result = await db.execute(
+            select(NetworkMembership.user_id).where(NetworkMembership.network_id == n.id)
+        )
+        graph_networks.append(GraphNetwork(
+            id=n.id, name=n.name, network_type=n.network_type,
+            members=list(mem_result.scalars().all()),
+        ))
+
+    return GraphResponse(nodes=nodes, edges=edges, networks=graph_networks)
+
+
+@app.get("/api/graph", response_model=GraphResponse)
+async def get_graph():
+    """Full trust graph (demo/admin view): all users, connections, networks."""
+    async with async_session() as db:
+        return await _build_graph(db)
+
+
+@app.get("/api/graph/{user_id}", response_model=GraphResponse)
+async def get_user_graph(user_id: str):
+    """User-scoped trust graph: only this user's connections and networks."""
+    async with async_session() as db:
+        return await _build_graph(db, user_id=user_id)
 
 
 @app.get("/.well-known/agent.json")

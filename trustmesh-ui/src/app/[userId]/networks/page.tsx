@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type Network, type User, type Connection, type NetworkInviteListItem } from "@/lib/api";
+import { api, type Network, type User, type Connection, type NetworkInviteListItem, type ContextMode } from "@/lib/api";
 import { useParams } from "next/navigation";
+import { matchesContext } from "@/lib/context";
 
 const NETWORK_TYPES = ["family", "team", "friends", "custom"];
 const NETWORK_TYPE_CONFIG: Record<string, { icon: string; color: string }> = {
@@ -21,7 +22,13 @@ export default function NetworksPage() {
   const [showForm, setShowForm] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const { data: networks, isLoading } = useQuery({
+  const { data: currentUser } = useQuery({
+    queryKey: ["user", userId],
+    queryFn: () => api.getUser(userId),
+  });
+  const activeContext = (currentUser?.active_context as ContextMode) || "all";
+
+  const { data: allNetworks, isLoading } = useQuery({
     queryKey: ["networks", userId],
     queryFn: () => api.listNetworks(userId),
   });
@@ -29,6 +36,9 @@ export default function NetworksPage() {
     queryKey: ["connections", userId],
     queryFn: () => api.listConnections(userId),
   });
+
+  // Filter networks by active context mode (DRY: shared matchesContext utility)
+  const networks = allNetworks?.filter((n) => matchesContext(n.context, activeContext));
   return (
     <div className="max-w-3xl mx-auto">
       {/* Header */}
@@ -68,7 +78,7 @@ export default function NetworksPage() {
 
       {/* My Networks */}
       {isLoading ? (
-        <div className="text-muted animate-pulse text-center py-12">Loading networks...</div>
+        <div className="text-muted-foreground animate-pulse text-center py-12">Loading networks...</div>
       ) : (
         <div className="space-y-3">
           {networks?.map((n: Network) => {
@@ -84,13 +94,13 @@ export default function NetworksPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <span className="text-sm font-semibold block">{n.name}</span>
-                    <span className="text-[11px] text-muted capitalize">{n.network_type}</span>
+                    <span className="text-[11px] text-muted-foreground capitalize">{n.network_type}</span>
                   </div>
                   <span className="text-xs text-muted-foreground bg-card-hover px-2.5 py-1 rounded-lg">{n.members.length} members</span>
                   <svg
                     width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                     strokeLinecap="round" strokeLinejoin="round"
-                    className={`text-muted transition-transform ${expandedId === n.id ? "rotate-180" : ""}`}
+                    className={`text-muted-foreground transition-transform ${expandedId === n.id ? "rotate-180" : ""}`}
                   >
                     <polyline points="6 9 12 15 18 9"/>
                   </svg>
@@ -100,7 +110,7 @@ export default function NetworksPage() {
                     {n.description && (
                       <p className="text-xs text-muted-foreground mt-3 mb-3">{n.description}</p>
                     )}
-                    <h3 className="text-xs font-semibold text-muted mt-3 mb-2">Members</h3>
+                    <h3 className="text-xs font-semibold text-muted-foreground mt-3 mb-2">Members</h3>
                     <div className="space-y-1.5">
                       {n.members.map((m: User) => (
                         <div key={m.id} className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-card-hover transition-colors">
@@ -110,7 +120,7 @@ export default function NetworksPage() {
                             </div>
                             <div>
                               <span className="text-sm font-medium">{m.display_name}</span>
-                              <span className="text-[11px] text-muted block">@{m.username}</span>
+                              <span className="text-[11px] text-muted-foreground block">@{m.username}</span>
                             </div>
                           </div>
                           {m.id === n.owner_id && (
@@ -146,7 +156,7 @@ export default function NetworksPage() {
           })}
           {!networks?.length && (
             <div className="text-center py-12">
-              <p className="text-muted text-sm">No networks yet.</p>
+              <p className="text-muted-foreground text-sm">No networks yet.</p>
               <button
                 onClick={() => setShowForm(true)}
                 className="mt-3 text-accent text-sm hover:text-accent-hover transition-colors"
@@ -219,7 +229,7 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g., The Johnsons"
-          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted"
+          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground"
         />
       </div>
 
@@ -230,7 +240,7 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="What is this network for?"
-          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted"
+          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground"
         />
       </div>
 
@@ -249,7 +259,7 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
           </div>
           <div>
             <span className="text-sm font-medium block">Public Network</span>
-            <span className="text-[11px] text-muted">Allow others to discover and request to join this network</span>
+            <span className="text-[11px] text-muted-foreground">Allow others to discover and request to join this network</span>
           </div>
         </label>
       </div>
@@ -274,7 +284,7 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
               </button>
             ))}
           </div>
-          <p className="text-[11px] text-muted mt-1.5">
+          <p className="text-[11px] text-muted-foreground mt-1.5">
             {joinPolicy === "open" && "Anyone can join instantly without approval."}
             {joinPolicy === "request_to_join" && "Join requests must be approved by the network owner."}
             {joinPolicy === "invite_only" && "Only the owner can invite new members."}
@@ -320,7 +330,7 @@ function AddMemberToNetwork({
 
   return (
     <div className="mt-4 pt-4 border-t border-card-border">
-      <h3 className="text-xs font-semibold text-muted mb-2">Add Connected User</h3>
+      <h3 className="text-xs font-semibold text-muted-foreground mb-2">Add Connected User</h3>
       <div className="flex gap-2 flex-wrap">
         {eligible.map((u) => (
           <button
@@ -388,7 +398,7 @@ function InviteByEmail({ networkId }: { networkId: string }) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="friend@example.com"
-              className="flex-1 bg-background border border-card-border rounded-xl px-3 py-2 text-sm placeholder:text-muted"
+              className="flex-1 bg-background border border-card-border rounded-xl px-3 py-2 text-sm placeholder:text-muted-foreground"
             />
             <button
               onClick={() => sendMutation.mutate()}
@@ -403,7 +413,7 @@ function InviteByEmail({ networkId }: { networkId: string }) {
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             placeholder="Personal message (optional)"
-            className="w-full bg-background border border-card-border rounded-xl px-3 py-2 text-sm placeholder:text-muted"
+            className="w-full bg-background border border-card-border rounded-xl px-3 py-2 text-sm placeholder:text-muted-foreground"
           />
 
           {sent && (
@@ -414,7 +424,7 @@ function InviteByEmail({ networkId }: { networkId: string }) {
 
           {invites && invites.length > 0 && (
             <div className="mt-2">
-              <h4 className="text-[11px] font-semibold text-muted mb-1.5">Sent Invites</h4>
+              <h4 className="text-[11px] font-semibold text-muted-foreground mb-1.5">Sent Invites</h4>
               <div className="space-y-1">
                 {invites.map((inv: NetworkInviteListItem) => (
                   <div key={inv.id} className="flex items-center justify-between text-xs py-1.5 px-2 rounded-lg bg-card-hover/50">
@@ -462,7 +472,7 @@ function JoinRequestsManager({ networkId, onChanged }: { networkId: string; onCh
 
   return (
     <div className="mt-4 pt-4 border-t border-card-border">
-      <h3 className="text-xs font-semibold text-muted mb-2 flex items-center gap-1.5">
+      <h3 className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400">
           <circle cx="12" cy="12" r="10"/>
           <line x1="12" y1="8" x2="12" y2="12"/>
@@ -481,7 +491,7 @@ function JoinRequestsManager({ networkId, onChanged }: { networkId: string; onCh
               <div>
                 <span className="text-sm font-medium block">{req.user?.display_name ?? "Unknown"}</span>
                 {req.message && (
-                  <span className="text-[11px] text-muted block truncate max-w-[200px]">&ldquo;{req.message}&rdquo;</span>
+                  <span className="text-[11px] text-muted-foreground block truncate max-w-[200px]">&ldquo;{req.message}&rdquo;</span>
                 )}
               </div>
             </div>

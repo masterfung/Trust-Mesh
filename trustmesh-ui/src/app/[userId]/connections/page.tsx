@@ -2,18 +2,26 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type User, type Connection, type ConnectionRequest } from "@/lib/api";
+import { api, type User, type ContextMode, type Connection, type ConnectionRequest } from "@/lib/api";
 import { useParams } from "next/navigation";
+import { matchesContext } from "@/lib/context";
 
 export default function ConnectionsPage() {
   const { userId } = useParams<{ userId: string }>();
   const queryClient = useQueryClient();
   const [showConnect, setShowConnect] = useState(false);
 
-  const { data: connections } = useQuery({
+  const { data: currentUser } = useQuery({
+    queryKey: ["user", userId],
+    queryFn: () => api.getUser(userId),
+  });
+  const activeContext: ContextMode = (currentUser?.active_context as ContextMode) || "all";
+
+  const { data: allConnections } = useQuery({
     queryKey: ["connections", userId],
     queryFn: () => api.listConnections(userId),
   });
+  const connections = allConnections?.filter((c) => matchesContext(c.context, activeContext));
   const { data: requests } = useQuery({
     queryKey: ["connection-requests", userId],
     queryFn: () => api.listConnectionRequests(userId),
@@ -80,7 +88,7 @@ export default function ConnectionsPage() {
                       {r.from_user?.display_name || "Unknown"}
                     </span>
                     {r.message && (
-                      <p className="text-xs text-muted mt-0.5">&ldquo;{r.message}&rdquo;</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">&ldquo;{r.message}&rdquo;</p>
                     )}
                   </div>
                 </div>
@@ -122,7 +130,7 @@ export default function ConnectionsPage() {
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold">{c.peer?.display_name}</p>
-              <p className="text-xs text-muted truncate">@{c.peer?.username} &middot; {c.peer?.bio}</p>
+              <p className="text-xs text-muted-foreground truncate">@{c.peer?.username} &middot; {c.peer?.bio}</p>
             </div>
             <span className="inline-flex items-center gap-1 text-xs text-success bg-success/10 px-2.5 py-1 rounded-lg font-medium border border-success/20">
               <span className="w-1.5 h-1.5 rounded-full bg-success" />
@@ -132,7 +140,7 @@ export default function ConnectionsPage() {
         ))}
         {!connections?.length && (
           <div className="text-center py-12">
-            <p className="text-muted text-sm">No connections yet.</p>
+            <p className="text-muted-foreground text-sm">No connections yet.</p>
             <button
               onClick={() => setShowConnect(true)}
               className="mt-3 text-accent text-sm hover:text-accent-hover transition-colors"
@@ -186,7 +194,7 @@ function SendConnectionForm({
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="Hi, I'd like to connect..."
-          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted"
+          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground"
         />
       </div>
       <button

@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type User, type QueryResult, type AgentAction, type Connection, type Network } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { TrustBadge, DecisionBadge } from "@/components/TrustBadge";
-import ReactMarkdown from "react-markdown";
+import { Markdown } from "@/components/Markdown";
 
 interface StreamingResult {
   id?: string;
@@ -31,7 +31,8 @@ export default function ChatPage() {
   const [results, setResults] = useState<StreamingResult[]>([]);
   const [isListening, setIsListening] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
 
   const { data: users } = useQuery({
     queryKey: ["users"],
@@ -227,8 +228,9 @@ export default function ChatPage() {
       setIsListening(false);
       return;
     }
-    const SpeechRecognition = (window as unknown as { SpeechRecognition?: typeof window.SpeechRecognition; webkitSpeechRecognition?: typeof window.SpeechRecognition }).SpeechRecognition
-      ?? (window as unknown as { webkitSpeechRecognition?: typeof window.SpeechRecognition }).webkitSpeechRecognition;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const win = window as any;
+    const SpeechRecognition = win.SpeechRecognition ?? win.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
@@ -237,7 +239,8 @@ export default function ChatPage() {
     recognitionRef.current = recognition;
 
     let finalTranscript = "";
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onresult = (event: any) => {
       let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         if (event.results[i].isFinal) {
@@ -441,7 +444,7 @@ export default function ChatPage() {
 
         {/* Trust Context Hint */}
         {(queryMode === "self" || targetUser) && (
-          <p className="text-[11px] text-muted flex items-center gap-1.5">
+          <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
             </svg>
@@ -639,7 +642,7 @@ function MentionInput({
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         rows={1}
-        className="w-full bg-background border border-card-border rounded-xl px-4 py-3 text-sm pr-32 placeholder:text-muted resize-none overflow-y-auto"
+        className="w-full bg-background border border-card-border rounded-xl px-4 py-3 text-sm pr-32 placeholder:text-muted-foreground resize-none overflow-y-auto"
         style={{ maxHeight: 160 }}
         disabled={disabled}
       />
@@ -670,7 +673,7 @@ function MentionInput({
                 <div className="relative">
                   <div
                     className={`w-6 h-6 rounded-md flex items-center justify-center text-white font-bold text-[10px] ${
-                      isConnected ? "bg-accent" : "bg-muted/60"
+                      isConnected ? "bg-accent" : "bg-muted-foreground/60"
                     }`}
                   >
                     {u.display_name[0]}
@@ -859,7 +862,7 @@ function QueryResultCard({
             }`}
           >
             {result.response ? (
-              <ReactMarkdown>{result.response}</ReactMarkdown>
+              <Markdown>{result.response}</Markdown>
             ) : (
               <span className="text-muted-foreground animate-pulse">Agent is processing...</span>
             )}
@@ -871,7 +874,7 @@ function QueryResultCard({
 
         {/* Metadata */}
         {!streaming && (
-          <div className="flex items-center gap-4 mt-3 text-[11px] text-muted">
+          <div className="flex items-center gap-4 mt-3 text-[11px] text-muted-foreground">
             {result.shared_networks.length > 0 && (
               <span className="flex items-center gap-1">
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

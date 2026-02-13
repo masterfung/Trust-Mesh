@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type Capsule, type Network } from "@/lib/api";
+import { api, type Capsule, type ContextMode, type Network } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { TrustBadge, CapsuleTypeBadge } from "@/components/TrustBadge";
+import { matchesContext } from "@/lib/context";
 
 const CAPSULE_TYPES = ["memory", "skill", "procedure", "schedule", "preference", "contact"];
 const TIERS = ["public", "network", "private"];
@@ -29,10 +30,18 @@ export default function VaultPage() {
   const [search, setSearch] = useState("");
   const [showCount, setShowCount] = useState(20);
 
-  const { data: capsules, isLoading } = useQuery({
+  const { data: currentUser } = useQuery({
+    queryKey: ["user", userId],
+    queryFn: () => api.getUser(userId),
+  });
+  const activeContext: ContextMode = (currentUser?.active_context as ContextMode) || "all";
+
+  const { data: allCapsules, isLoading } = useQuery({
     queryKey: ["capsules", userId],
     queryFn: () => api.listCapsules(userId),
   });
+  const capsules = allCapsules?.filter((c) => matchesContext(c.context, activeContext));
+
   const { data: networks } = useQuery({
     queryKey: ["networks", userId],
     queryFn: () => api.listNetworks(userId),
@@ -102,7 +111,7 @@ export default function VaultPage() {
           value={search}
           onChange={(e) => { setSearch(e.target.value); setShowCount(20); }}
           placeholder="Search capsules..."
-          className="w-full bg-card border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted"
+          className="w-full bg-card border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground"
         />
       </div>
 
@@ -136,13 +145,13 @@ export default function VaultPage() {
           </button>
         ))}
         {(typeFilter !== "all" || tierFilter !== "all" || search) && filtered && (
-          <span className="text-[11px] text-muted ml-2">{filtered.length} results</span>
+          <span className="text-[11px] text-muted-foreground ml-2">{filtered.length} results</span>
         )}
       </div>
 
       {/* Capsule List */}
       {isLoading ? (
-        <div className="text-muted animate-pulse text-center py-12">Loading vault...</div>
+        <div className="text-muted-foreground animate-pulse text-center py-12">Loading vault...</div>
       ) : (
         <div className="space-y-2">
           {visible?.map((c: Capsule) => (
@@ -157,13 +166,13 @@ export default function VaultPage() {
                 <CapsuleTypeBadge type={c.capsule_type} />
                 <div className="flex-1 min-w-0">
                   <span className="text-sm font-medium block truncate">{c.title}</span>
-                  <span className="text-[11px] text-muted truncate block">{c.content.slice(0, 80)}{c.content.length > 80 ? "..." : ""}</span>
+                  <span className="text-[11px] text-muted-foreground truncate block">{c.content.slice(0, 80)}{c.content.length > 80 ? "..." : ""}</span>
                 </div>
                 <TrustBadge tier={c.tier} />
                 <svg
                   width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                   strokeLinecap="round" strokeLinejoin="round"
-                  className={`text-muted transition-transform shrink-0 ${expandedId === c.id ? "rotate-180" : ""}`}
+                  className={`text-muted-foreground transition-transform shrink-0 ${expandedId === c.id ? "rotate-180" : ""}`}
                 >
                   <polyline points="6 9 12 15 18 9"/>
                 </svg>
@@ -171,7 +180,7 @@ export default function VaultPage() {
               {expandedId === c.id && (
                 <div className="px-4 pb-4 border-t border-card-border">
                   <p className="text-sm mt-4 whitespace-pre-wrap leading-relaxed text-muted-foreground bg-background rounded-xl p-4">{c.content}</p>
-                  <div className="flex items-center gap-4 mt-3 text-[11px] text-muted">
+                  <div className="flex items-center gap-4 mt-3 text-[11px] text-muted-foreground">
                     <span>Type: {c.capsule_type}</span>
                     <span>Freshness: {c.freshness}</span>
                     {c.expires_at && <span>Expires: {new Date(c.expires_at).toLocaleDateString()}</span>}
@@ -220,7 +229,7 @@ export default function VaultPage() {
 
           {!filtered?.length && (
             <div className="text-center py-12">
-              <p className="text-muted text-sm">
+              <p className="text-muted-foreground text-sm">
                 {search ? "No capsules match your search." : "No capsules match this filter."}
               </p>
               {!search && (
@@ -280,7 +289,7 @@ function CapsuleForm({
   return (
     <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
       <h2 className="text-base font-semibold mb-1">{isEdit ? "Edit Capsule" : "Add Knowledge Capsule"}</h2>
-      <p className="text-xs text-muted mb-5">{isEdit ? `Editing "${capsule!.title}" — changes are re-encrypted automatically.` : "Your agent will use this knowledge when responding to queries."}</p>
+      <p className="text-xs text-muted-foreground mb-5">{isEdit ? `Editing "${capsule!.title}" — changes are re-encrypted automatically.` : "Your agent will use this knowledge when responding to queries."}</p>
 
       {/* Type Selection */}
       <div className="mb-4">
@@ -299,7 +308,7 @@ function CapsuleForm({
             >
               <CapsuleTypeBadge type={t} />
               <span className="text-sm font-medium block mt-1 capitalize">{t}</span>
-              <span className="text-[10px] text-muted">{TYPE_DESCRIPTIONS[t]}</span>
+              <span className="text-[10px] text-muted-foreground">{TYPE_DESCRIPTIONS[t]}</span>
             </button>
           ))}
         </div>
@@ -321,7 +330,7 @@ function CapsuleForm({
               }`}
             >
               <TrustBadge tier={t} />
-              <span className="text-[10px] text-muted block mt-1.5">
+              <span className="text-[10px] text-muted-foreground block mt-1.5">
                 {t === "public" ? "Anyone can see" : t === "network" ? "Network members" : "Only you"}
               </span>
             </button>
@@ -337,7 +346,7 @@ function CapsuleForm({
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="e.g., House Plumbing Layout"
-          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted"
+          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground"
         />
       </div>
 
@@ -349,7 +358,7 @@ function CapsuleForm({
           onChange={(e) => setContent(e.target.value)}
           rows={5}
           placeholder="The knowledge your agent will hold and share..."
-          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm resize-y placeholder:text-muted"
+          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm resize-y placeholder:text-muted-foreground"
         />
       </div>
 
@@ -378,7 +387,7 @@ function CapsuleForm({
               </label>
             ))}
             {!networks.length && (
-              <p className="text-xs text-muted">Create a network first to share capsules.</p>
+              <p className="text-xs text-muted-foreground">Create a network first to share capsules.</p>
             )}
           </div>
         </div>

@@ -8,6 +8,10 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.text();
+    // Redirect to login on auth failure (session expired or missing)
+    if (res.status === 401 && typeof window !== "undefined" && !path.includes("/auth/")) {
+      window.location.href = "/";
+    }
     throw new Error(`API ${res.status}: ${body}`);
   }
   return res.json();
@@ -24,6 +28,8 @@ export interface ProfileData {
   location_hints?: string[];
 }
 
+export type ContextMode = "work" | "personal" | "all";
+
 export interface User {
   id: string;
   username: string;
@@ -33,6 +39,7 @@ export interface User {
   profile_data?: ProfileData | null;
   is_discoverable?: boolean;
   is_demo?: boolean;
+  active_context?: ContextMode;
   created_at?: string;
 }
 
@@ -66,6 +73,7 @@ export interface Connection {
   from_user_id: string;
   to_user_id: string;
   status: string;
+  context?: string;
   created_at: string;
   accepted_at?: string;
   peer?: User;
@@ -91,6 +99,7 @@ export interface Network {
   network_type: string;
   is_public?: boolean;
   join_policy?: string;
+  context?: ContextMode;
   created_at: string;
   members: User[];
 }
@@ -101,6 +110,7 @@ export interface NetworkDiscovery {
   description: string;
   network_type: string;
   join_policy: string;
+  context?: ContextMode;
   member_count: number;
   owner_name: string;
 }
@@ -113,6 +123,7 @@ export interface Capsule {
   content: string;
   tier: string;
   category: string;
+  context?: string;
   freshness: string;
   expires_at?: string;
   last_verified_at: string;
@@ -276,6 +287,11 @@ export const api = {
   getUser: (id: string) => apiFetch<User>(`/api/users/${id}`),
   getAgent: (id: string) => apiFetch<Agent>(`/api/users/${id}/agent`),
   getAgentCard: (id: string) => apiFetch<AgentCard>(`/api/users/${id}/agent/card`),
+  switchContext: (userId: string, context: ContextMode) =>
+    apiFetch<{ context: string }>(`/api/users/${userId}/context`, {
+      method: "PUT",
+      body: JSON.stringify({ context }),
+    }),
 
   // Connections
   listConnections: (userId: string) =>
@@ -417,4 +433,9 @@ export const api = {
 
   // Graph
   getGraph: () => apiFetch<GraphData>("/api/graph"),
+  getUserGraph: (userId: string) => apiFetch<GraphData>(`/api/graph/${userId}`),
+
+  // Demo
+  demoWarmup: () =>
+    apiFetch<{ status: string; keys_loaded: number }>("/api/demo/warmup", { method: "POST" }),
 };

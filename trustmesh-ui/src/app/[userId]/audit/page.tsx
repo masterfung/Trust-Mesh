@@ -124,16 +124,16 @@ export default function AuditPage() {
       {/* Timeline */}
       {isLoading ? (
         <div className="flex items-center justify-center py-20">
-          <div className="text-muted animate-pulse">Loading audit logs...</div>
+          <div className="text-muted-foreground animate-pulse">Loading audit logs...</div>
         </div>
       ) : !logs || logs.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted mb-3">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground mb-3">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
             <path d="M9 12l2 2 4-4"/>
           </svg>
           <p className="text-muted-foreground font-medium">No audit events yet</p>
-          <p className="text-sm text-muted mt-1">Security events will appear here as they occur</p>
+          <p className="text-sm text-muted-foreground mt-1">Security events will appear here as they occur</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -175,7 +175,7 @@ function AuditCard({ entry, userId }: { entry: AuditLogEntry; userId: string }) 
               {entry.actor_institution && (
                 <p className="text-xs text-muted-foreground mt-0.5">
                   by {entry.actor_institution}
-                  {entry.actor_role && <span className="ml-1 text-muted">({entry.actor_role})</span>}
+                  {entry.actor_role && <span className="ml-1 text-muted-foreground">({entry.actor_role})</span>}
                 </p>
               )}
             </div>
@@ -183,7 +183,7 @@ function AuditCard({ entry, userId }: { entry: AuditLogEntry; userId: string }) 
               <span className={`text-xs font-semibold ${decisionColor(entry.decision)}`}>
                 {entry.decision.toUpperCase()}
               </span>
-              <span className="text-[10px] text-muted">{timeAgo(entry.created_at)}</span>
+              <span className="text-[10px] text-muted-foreground">{timeAgo(entry.created_at)}</span>
             </div>
           </div>
 
@@ -191,17 +191,17 @@ function AuditCard({ entry, userId }: { entry: AuditLogEntry; userId: string }) 
           <div className="mt-2 space-y-1.5">
             {entry.reason && (
               <p className="text-xs text-muted-foreground">
-                <span className="text-muted">Reason:</span> {entry.reason}
+                <span className="text-muted-foreground">Reason:</span> {entry.reason}
               </p>
             )}
             {entry.case_id && (
               <p className="text-xs text-muted-foreground">
-                <span className="text-muted">Case ID:</span> {entry.case_id}
+                <span className="text-muted-foreground">Case ID:</span> {entry.case_id}
               </p>
             )}
             {entry.categories_accessed.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-[10px] text-muted uppercase tracking-wider">Categories:</span>
+                <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Categories:</span>
                 {entry.categories_accessed.map((cat) => (
                   <span key={cat} className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent border border-accent/20">
                     {cat}
@@ -210,20 +210,20 @@ function AuditCard({ entry, userId }: { entry: AuditLogEntry; userId: string }) 
               </div>
             )}
             {entry.capsule_ids_accessed.length > 0 && (
-              <p className="text-[10px] text-muted">
+              <p className="text-[10px] text-muted-foreground">
                 {entry.capsule_ids_accessed.length} capsule{entry.capsule_ids_accessed.length !== 1 ? "s" : ""} accessed
               </p>
             )}
-            {entry.details && entry.details.practitioner_name && (
+            {entry.details && "practitioner_name" in entry.details && (
               <p className="text-xs text-muted-foreground">
-                <span className="text-muted">Practitioner:</span> {String(entry.details.practitioner_name)}
+                <span className="text-muted-foreground">Practitioner:</span> {String(entry.details.practitioner_name)}
               </p>
             )}
             {entry.token_role && (
               <p className="text-xs text-muted-foreground">
-                <span className="text-muted">Token role:</span> {entry.token_role}
+                <span className="text-muted-foreground">Token role:</span> {entry.token_role}
                 {entry.token_expires_at && (
-                  <span className="ml-2 text-muted">
+                  <span className="ml-2 text-muted-foreground">
                     expires {new Date(entry.token_expires_at).toLocaleString()}
                   </span>
                 )}

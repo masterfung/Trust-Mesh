@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.auth import get_current_user_id
 from src.database import get_db, async_session
 from src.gossip import query_agent
 from src.models import Agent, Notification, Query, User
@@ -17,8 +18,11 @@ router = APIRouter(prefix="/api", tags=["queries"])
 
 
 @router.post("/query")
-async def create_query(data: QueryCreate, db: AsyncSession = Depends(get_db)):
+async def create_query(data: QueryCreate, db: AsyncSession = Depends(get_db),
+                       auth_user_id: str = Depends(get_current_user_id)):
     """Query another user's agent. The core TrustMesh operation."""
+    if auth_user_id != data.from_user_id:
+        raise HTTPException(403, "Access denied")
     from src.main import vault_keys
 
     result = await query_agent(
@@ -32,8 +36,11 @@ async def create_query(data: QueryCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/query/stream")
-async def create_query_stream(data: QueryCreate):
+async def create_query_stream(data: QueryCreate,
+                              auth_user_id: str = Depends(get_current_user_id)):
     """Streaming query endpoint — returns SSE events as the agent responds."""
+    if auth_user_id != data.from_user_id:
+        raise HTTPException(403, "Access denied")
     from src.main import vault_keys
     from src import citadel, embeddings
     from src.agents import (
@@ -209,8 +216,11 @@ async def create_query_stream(data: QueryCreate):
 
 
 @router.get("/users/{user_id}/queries", response_model=list[QueryResponse])
-async def list_queries(user_id: str, db: AsyncSession = Depends(get_db)):
+async def list_queries(user_id: str, db: AsyncSession = Depends(get_db),
+                       auth_user_id: str = Depends(get_current_user_id)):
     """List query history (sent and received)."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
     result = await db.execute(
         select(Query)
         .where(or_(Query.from_user_id == user_id, Query.to_user_id == user_id))

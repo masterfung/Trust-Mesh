@@ -1,17 +1,35 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { api, type ServiceProvider } from "@/lib/api";
+import { api, type ContextMode, type ServiceProvider } from "@/lib/api";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+
+/** Map service industry to context. Healthcare spans both; home services are personal. */
+function serviceMatchesContext(sp: ServiceProvider, activeContext: ContextMode): boolean {
+  if (activeContext === "all") return true;
+  const industry = sp.profile_data?.occupation?.industry?.toLowerCase() || "";
+  // Healthcare services are relevant in both work and personal contexts
+  if (industry.includes("healthcare") || industry.includes("medical")) return true;
+  // Home services (cleaning, tutoring, handyman) are personal only
+  if (activeContext === "work") return false;
+  return true; // personal context shows everything
+}
 
 export default function ServicesPage() {
   const { userId } = useParams<{ userId: string }>();
 
-  const { data: services, isLoading } = useQuery({
+  const { data: currentUser } = useQuery({
+    queryKey: ["user", userId],
+    queryFn: () => api.getUser(userId),
+  });
+  const activeContext: ContextMode = (currentUser?.active_context as ContextMode) || "all";
+
+  const { data: allServices, isLoading } = useQuery({
     queryKey: ["services"],
     queryFn: () => api.listServices(),
   });
+  const services = allServices?.filter((sp) => serviceMatchesContext(sp, activeContext));
 
   return (
     <div className="max-w-5xl mx-auto">
@@ -63,7 +81,7 @@ export default function ServicesPage() {
                   {/* Skills */}
                   {sp.agent_card?.skills && sp.agent_card.skills.length > 0 && (
                     <div className="mb-3">
-                      <p className="text-xs text-muted mb-1.5">Capabilities</p>
+                      <p className="text-xs text-muted-foreground mb-1.5">Capabilities</p>
                       <div className="flex flex-wrap gap-1.5">
                         {sp.agent_card.skills.map((skill) => (
                           <span
@@ -97,7 +115,7 @@ export default function ServicesPage() {
                     Request Quote
                   </Link>
                   {sp.agent_card && (
-                    <span className="text-[10px] text-muted text-center">
+                    <span className="text-[10px] text-muted-foreground text-center">
                       A2A Protocol v{sp.agent_card.version}
                     </span>
                   )}
@@ -108,12 +126,12 @@ export default function ServicesPage() {
         </div>
       ) : (
         <div className="bg-card border border-card-border rounded-2xl p-12 text-center">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted mx-auto mb-4">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground mx-auto mb-4">
             <path d="M20 7h-9"/><path d="M14 17H5"/>
             <circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>
           </svg>
           <p className="text-muted-foreground">No service providers available yet.</p>
-          <p className="text-xs text-muted mt-1">Service providers will appear here once they join the mesh.</p>
+          <p className="text-xs text-muted-foreground mt-1">Service providers will appear here once they join the mesh.</p>
         </div>
       )}
     </div>

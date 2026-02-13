@@ -1,11 +1,12 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type AgentTask, type HealthStatus, type ServiceProvider } from "@/lib/api";
+import { useState, useEffect } from "react";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { api, type AgentTask, type Briefing, type HealthStatus, type ServiceProvider } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { TrustBadge, CapsuleTypeBadge } from "@/components/TrustBadge";
+import { Markdown } from "@/components/Markdown";
 import Link from "next/link";
-import ReactMarkdown from "react-markdown";
 
 export default function Dashboard() {
   const { userId } = useParams<{ userId: string }>();
@@ -200,57 +201,8 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Morning Briefing Card */}
-      <div className="bg-gradient-to-r from-amber-500/5 to-orange-500/5 border border-amber-500/20 rounded-2xl p-5 mb-6">
-        <div className="flex items-start gap-4">
-          <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shrink-0">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="5"/>
-              <line x1="12" y1="1" x2="12" y2="3"/>
-              <line x1="12" y1="21" x2="12" y2="23"/>
-              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-              <line x1="1" y1="12" x2="3" y2="12"/>
-              <line x1="21" y1="12" x2="23" y2="12"/>
-              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-            </svg>
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="font-semibold text-sm">Morning Briefing</h2>
-              <button
-                onClick={() =>
-                  queryClient.invalidateQueries({ queryKey: ["briefing", userId] })
-                }
-                className="inline-flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 transition-colors"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="23 4 23 10 17 10"/>
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-                </svg>
-                Refresh
-              </button>
-            </div>
-            {briefingLoading ? (
-              <div className="space-y-2 animate-pulse">
-                <div className="h-3 bg-amber-500/10 rounded w-3/4" />
-                <div className="h-3 bg-amber-500/10 rounded w-1/2" />
-                <div className="h-3 bg-amber-500/10 rounded w-5/6" />
-                <p className="text-xs text-amber-400/60 mt-2">Generating briefing...</p>
-              </div>
-            ) : briefingError ? (
-              <p className="text-xs text-muted-foreground">Unable to load briefing. Click Refresh to try again.</p>
-            ) : briefing ? (
-              <div className="prose prose-sm prose-invert max-w-none text-sm leading-relaxed [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_p]:text-sm [&_li]:text-sm [&_ul]:my-1 [&_ol]:my-1 [&_p]:my-1">
-                <ReactMarkdown>{briefing.briefing}</ReactMarkdown>
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground">No briefing available.</p>
-            )}
-          </div>
-        </div>
-      </div>
+      {/* Dynamic Briefing Card */}
+      <BriefingCard userId={userId} briefing={briefing} briefingLoading={briefingLoading} briefingError={briefingError} queryClient={queryClient} />
 
       {/* Pending Tasks Card */}
       <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
@@ -289,7 +241,7 @@ export default function Dashboard() {
             ))}
           </div>
         ) : (
-          <p className="text-sm text-muted text-center py-6">No tasks yet. Your agent will create tasks from conversations.</p>
+          <p className="text-sm text-muted-foreground text-center py-6">No tasks yet. Your agent will create tasks from conversations.</p>
         )}
       </div>
 
@@ -305,7 +257,7 @@ export default function Dashboard() {
               {s.icon}
             </div>
             <p className="text-2xl font-bold">{s.value}</p>
-            <p className="text-xs text-muted mt-1">{s.label}</p>
+            <p className="text-xs text-muted-foreground mt-1">{s.label}</p>
           </Link>
         ))}
       </div>
@@ -355,7 +307,7 @@ export default function Dashboard() {
               </div>
             ))}
             {!capsules?.length && (
-              <p className="text-sm text-muted text-center py-6">No capsules yet. Add knowledge to your vault.</p>
+              <p className="text-sm text-muted-foreground text-center py-6">No capsules yet. Add knowledge to your vault.</p>
             )}
           </div>
         </div>
@@ -381,14 +333,14 @@ export default function Dashboard() {
                   </div>
                   <div>
                     <p className="text-sm font-medium">{n.name}</p>
-                    <p className="text-[11px] text-muted">{n.network_type}</p>
+                    <p className="text-[11px] text-muted-foreground">{n.network_type}</p>
                   </div>
                 </div>
                 <span className="text-xs text-muted-foreground">{n.members.length} members</span>
               </div>
             ))}
             {!networks?.length && (
-              <p className="text-sm text-muted text-center py-6">No networks yet.</p>
+              <p className="text-sm text-muted-foreground text-center py-6">No networks yet.</p>
             )}
           </div>
         </div>
@@ -444,7 +396,77 @@ export default function Dashboard() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-muted text-center py-6">No service providers available yet.</p>
+            <p className="text-sm text-muted-foreground text-center py-6">No service providers available yet.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Time-of-day config for briefing card styling. */
+const BRIEFING_THEMES = {
+  morning: { label: "Morning Briefing", icon: "\u2600\uFE0F", gradient: "from-amber-500/5 to-orange-500/5", border: "border-amber-500/20", accent: "text-amber-400" },
+  afternoon: { label: "Afternoon Briefing", icon: "\u26C5", gradient: "from-sky-500/5 to-blue-500/5", border: "border-sky-500/20", accent: "text-sky-400" },
+  evening: { label: "Evening Briefing", icon: "\uD83C\uDF19", gradient: "from-indigo-500/5 to-purple-500/5", border: "border-indigo-500/20", accent: "text-indigo-400" },
+} as const;
+
+type TimeOfDay = keyof typeof BRIEFING_THEMES;
+
+function getTimeOfDay(): TimeOfDay {
+  const hour = new Date().getHours();
+  if (hour < 12) return "morning";
+  if (hour < 17) return "afternoon";
+  return "evening";
+}
+
+function BriefingCard({
+  userId, briefing, briefingLoading, briefingError, queryClient,
+}: {
+  userId: string; briefing?: Briefing; briefingLoading: boolean; briefingError: boolean; queryClient: QueryClient;
+}) {
+  const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>("morning");
+  useEffect(() => { setTimeOfDay(getTimeOfDay()); }, []);
+
+  const theme = BRIEFING_THEMES[timeOfDay];
+  const isWeekend = [0, 6].includes(new Date().getDay());
+
+  return (
+    <div className={`bg-gradient-to-r ${theme.gradient} border ${theme.border} rounded-2xl p-5 mb-6`}>
+      <div className="flex items-start gap-4">
+        <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shrink-0 text-xl">
+          {theme.icon}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-semibold text-sm">
+              {theme.label}
+              {isWeekend && <span className="ml-2 text-xs font-normal text-muted-foreground">Weekend</span>}
+            </h2>
+            <button
+              onClick={() => queryClient.invalidateQueries({ queryKey: ["briefing", userId] })}
+              className={`inline-flex items-center gap-1.5 text-xs ${theme.accent} hover:opacity-80 transition-colors`}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              Refresh
+            </button>
+          </div>
+          {briefingLoading ? (
+            <div className="space-y-2 animate-pulse">
+              <div className="h-3 bg-amber-500/10 rounded w-3/4" />
+              <div className="h-3 bg-amber-500/10 rounded w-1/2" />
+              <div className="h-3 bg-amber-500/10 rounded w-5/6" />
+              <p className="text-xs text-amber-400/60 mt-2">Generating briefing...</p>
+            </div>
+          ) : briefingError ? (
+            <p className="text-xs text-muted-foreground">Unable to load briefing. Click Refresh to try again.</p>
+          ) : briefing ? (
+            <Markdown>{briefing.briefing}</Markdown>
+          ) : (
+            <p className="text-xs text-muted-foreground">No briefing available.</p>
           )}
         </div>
       </div>

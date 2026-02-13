@@ -73,14 +73,21 @@ def main():
     for role in roles:
         print(f"  {role['role']}: categories={role['categories']}, keywords={role['keywords'][:5]}...")
 
-    # Step 3: Log in as hospital to load vault key
-    step(3, "Logging in as hospital (loading vault key)")
+    # Step 3: Log in as hospital and patient to load vault keys
+    step(3, "Logging in as hospital + patient (loading vault keys)")
     r = client.post("/api/auth/login", json={
         "username": "riverside_hospital",
         "password": "TrustMesh-demo-2026",
     })
     r.raise_for_status()
     print(f"  Logged in as {r.json()['display_name']}")
+
+    r = client.post("/api/auth/login", json={
+        "username": "peter",
+        "password": "TrustMesh-demo-2026",
+    })
+    r.raise_for_status()
+    print(f"  Logged in as {r.json()['display_name']} (patient — vault key loaded)")
 
     # Step 4: Issue UCAN token — attending physician
     step(4, "Issuing UCAN token (attending_physician role)")

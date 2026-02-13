@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents import generate_briefing
 from src.crypto import decrypt_text
+from src.auth import get_current_user_id
 from src.database import get_db
 from src.models import (
     AgentTask,
@@ -30,8 +31,11 @@ CACHE_TTL_MINUTES = 30
 
 
 @router.get("/users/{user_id}/briefing", response_model=BriefingResponse)
-async def get_briefing(user_id: str, db: AsyncSession = Depends(get_db)):
+async def get_briefing(user_id: str, db: AsyncSession = Depends(get_db),
+                       auth_user_id: str = Depends(get_current_user_id)):
     """Generate a morning briefing for the user."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
     from src.main import vault_keys
 
     user = await db.get(User, user_id)
@@ -65,7 +69,7 @@ async def get_briefing(user_id: str, db: AsyncSession = Depends(get_db)):
         try:
             content = decrypt_text(c.content_encrypted, vault_key)
         except Exception:
-            content = "[Could not decrypt]"
+            content = "(encrypted — vault key refresh needed)"
         user_capsules.append({
             "capsule_type": c.capsule_type,
             "title": c.title,
@@ -108,10 +112,15 @@ async def get_briefing(user_id: str, db: AsyncSession = Depends(get_db)):
         )
         for c in net_capsule_result.scalars().all():
             owner = await db.get(User, c.owner_id)
-            try:
-                content = decrypt_text(c.content_encrypted, vault_key)
-            except Exception:
-                content = "[encrypted]"
+            # Use the capsule OWNER's vault key, not the requesting user's
+            owner_vault_key = vault_keys.get(c.owner_id)
+            if owner_vault_key:
+                try:
+                    content = decrypt_text(c.content_encrypted, owner_vault_key)
+                except Exception:
+                    content = f"[Shared by {owner.display_name if owner else 'a network member'}]"
+            else:
+                content = f"[Shared by {owner.display_name if owner else 'a network member'} — content available when they're online]"
             recent_network_capsules.append({
                 "owner_name": owner.display_name if owner else "Unknown",
                 "title": c.title,

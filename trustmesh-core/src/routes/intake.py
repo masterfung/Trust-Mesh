@@ -2,11 +2,12 @@
 
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from src.auth import get_current_user_id
 from src.database import async_session
 from src.models import Agent, User
 
@@ -19,7 +20,8 @@ class IntakeMessage(BaseModel):
 
 
 @router.post("/users/{user_id}/intake")
-async def intake_step(user_id: str, data: IntakeMessage):
+async def intake_step(user_id: str, data: IntakeMessage,
+                      auth_user_id: str = Depends(get_current_user_id)):
     """Run one step of the intake onboarding conversation.
 
     The frontend sends the user's message + full conversation history.
@@ -29,6 +31,9 @@ async def intake_step(user_id: str, data: IntakeMessage):
     from src.main import vault_keys
     from src.agents import ToolContext, run_intake_step
     from src.gossip import get_user_networks
+
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
 
     async def event_generator():
         async with async_session() as db:
