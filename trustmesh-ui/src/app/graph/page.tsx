@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { api, type QueryResult, type User } from "@/lib/api";
 import { TrustGraph } from "@/components/TrustGraph";
 import Link from "next/link";
@@ -66,7 +66,6 @@ const DEMO_SCENARIOS = [
 type GraphView = "my" | "all";
 
 export default function GraphPage() {
-  const queryClient = useQueryClient();
   const [recentQueries, setRecentQueries] = useState<QueryResult[]>([]);
   const [isRunningAll, setIsRunningAll] = useState(false);
   const [graphView, setGraphView] = useState<GraphView>("all");

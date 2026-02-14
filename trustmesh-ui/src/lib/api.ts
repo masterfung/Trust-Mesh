@@ -267,6 +267,57 @@ export interface AuditLogEntry {
   created_at: string;
 }
 
+export interface FhirResource {
+  resourceType: string;
+  id: string;
+  meta?: { lastUpdated: string };
+  // Patient
+  name?: { use?: string; text?: string; given?: string[]; family?: string }[];
+  active?: boolean;
+  // AllergyIntolerance
+  clinicalStatus?: { coding: { system: string; code: string }[] };
+  verificationStatus?: { coding: { system: string; code: string }[] };
+  type?: string;
+  category?: string[];
+  // MedicationStatement
+  status?: string;
+  subject?: { reference: string };
+  patient?: { reference: string };
+  medicationCodeableConcept?: { text: string };
+  dateAsserted?: string;
+  // Condition / Observation
+  code?: { text: string };
+  valueString?: string;
+  // Common
+  note?: { text: string }[];
+  relationship?: { text: string }[];
+  communication?: { text: string }[];
+  _trustmesh?: {
+    capsule_id?: string;
+    visibility?: string;
+    emergency_accessible?: boolean;
+    can_reshare?: boolean;
+    substances?: string[];
+    username?: string;
+    user_id?: string;
+  };
+}
+
+export interface FhirBundle {
+  resourceType: "Bundle";
+  id: string;
+  meta: { lastUpdated: string };
+  type: string;
+  total: number;
+  entry: { resource: FhirResource; fullUrl: string }[];
+  _trustmesh_emergency?: {
+    audit_id: string;
+    access_role: string;
+    institution: string;
+    case_id: string;
+  };
+}
+
 // ── API Functions ──
 
 export const api = {
@@ -434,6 +485,24 @@ export const api = {
   // Graph
   getGraph: () => apiFetch<GraphData>("/api/graph"),
   getUserGraph: (userId: string) => apiFetch<GraphData>(`/api/graph/${userId}`),
+
+  // PIN
+  setPin: (userId: string, pin: string) =>
+    apiFetch<{ has_pin: boolean }>(`/api/users/${userId}/pin`, {
+      method: "POST",
+      body: JSON.stringify({ pin }),
+    }),
+  verifyPin: (userId: string, pin: string) =>
+    apiFetch<{ verified: boolean; token: string | null; expires_in: number }>(`/api/users/${userId}/pin/verify`, {
+      method: "POST",
+      body: JSON.stringify({ pin }),
+    }),
+  getPinStatus: (userId: string) =>
+    apiFetch<{ has_pin: boolean }>(`/api/users/${userId}/pin/status`),
+
+  // FHIR
+  getEmergencyFhirBundle: (auditId: string) =>
+    apiFetch<FhirBundle>(`/api/emergency/${auditId}/fhir`),
 
   // Demo
   demoWarmup: () =>

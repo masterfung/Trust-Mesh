@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { api, type AgentTask, type Briefing, type HealthStatus, type ServiceProvider } from "@/lib/api";
+import { api, type AgentTask, type Briefing, type ServiceProvider } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { TrustBadge, CapsuleTypeBadge } from "@/components/TrustBadge";
 import { Markdown } from "@/components/Markdown";
@@ -426,7 +426,11 @@ function BriefingCard({
   userId: string; briefing?: Briefing; briefingLoading: boolean; briefingError: boolean; queryClient: QueryClient;
 }) {
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>("morning");
-  useEffect(() => { setTimeOfDay(getTimeOfDay()); }, []);
+  useEffect(() => {
+    // Defer to the next frame to avoid hydration mismatch (server renders "morning").
+    const raf = requestAnimationFrame(() => setTimeOfDay(getTimeOfDay()));
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   const theme = BRIEFING_THEMES[timeOfDay];
   const isWeekend = [0, 6].includes(new Date().getDay());

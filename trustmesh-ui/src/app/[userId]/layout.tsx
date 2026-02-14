@@ -175,7 +175,9 @@ function NotificationBell({ userId }: { userId: string }) {
 
   // SSE real-time notification stream
   const openRef = useRef(open);
-  openRef.current = open;
+  useEffect(() => {
+    openRef.current = open;
+  }, [open]);
 
   useEffect(() => {
     const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";

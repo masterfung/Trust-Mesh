@@ -80,16 +80,61 @@ export default function Home() {
             { icon: "🔐", label: "AES-256 Encrypted" },
             { icon: "🤖", label: "AI Agent Per User" },
             { icon: "🛡️", label: "Trust-Tiered Access" },
-            { icon: "🔍", label: "Citadel Security" },
+            { icon: "🛡️", label: "Citadel Security", href: "https://trymighty.ai" },
           ].map((f) => (
-            <div
-              key={f.label}
-              className="flex items-center gap-2 px-4 py-2 rounded-full bg-card border border-card-border text-sm text-muted-foreground"
-            >
-              <span>{f.icon}</span>
-              <span>{f.label}</span>
-            </div>
+            "href" in f && f.href ? (
+              <a
+                key={f.label}
+                href={f.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-2 rounded-full bg-card border border-card-border text-sm text-muted-foreground hover:border-red-500/40 hover:text-red-400 transition-colors"
+              >
+                <span>{f.icon}</span>
+                <span>{f.label}</span>
+              </a>
+            ) : (
+              <div
+                key={f.label}
+                className="flex items-center gap-2 px-4 py-2 rounded-full bg-card border border-card-border text-sm text-muted-foreground"
+              >
+                <span>{f.icon}</span>
+                <span>{f.label}</span>
+              </div>
+            )
           ))}
+        </div>
+
+        {/* Navigation Links */}
+        <div className="flex gap-3 mb-12">
+          <Link
+            href="/about"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-accent hover:bg-accent-hover text-accent-fg text-sm font-medium transition-all hover:shadow-lg hover:shadow-accent/20"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            Why TrustMesh?
+          </Link>
+          <Link
+            href="/graph"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-card border border-card-border text-sm text-muted-foreground hover:text-foreground hover:border-accent/50 transition-all"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/>
+              <line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/>
+            </svg>
+            View Trust Graph
+          </Link>
+          <Link
+            href="/doc"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-card border border-card-border text-sm text-muted-foreground hover:text-foreground hover:border-accent/50 transition-all"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M16 18l2-2-2-2"/><path d="M8 6L6 8l2 2"/><path d="M14.5 4l-5 16"/>
+            </svg>
+            Protocol Docs
+          </Link>
         </div>
 
         {/* Auth Forms */}
@@ -148,34 +193,12 @@ export default function Home() {
           )}
         </div>
 
-        {/* Navigation Links */}
-        <div className="mt-10 flex gap-3">
-          <Link
-            href="/about"
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-accent hover:bg-accent-hover text-accent-fg text-sm font-medium transition-all hover:shadow-lg hover:shadow-accent/20"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
-            </svg>
-            Why TrustMesh?
-          </Link>
-          <Link
-            href="/graph"
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-card border border-card-border text-sm text-muted-foreground hover:text-foreground hover:border-accent/50 transition-all"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/>
-              <line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/>
-            </svg>
-            View Trust Graph
-          </Link>
-        </div>
       </div>
 
       {/* Footer */}
       <footer className="py-6 px-4 border-t border-card-border text-center">
         <p className="text-xs text-muted-foreground">
-          Built with Claude Opus 4.6 for the Claude Code Hackathon &middot; AES-256-GCM Encryption &middot; Citadel Security Scanning
+          Built with Claude Opus 4.6 for the Claude Code Hackathon &middot; AES-256-GCM Encryption &middot; <a href="https://trymighty.ai" target="_blank" rel="noopener noreferrer" className="text-red-400 hover:text-red-300 transition-colors">Citadel Security Scanning</a>
         </p>
       </footer>
     </div>
@@ -376,7 +399,6 @@ function LoginForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => v
 
 function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => void }) {
   const { signup } = useAuth();
-  const router = useRouter();
   const queryClient = useQueryClient();
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");

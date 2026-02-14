@@ -53,6 +53,7 @@ interface TooltipState {
   visible: boolean;
   x: number;
   y: number;
+  containerWidth: number;
   node: SimNode | null;
 }
 
@@ -85,6 +86,7 @@ export function TrustGraph({
     visible: false,
     x: 0,
     y: 0,
+    containerWidth: 0,
     node: null,
   });
   const animationQueueRef = useRef<QueryAnimation[]>([]);
@@ -240,9 +242,9 @@ export function TrustGraph({
         .attr("stroke-opacity", 1)
         .transition()
         .duration(1200)
-        .attr("stroke", "#3f3f46")
+        .attr("stroke", "#71717a")
         .attr("stroke-width", 1.5)
-        .attr("stroke-opacity", 0.5);
+        .attr("stroke-opacity", 0.6);
     },
     [getQueryColor]
   );
@@ -267,8 +269,8 @@ export function TrustGraph({
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove();
 
-    const width = svgRef.current.clientWidth;
-    const height = svgRef.current.clientHeight;
+    const width = svgRef.current.clientWidth || 800;
+    const height = svgRef.current.clientHeight || 600;
 
     // Defs for gradients and filters
     const defs = svg.append("defs");
@@ -318,7 +320,20 @@ export function TrustGraph({
       color: NETWORK_COLORS[n.network_type] || NETWORK_COLORS.custom,
     }));
 
-    // Simulation
+    // Build adjacency set to know which nodes have connections
+    const connectedIds = new Set<string>();
+    for (const l of links) {
+      const src = typeof l.source === "string" ? l.source : (l.source as SimNode).id;
+      const tgt = typeof l.target === "string" ? l.target : (l.target as SimNode).id;
+      connectedIds.add(src);
+      connectedIds.add(tgt);
+    }
+
+    // Graph center — offset slightly left to account for right sidebar
+    const graphCx = width * 0.45;
+    const graphCy = height * 0.45;
+
+    // Simulation — compact layout: moderate repulsion + strong gravity keeps clusters together
     const simulation = d3
       .forceSimulation(nodes)
       .force(
@@ -326,11 +341,20 @@ export function TrustGraph({
         d3
           .forceLink<SimNode, SimLink>(links)
           .id((d) => d.id)
-          .distance(160)
+          .distance(120)
+          .strength(0.8)
       )
       .force("charge", d3.forceManyBody().strength(-600))
-      .force("center", d3.forceCenter(width / 2, height / 2))
-      .force("collision", d3.forceCollide(60));
+      .force("center", d3.forceCenter(graphCx, graphCy))
+      .force("collision", d3.forceCollide(60))
+      // Strong gravity keeps sub-clusters near center; even stronger for disconnected service nodes
+      .force("x", d3.forceX<SimNode>(graphCx).strength((d) => connectedIds.has(d.id) ? 0.08 : 0.15))
+      .force("y", d3.forceY<SimNode>(graphCy).strength((d) => connectedIds.has(d.id) ? 0.08 : 0.15));
+
+    // Warm up the simulation so the layout is stable before first paint
+    simulation.alpha(1);
+    for (let i = 0; i < 200; i++) simulation.tick();
+    simulation.alpha(0.3).restart(); // Continue with gentle settling
 
     // Draw network hulls
     const hullGroup = g.append("g").attr("class", "hulls");
@@ -360,40 +384,55 @@ export function TrustGraph({
             .datum(hull)
             .attr("d", (d) => `M${d.join("L")}Z`)
             .attr("fill", net.color)
-            .attr("fill-opacity", 0.06)
+            .attr("fill-opacity", 0.04)
             .attr("stroke", net.color)
-            .attr("stroke-opacity", 0.25)
-            .attr("stroke-width", 1.5)
+            .attr("stroke-opacity", 0.2)
+            .attr("stroke-width", 1)
             .attr("stroke-dasharray", "6,4");
 
-          // Network label
+          // Network label — positioned above the hull with a dark background for readability
           const cx = d3.mean(memberNodes, (n) => n.x) ?? 0;
-          const cy = (d3.min(memberNodes, (n) => n.y) ?? 0) - 65;
+          const cy = (d3.min(memberNodes, (n) => n.y) ?? 0) - 60;
+
+          // Background pill behind label
+          const labelText = net.name;
+          const charWidth = 6;
+          const pillWidth = labelText.length * charWidth + 16;
+          hullGroup
+            .append("rect")
+            .attr("x", cx - pillWidth / 2)
+            .attr("y", cy - 9)
+            .attr("width", pillWidth)
+            .attr("height", 18)
+            .attr("rx", 9)
+            .attr("fill", "#09090b")
+            .attr("fill-opacity", 0.75);
+
           hullGroup
             .append("text")
             .attr("x", cx)
-            .attr("y", cy)
+            .attr("y", cy + 4)
             .attr("text-anchor", "middle")
             .attr("fill", net.color)
-            .attr("font-size", "11px")
+            .attr("font-size", "10px")
             .attr("font-weight", "600")
             .attr("font-family", "system-ui, sans-serif")
-            .attr("opacity", 0.7)
-            .text(net.name);
+            .attr("opacity", 0.85)
+            .text(labelText);
         }
       }
     }
 
-    // Links
+    // Links — visible connection lines between nodes
     const link = g
       .append("g")
       .selectAll("line")
       .data(links)
       .join("line")
       .attr("class", "edge")
-      .attr("stroke", "#3f3f46")
+      .attr("stroke", "#71717a")
       .attr("stroke-width", 1.5)
-      .attr("stroke-opacity", 0.5);
+      .attr("stroke-opacity", 0.6);
 
     // Node groups
     const node = g
@@ -402,9 +441,9 @@ export function TrustGraph({
       .data(nodes)
       .join("g")
       .style("cursor", "pointer")
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .call(
         d3
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           .drag<any, SimNode>()
           .on("start", (event, d) => {
             if (!event.active) simulation.alphaTarget(0.3).restart();
@@ -433,6 +472,7 @@ export function TrustGraph({
           visible: true,
           x: event.clientX - rect.left,
           y: event.clientY - rect.top,
+          containerWidth: rect.width,
           node: d,
         });
       })
@@ -444,11 +484,12 @@ export function TrustGraph({
           visible: true,
           x: event.clientX - rect.left,
           y: event.clientY - rect.top,
+          containerWidth: rect.width,
           node: d,
         });
       })
       .on("mouseleave", () => {
-        setTooltip({ visible: false, x: 0, y: 0, node: null });
+        setTooltip({ visible: false, x: 0, y: 0, containerWidth: 0, node: null });
       });
 
     // --- Service provider nodes: diamond shape ---
@@ -551,27 +592,44 @@ export function TrustGraph({
 
     // Auto-fit the graph to viewport after simulation settles
     const fitTimer = setTimeout(() => {
-      // Calculate bounding box of all nodes
-      const xs = nodes.map((n) => n.x ?? 0);
-      const ys = nodes.map((n) => n.y ?? 0);
-      const minX = Math.min(...xs) - 80;
-      const maxX = Math.max(...xs) + 80;
-      const minY = Math.min(...ys) - 80;
-      const maxY = Math.max(...ys) + 80;
+      // Re-read actual SVG dimensions (may differ from initial mount / SSR defaults)
+      const actualWidth = svgRef.current?.clientWidth || width;
+      const actualHeight = svgRef.current?.clientHeight || height;
+
+      // Fit on connected nodes only (the main cluster) — outlier service nodes
+      // are accessible via pan/zoom but shouldn't shrink the main view
+      const fitNodes = nodes.filter((n) => connectedIds.has(n.id));
+      const targetNodes = fitNodes.length > 2 ? fitNodes : nodes;
+
+      const xs = targetNodes.map((n) => n.x ?? 0);
+      const ys = targetNodes.map((n) => n.y ?? 0);
+      const pad = 90;
+      const minX = Math.min(...xs) - pad;
+      const maxX = Math.max(...xs) + pad;
+      const minY = Math.min(...ys) - pad;
+      const maxY = Math.max(...ys) + pad;
       const bboxWidth = maxX - minX;
       const bboxHeight = maxY - minY;
 
-      const scale =
+      // Guard against zero-area bounding boxes (no nodes, or all at same position)
+      if (bboxWidth <= 0 || bboxHeight <= 0 || !isFinite(bboxWidth) || !isFinite(bboxHeight)) return;
+
+      const scale = Math.max(
+        0.5, // Never zoom out below 0.5 — keeps nodes readable
         Math.min(
-          width / bboxWidth,
-          height / bboxHeight,
-          1.8 // Don't zoom in too much
-        ) * 0.85; // Leave some padding
+          actualWidth / bboxWidth,
+          actualHeight / bboxHeight,
+          1.4 // Don't zoom in too much
+        ) * 0.88 // Leave some breathing room
+      );
 
       const cx = (minX + maxX) / 2;
       const cy = (minY + maxY) / 2;
-      const tx = width / 2 - cx * scale;
-      const ty = height / 2 - cy * scale - 20; // Nudge up slightly for visual balance
+      const tx = actualWidth / 2 - cx * scale;
+      const ty = actualHeight / 2 - cy * scale;
+
+      // Guard against NaN from degenerate calculations
+      if (!isFinite(tx) || !isFinite(ty) || !isFinite(scale)) return;
 
       svg
         .transition()
@@ -588,7 +646,7 @@ export function TrustGraph({
       for (const anim of queue) {
         animateQuery(anim.fromId, anim.toId, anim.decision, "public");
       }
-    }, 1500); // Wait for simulation to mostly settle
+    }, 300); // Simulation is pre-warmed, just need a short delay for DOM
 
     // Process queued animations on simulation end too
     simulation.on("end", () => {
@@ -610,7 +668,7 @@ export function TrustGraph({
     if (!tooltip.visible) return { display: "none" };
     const tooltipWidth = 280;
     const tooltipOffset = 16;
-    const containerWidth = containerRef.current?.clientWidth ?? 800;
+    const containerWidth = tooltip.containerWidth || 800;
 
     // Position to the right by default; flip left if it would overflow
     let left = tooltip.x + tooltipOffset;

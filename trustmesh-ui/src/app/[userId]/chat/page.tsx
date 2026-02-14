@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type User, type QueryResult, type AgentAction, type Connection, type Network } from "@/lib/api";
+import { api, type User, type QueryResult, type AgentAction, type Connection } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { TrustBadge, DecisionBadge } from "@/components/TrustBadge";
 import { Markdown } from "@/components/Markdown";
@@ -37,10 +37,6 @@ export default function ChatPage() {
   const { data: users } = useQuery({
     queryKey: ["users"],
     queryFn: api.listUsers,
-  });
-  const { data: user } = useQuery({
-    queryKey: ["user", userId],
-    queryFn: () => api.getUser(userId),
   });
   const { data: history } = useQuery({
     queryKey: ["queries", userId],
@@ -844,7 +840,7 @@ function QueryResultCard({
         {result.agent_actions && result.agent_actions.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-3">
             {result.agent_actions.map((action: AgentAction, i: number) => (
-              <AgentActionCard key={i} action={action} ownerId={result.from_user_id} />
+              <AgentActionCard key={i} action={action} />
             ))}
           </div>
         )}
@@ -904,7 +900,7 @@ function QueryResultCard({
 // Agent Action Inline Cards
 // ═══════════════════════════════════════════════════════════════
 
-function AgentActionCard({ action, ownerId }: { action: AgentAction; ownerId: string }) {
+function AgentActionCard({ action }: { action: AgentAction }) {
   if (action.type === "capsule_created" || action.type === "capsule_updated") {
     return (
       <div

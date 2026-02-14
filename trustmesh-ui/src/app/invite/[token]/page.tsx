@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -72,7 +73,7 @@ export default function InvitePage() {
       const user = await createRes.json();
 
       // Accept invite (join the network)
-      const acceptRes = await fetch(`${API_BASE}/api/invite/${token}/accept?user_id=${user.id}`, {
+      const acceptRes = await fetch(`${API_BASE}/api/invite/${token}/accept`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -106,7 +107,7 @@ export default function InvitePage() {
         <div className="max-w-md text-center">
           <h1 className="text-xl font-bold mb-2 text-danger">Invalid Invite</h1>
           <p className="text-muted-foreground mb-4">{error}</p>
-          <a href="/" className="text-accent hover:underline">Go to TrustMesh</a>
+          <Link href="/" className="text-accent hover:underline">Go to TrustMesh</Link>
         </div>
       </div>
     );
@@ -214,7 +215,7 @@ export default function InvitePage() {
 
         <p className="text-center text-xs text-muted-foreground">
           Already have an account?{" "}
-          <a href="/" className="text-accent hover:underline">Log in</a>
+          <Link href="/" className="text-accent hover:underline">Log in</Link>
         </p>
       </div>
     </div>

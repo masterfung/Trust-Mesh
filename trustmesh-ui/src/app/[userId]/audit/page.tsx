@@ -231,8 +231,8 @@ function AuditCard({ entry, userId }: { entry: AuditLogEntry; userId: string }) 
             )}
           </div>
 
-          {/* Direction indicator */}
-          <div className="mt-2">
+          {/* Direction indicator + FHIR link */}
+          <div className="mt-2 flex items-center gap-2">
             <span className={`text-[10px] px-2 py-0.5 rounded-full ${
               isActor
                 ? "bg-sky-500/10 text-sky-400 border border-sky-500/20"
@@ -240,6 +240,14 @@ function AuditCard({ entry, userId }: { entry: AuditLogEntry; userId: string }) 
             }`}>
               {isActor ? "You initiated" : "Your data accessed"}
             </span>
+            {entry.action === "emergency_data_access" && entry.decision === "allowed" && (
+              <a
+                href={`/emergency/${entry.id}/fhir`}
+                className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20 transition-colors"
+              >
+                View FHIR Bundle
+              </a>
+            )}
           </div>
         </div>
       </div>

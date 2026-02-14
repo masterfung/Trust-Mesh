@@ -1,324 +1,608 @@
 "use client";
 
 import Link from "next/link";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useState } from "react";
 
-/* ─────────────── Data ─────────────── */
+/* ═══════════════ TOOLTIP ═══════════════ */
 
-type Framework = {
-  name: string;
-  fullName: string;
-  by: string;
-  color: string;
-  layer: string;
-  what: string;
-  brings: string[];
-  missing: string[];
-};
-
-const FRAMEWORKS: Framework[] = [
-  {
-    name: "A2A",
-    fullName: "Agent-to-Agent Protocol",
-    by: "Google DeepMind",
-    color: "from-blue-500 to-cyan-400",
-    layer: "Communication",
-    what: "Standardized protocol for AI agents to discover, authenticate, and communicate with each other.",
-    brings: ["Agent discovery", "Task delegation", "Interoperability"],
-    missing: ["No trust model", "No data sovereignty", "No scoped authorization"],
-  },
-  {
-    name: "MCP",
-    fullName: "Model Context Protocol",
-    by: "Anthropic",
-    color: "from-orange-500 to-amber-400",
-    layer: "Context",
-    what: "Universal protocol for connecting AI models to tools, data sources, and external services.",
-    brings: ["Tool integration", "Context management", "Standardized resources"],
-    missing: ["No peer trust", "No encryption", "No identity layer"],
-  },
-  {
-    name: "UCP",
-    fullName: "Universal Context Protocol",
-    by: "Google",
-    color: "from-green-500 to-emerald-400",
-    layer: "Context",
-    what: "Google's approach to connecting AI models with structured context from enterprise data sources.",
-    brings: ["Enterprise integration", "Structured context", "Multi-modal support"],
-    missing: ["Vendor-centric", "No decentralized identity", "No user sovereignty"],
-  },
-  {
-    name: "x402",
-    fullName: "HTTP 402 Payment Protocol",
-    by: "Coinbase",
-    color: "from-indigo-500 to-violet-400",
-    layer: "Payment",
-    what: "Native payment protocol for agent-to-agent transactions using HTTP 402 status codes.",
-    brings: ["Agent payments", "Micropayments", "Service monetization"],
-    missing: ["Payment only", "No trust verification", "No knowledge sharing"],
-  },
-  {
-    name: "DID",
-    fullName: "Decentralized Identifiers",
-    by: "W3C Standard",
-    color: "from-purple-500 to-pink-400",
-    layer: "Identity",
-    what: "Self-sovereign identity standard enabling verifiable, decentralized digital identifiers.",
-    brings: ["Self-sovereign ID", "Verifiable credentials", "No central authority"],
-    missing: ["Identity only", "No authorization logic", "No agent integration"],
-  },
-  {
-    name: "UCAN",
-    fullName: "User Controlled Auth Networks",
-    by: "Fission / UCAN WG",
-    color: "from-amber-500 to-yellow-400",
-    layer: "Authorization",
-    what: "Capability-based authorization using cryptographic tokens that users can delegate and attenuate.",
-    brings: ["Scoped permissions", "Delegatable tokens", "Time-bounded access"],
-    missing: ["Auth only", "No data layer", "No agent orchestration"],
-  },
-  {
-    name: "OpenCLAAS",
-    fullName: "Open Competitive Landscape for Agents and Services",
-    by: "Community",
-    color: "from-rose-500 to-red-400",
-    layer: "Discovery",
-    what: "Open marketplace and discovery layer for AI agent services and capabilities.",
-    brings: ["Agent marketplace", "Competitive pricing", "Service discovery"],
-    missing: ["No trust verification", "No encryption", "No knowledge management"],
-  },
-];
-
-const LAYER_ORDER = ["Identity", "Authorization", "Communication", "Context", "Payment", "Discovery"];
-
-const PROBLEMS = [
-  {
-    icon: (
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-        <line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-      </svg>
-    ),
-    title: "The Trust Gap",
-    description: "Agents can talk to each other (A2A), but have no way to verify trust. A doctor's agent asking for patient data looks identical to a stranger's agent.",
-    detail: "Current protocols handle transport, not trust. There's no mechanism to say 'I trust this agent because it belongs to someone in my family network' vs 'this is a random public request'.",
-    severity: "critical",
-  },
-  {
-    icon: (
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
-      </svg>
-    ),
-    title: "No Data Sovereignty",
-    description: "Your knowledge, preferences, and private data live on corporate servers. You don't control who accesses what, or when.",
-    detail: "MCP and UCP connect AI to data sources, but the user isn't in the loop. There's no encrypted vault, no tiered access, no user-controlled sharing policies.",
-    severity: "critical",
-  },
-  {
-    icon: (
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-      </svg>
-    ),
-    title: "All-or-Nothing Access",
-    description: "When sharing does happen, it's binary: share everything or share nothing. No role-based, context-aware, time-bounded access.",
-    detail: "A paramedic doesn't need your full medical history — just blood type and allergies. Current systems can't express 'share only medications for the next 2 hours'.",
-    severity: "high",
-  },
-  {
-    icon: (
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
-        <line x1="9" y1="15" x2="15" y2="15" />
-      </svg>
-    ),
-    title: "No Audit Trail",
-    description: "When someone accesses your data via an AI agent, there's no immutable record. You don't know who accessed what, when, or why.",
-    detail: "HIPAA and GDPR require audit trails. Current agent frameworks have no built-in logging of who accessed what data through which authorization.",
-    severity: "high",
-  },
-  {
-    icon: (
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
-        <line x1="1" y1="1" x2="23" y2="23" />
-      </svg>
-    ),
-    title: "Fragmented Identity",
-    description: "DIDs exist as a standard, but no agent framework integrates them. Each platform has its own identity silo.",
-    detail: "You can't prove your agent represents you across different platforms. There's no unified cryptographic identity linking your agent to your real-world trust relationships.",
-    severity: "medium",
-  },
-];
-
-type SolutionLayer = {
-  label: string;
-  color: string;
-  frameworks: string[];
-  trustmesh: string;
-};
-
-const SOLUTION_LAYERS: SolutionLayer[] = [
-  { label: "Encrypted Vault", color: "bg-red-500", frameworks: [], trustmesh: "AES-256-GCM encrypted capsules with tiered access (private/network/public)" },
-  { label: "Agent Identity", color: "bg-purple-500", frameworks: ["DID"], trustmesh: "Ed25519 keypairs + DID per agent, published via A2A discovery" },
-  { label: "Authorization", color: "bg-amber-500", frameworks: ["UCAN"], trustmesh: "Role-scoped, time-bounded UCAN tokens with ed25519 signatures" },
-  { label: "Trust Networks", color: "bg-green-500", frameworks: [], trustmesh: "Multi-hop trust scoring via shared networks, connections, and Citadel scanning" },
-  { label: "Communication", color: "bg-blue-500", frameworks: ["A2A", "MCP"], trustmesh: "A2A protocol discovery + MCP-compatible tool integration" },
-  { label: "Audit & Compliance", color: "bg-indigo-500", frameworks: [], trustmesh: "Immutable audit trail with actor, role, scope, and decision for every access" },
-];
-
-const EMERGENCY_STEPS = [
-  { actor: "Hospital", action: "Issues UCAN token", detail: "Scoped to attending_physician role, 2-hour expiry, signed with hospital's ed25519 key", color: "text-amber-400" },
-  { actor: "Bob's Agent", action: "Validates token", detail: "Verifies signature, checks expiry, confirms audience DID matches, validates issuer is registered", color: "text-blue-400" },
-  { actor: "Bob's Agent", action: "Filters by scope", detail: "attending_physician role grants access to: medications, allergies, conditions, history. NOT finances.", color: "text-green-400" },
-  { actor: "System", action: "Logs everything", detail: "Audit entry: who accessed, what role, which capsules, decision, timestamp. Notification queued for Bob.", color: "text-purple-400" },
-  { actor: "Bob", action: "Reviews access", detail: "When he recovers, Bob sees: 'Riverside Hospital accessed your medical data via emergency protocol at 2:34 AM'", color: "text-cyan-400" },
-];
-
-/* ─────────────── Components ─────────────── */
-
-function FrameworkCard({ fw }: { fw: Framework }) {
+function Tip({ label, desc }: { label: string; desc: string }) {
+  const [show, setShow] = useState(false);
   return (
-    <Card className="bg-card border-card-border hover:border-accent/20 transition-all">
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className={cn("w-8 h-8 rounded-lg bg-gradient-to-br flex items-center justify-center text-white text-xs font-bold", fw.color)}>
-              {fw.name[0]}
-            </div>
-            <div>
-              <CardTitle className="text-sm">{fw.name}</CardTitle>
-              <CardDescription className="text-[10px]">{fw.by}</CardDescription>
-            </div>
-          </div>
-          <Badge variant="outline" className="text-[10px]">{fw.layer}</Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="pt-0 space-y-3">
-        <p className="text-xs text-muted-foreground leading-relaxed">{fw.what}</p>
-        <div>
-          <p className="text-[10px] font-semibold text-green-400 mb-1">What it brings</p>
-          <div className="flex flex-wrap gap-1">
-            {fw.brings.map((b) => (
-              <Badge key={b} variant="secondary" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20">
-                {b}
-              </Badge>
-            ))}
-          </div>
-        </div>
-        <div>
-          <p className="text-[10px] font-semibold text-red-400 mb-1">What&apos;s missing</p>
-          <div className="flex flex-wrap gap-1">
-            {fw.missing.map((m) => (
-              <Badge key={m} variant="secondary" className="text-[10px] bg-red-500/10 text-red-400 border-red-500/20">
-                {m}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+    <span
+      className="relative inline-block cursor-help"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+      onFocus={() => setShow(true)}
+      onBlur={() => setShow(false)}
+      tabIndex={0}
+    >
+      <span className="border-b border-dashed border-current/40">{label}</span>
+      {show && (
+        <span className="absolute z-[9999] bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 px-3.5 py-3 rounded-xl bg-[#1a1a2e] border border-card-border shadow-2xl text-left pointer-events-none">
+          <span className="block text-xs font-semibold text-foreground mb-1">{label}</span>
+          <span className="block text-[11px] text-foreground/70 leading-relaxed">{desc}</span>
+          <span className="absolute top-full left-1/2 -translate-x-1/2 -mt-px w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-card-border" />
+        </span>
+      )}
+    </span>
   );
 }
 
-function CoverageMatrix() {
-  const capabilities = [
-    "Agent Discovery",
-    "Agent Communication",
-    "Tool Integration",
-    "Identity (DID)",
-    "Authorization",
-    "Encryption",
-    "Trust Scoring",
-    "Data Sovereignty",
-    "Audit Trail",
-    "Scoped Access",
-  ];
-  const coverage: Record<string, Set<string>> = {
-    "A2A":       new Set(["Agent Discovery", "Agent Communication"]),
-    "MCP":       new Set(["Tool Integration", "Agent Communication"]),
-    "UCP":       new Set(["Tool Integration"]),
-    "x402":      new Set([]),
-    "DID":       new Set(["Identity (DID)"]),
-    "UCAN":      new Set(["Authorization", "Scoped Access"]),
-    "OpenCLAAS": new Set(["Agent Discovery"]),
-    "TrustMesh": new Set(capabilities), // all of them
-  };
-  const fwNames = ["A2A", "MCP", "UCP", "x402", "DID", "UCAN", "OpenCLAAS", "TrustMesh"];
+/* ═══════════════ ACRONYM DESCRIPTIONS ═══════════════ */
 
+const ACRONYMS: Record<string, string> = {
+  "A2A": "Agent-to-Agent — Google's open protocol that lets AI agents discover each other and exchange messages across different platforms.",
+  "OpenCLAAS": "Open Capability Ledger as a Service — a community-driven registry where agents publish their capabilities so others can find and connect with them.",
+  "MCP": "Model Context Protocol — Anthropic's standard for connecting AI models to external tools, databases, and data sources.",
+  "UCP": "Unified Context Protocol — Google's protocol for sharing context and tools between AI systems, similar to MCP.",
+  "x402": "HTTP 402 Payment Protocol — Coinbase's standard for AI agent micropayments, enabling agents to pay each other for services.",
+  "DID": "Decentralized Identifiers — W3C standard for self-sovereign digital identity that works without a central authority.",
+  "UCAN": "User Controlled Authorization Networks — Fission's token format for delegatable, offline-verifiable authorization between agents.",
+};
+
+/* ═══════════════ DATA ═══════════════ */
+
+type Framework = {
+  name: string;
+  by: string;
+  color: string;
+  textColor: string;
+};
+
+type LayerDef = {
+  name: string;
+  color: string;
+  borderColor: string;
+  bgColor: string;
+  frameworks: Framework[];
+  gap: string;
+};
+
+const LAYERS: LayerDef[] = [
+  {
+    name: "Discovery",
+    color: "text-rose-400",
+    borderColor: "border-rose-500/30",
+    bgColor: "bg-rose-500/5",
+    frameworks: [
+      { name: "A2A", by: "Google", color: "bg-blue-500/20", textColor: "text-blue-400" },
+      { name: "OpenCLAAS", by: "Community", color: "bg-rose-500/20", textColor: "text-rose-400" },
+    ],
+    gap: "No trust verification between discovered agents",
+  },
+  {
+    name: "Communication",
+    color: "text-blue-400",
+    borderColor: "border-blue-500/30",
+    bgColor: "bg-blue-500/5",
+    frameworks: [
+      { name: "A2A", by: "Google", color: "bg-blue-500/20", textColor: "text-blue-400" },
+      { name: "MCP", by: "Anthropic", color: "bg-orange-500/20", textColor: "text-orange-400" },
+    ],
+    gap: "Messages sent in plaintext — no encryption",
+  },
+  {
+    name: "Context",
+    color: "text-green-400",
+    borderColor: "border-green-500/30",
+    bgColor: "bg-green-500/5",
+    frameworks: [
+      { name: "MCP", by: "Anthropic", color: "bg-orange-500/20", textColor: "text-orange-400" },
+      { name: "UCP", by: "Google", color: "bg-green-500/20", textColor: "text-green-400" },
+    ],
+    gap: "User has no control over data access policies",
+  },
+  {
+    name: "Payment",
+    color: "text-indigo-400",
+    borderColor: "border-indigo-500/30",
+    bgColor: "bg-indigo-500/5",
+    frameworks: [
+      { name: "x402", by: "Coinbase", color: "bg-indigo-500/20", textColor: "text-indigo-400" },
+    ],
+    gap: "Payment without trust — can't verify agent identity",
+  },
+  {
+    name: "Identity",
+    color: "text-purple-400",
+    borderColor: "border-purple-500/30",
+    bgColor: "bg-purple-500/5",
+    frameworks: [
+      { name: "DID", by: "W3C", color: "bg-purple-500/20", textColor: "text-purple-400" },
+    ],
+    gap: "Identity without authorization or agent integration",
+  },
+  {
+    name: "Authorization",
+    color: "text-amber-400",
+    borderColor: "border-amber-500/30",
+    bgColor: "bg-amber-500/5",
+    frameworks: [
+      { name: "UCAN", by: "Fission", color: "bg-amber-500/20", textColor: "text-amber-400" },
+    ],
+    gap: "Auth tokens without data layer or agent orchestration",
+  },
+  {
+    name: "Security",
+    color: "text-red-400",
+    borderColor: "border-red-500/30",
+    bgColor: "bg-red-500/5",
+    frameworks: [],
+    gap: "No framework scans for prompt injection or multimodal attacks",
+  },
+];
+
+const MISSING_LAYERS = [
+  { name: "Encrypted Vault", desc: "User-owned encrypted data storage" },
+  { name: "Trust Scoring", desc: "Multi-hop trust from connections + networks" },
+  { name: "Scoped Access", desc: "Role-based, time-bounded data sharing" },
+  { name: "Security Scanning", desc: "Text + multimodal prompt injection & data exfiltration detection" },
+  { name: "Audit Trail", desc: "Immutable log of every access decision" },
+];
+
+const capabilities = [
+  "Agent Discovery", "Agent Communication", "Tool Integration",
+  "Identity (DID)", "Authorization", "Encryption",
+  "Trust Scoring", "Data Sovereignty", "Audit Trail", "Scoped Access",
+  "Security Scanning",
+];
+const coverage: Record<string, Set<string>> = {
+  "A2A":       new Set(["Agent Discovery", "Agent Communication"]),
+  "MCP":       new Set(["Tool Integration", "Agent Communication"]),
+  "UCP":       new Set(["Tool Integration"]),
+  "x402":      new Set([]),
+  "DID":       new Set(["Identity (DID)"]),
+  "UCAN":      new Set(["Authorization", "Scoped Access"]),
+  "OpenCLAAS": new Set(["Agent Discovery"]),
+  "TrustMesh": new Set(capabilities),
+};
+const fwNames = ["A2A", "MCP", "UCP", "x402", "DID", "UCAN", "OpenCLAAS", "TrustMesh"];
+
+/* ═══════════════ SVG DIAGRAMS ═══════════════ */
+
+function GapDiagram() {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs border-collapse">
-        <thead>
-          <tr>
-            <th className="text-left py-2 px-2 border-b border-card-border text-muted-foreground font-medium">Capability</th>
-            {fwNames.map((name) => (
-              <th key={name} className={cn(
-                "py-2 px-2 border-b border-card-border text-center font-medium",
-                name === "TrustMesh" ? "text-accent" : "text-muted-foreground"
+    <div className="relative w-full overflow-hidden rounded-2xl border border-card-border bg-card p-6 md:p-8">
+      {/* Title */}
+      <div className="mb-6">
+        <h3 className="text-lg font-semibold mb-1">Today&apos;s Agent Ecosystem</h3>
+        <p className="text-sm text-foreground/60">Each framework solves one piece — but critical layers are missing entirely.</p>
+      </div>
+
+      {/* Visual: Agents with gap between them */}
+      <div className="flex flex-col gap-0">
+        {/* The two agents */}
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-2.5 bg-blue-500/10 border border-blue-500/20 rounded-xl px-4 py-3">
+            <div className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-blue-400"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-blue-400">Alice&apos;s Agent</div>
+              <div className="text-xs text-foreground/50">Asks a question</div>
+            </div>
+          </div>
+
+          {/* Arrow */}
+          <div className="flex-1 flex items-center px-3">
+            <div className="flex-1 border-t-2 border-dashed border-foreground/20" />
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-foreground/30 shrink-0"><path d="M5 12h14m-4-4 4 4-4 4"/></svg>
+          </div>
+
+          <div className="flex items-center gap-2.5 bg-green-500/10 border border-green-500/20 rounded-xl px-4 py-3">
+            <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-green-400"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-green-400">Bob&apos;s Agent</div>
+              <div className="text-xs text-foreground/50">Has the data</div>
+            </div>
+          </div>
+        </div>
+
+        {/* The pipeline with gaps */}
+        <div className="grid grid-cols-6 gap-2 text-center">
+          {[
+            { label: "Discover", status: "partial", note: "A2A" },
+            { label: "Authenticate", status: "missing", note: "No trust" },
+            { label: "Encrypt", status: "missing", note: "Plaintext" },
+            { label: "Scope access", status: "missing", note: "All or nothing" },
+            { label: "Respond", status: "partial", note: "MCP/UCP" },
+            { label: "Audit", status: "missing", note: "No trail" },
+          ].map((step) => (
+            <div key={step.label} className="flex flex-col items-center gap-1.5">
+              <div className={cn(
+                "w-full py-2.5 rounded-lg text-xs font-semibold border",
+                step.status === "partial"
+                  ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
+                  : "bg-red-500/10 border-red-500/30 text-red-400"
               )}>
-                {name}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {capabilities.map((cap) => (
-            <tr key={cap} className="hover:bg-card-hover/50">
-              <td className="py-1.5 px-2 border-b border-card-border/50 text-foreground/80">{cap}</td>
-              {fwNames.map((name) => (
-                <td key={name} className="py-1.5 px-2 border-b border-card-border/50 text-center">
-                  {coverage[name]?.has(cap) ? (
-                    <span className={name === "TrustMesh" ? "text-accent" : "text-green-400"}>
-                      {name === "TrustMesh" ? (
-                        <svg className="inline w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                      ) : (
-                        <svg className="inline w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                      )}
-                    </span>
-                  ) : (
-                    <span className="text-muted-foreground/50">—</span>
-                  )}
-                </td>
-              ))}
-            </tr>
+                {step.status === "missing" ? (
+                  <svg className="inline w-3.5 h-3.5 mr-0.5 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                ) : (
+                  <svg className="inline w-3.5 h-3.5 mr-0.5 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 9v2m0 4h.01"/><circle cx="12" cy="12" r="10"/></svg>
+                )}
+                {step.label}
+              </div>
+              <span className="text-[11px] text-foreground/50">{step.note}</span>
+            </div>
           ))}
-        </tbody>
-      </table>
+        </div>
+
+        {/* Legend */}
+        <div className="flex items-center gap-5 mt-5 text-xs text-foreground/50">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-sm bg-red-500/40" />
+            <span>Missing — no framework covers this</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-sm bg-amber-500/40" />
+            <span>Partial — exists but incomplete</span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-function ArchitectureDiagram() {
+function ProtocolFlowDiagram() {
+  const steps = [
+    { num: "1", label: "Trust\nResolve", icon: "trust", color: "text-green-400", bg: "bg-green-500/10", border: "border-green-500/30", desc: "Connection + network trust analysis" },
+    { num: "2", label: "Citadel\nInput Scan", icon: "shield", color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30", desc: "Text + multimodal injection detection" },
+    { num: "3", label: "Semantic\nRetrieval", icon: "search", color: "text-blue-400", bg: "bg-blue-500/10", border: "border-blue-500/30", desc: "Vector search over encrypted capsules" },
+    { num: "4", label: "Opus 4.6\nReasoning", icon: "brain", color: "text-purple-400", bg: "bg-purple-500/10", border: "border-purple-500/30", desc: "Trust-aware response generation" },
+    { num: "5", label: "Citadel\nOutput Scan", icon: "shield", color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30", desc: "Data exfiltration + leak detection" },
+    { num: "6", label: "Audit &\nRespond", icon: "log", color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/30", desc: "Log decision + return response" },
+  ];
+
+  const icons: Record<string, React.ReactNode> = {
+    trust: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+    shield: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+    search: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
+    brain: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>,
+    log: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>,
+  };
+
   return (
-    <div className="relative">
-      {/* Layer stack */}
-      <div className="space-y-2">
-        {SOLUTION_LAYERS.map((layer, i) => (
-          <div key={layer.label} className="flex items-stretch gap-3">
-            {/* Layer bar */}
-            <div className={cn("w-1.5 rounded-full shrink-0", layer.color)} />
-            <div className="flex-1 bg-card border border-card-border rounded-xl p-4 hover:border-accent/20 transition-all">
-              <div className="flex items-center justify-between mb-1">
-                <h4 className="text-sm font-semibold">{layer.label}</h4>
-                {layer.frameworks.length > 0 && (
-                  <div className="flex gap-1">
-                    {layer.frameworks.map((fw) => (
-                      <Badge key={fw} variant="outline" className="text-[10px]">{fw}</Badge>
-                    ))}
+    <div className="rounded-2xl border border-card-border bg-card p-6 md:p-8">
+      <h3 className="text-lg font-semibold mb-1">The TrustMesh Query Protocol</h3>
+      <p className="text-sm text-foreground/60 mb-6">Every cross-agent query passes through this 6-step pipeline. No shortcuts.</p>
+
+      {/* Flow diagram */}
+      <div className="flex flex-col gap-0">
+        {/* Source agent */}
+        <div className="flex items-center gap-2.5 mb-4 ml-2">
+          <div className="w-6 h-6 rounded-full bg-blue-500/30 flex items-center justify-center">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-400"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
+          </div>
+          <span className="text-sm text-foreground/60">Incoming query from another agent</span>
+        </div>
+
+        {/* Steps */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
+          {steps.map((step, i) => (
+            <div key={i} className="relative">
+              <div className={cn("rounded-xl border p-4 h-full flex flex-col items-center text-center gap-2 transition-all hover:scale-[1.02]", step.bg, step.border)}>
+                <div className="flex items-center gap-2">
+                  <span className={cn("text-xl font-bold opacity-50", step.color)}>{step.num}</span>
+                  <div className={step.color}>{icons[step.icon]}</div>
+                </div>
+                <div className={cn("text-sm font-semibold leading-tight whitespace-pre-line", step.color)}>
+                  {step.label}
+                </div>
+                <div className="text-xs text-foreground/50 leading-snug mt-auto">
+                  {step.desc}
+                </div>
+              </div>
+              {/* Arrow between steps */}
+              {i < steps.length - 1 && (
+                <div className="hidden lg:block absolute -right-3 top-1/2 -translate-y-1/2 z-10 text-foreground/30">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M5 12h14m-4-4 4 4-4 4"/></svg>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Response */}
+        <div className="flex items-center gap-2.5 mt-4 ml-2">
+          <div className="w-6 h-6 rounded-full bg-green-500/30 flex items-center justify-center">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-green-400"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <span className="text-sm text-foreground/60">Trust-verified, audited response returned</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CitadelCallout() {
+  return (
+    <div className="rounded-2xl border border-red-500/20 bg-gradient-to-br from-red-500/5 to-transparent p-6 md:p-8">
+      <div className="flex items-start gap-4">
+        <div className="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center shrink-0">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-red-400"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <div className="flex-1">
+          <h3 className="text-lg font-semibold mb-1">
+            Powered by <a href="https://trymighty.ai" target="_blank" rel="noopener noreferrer" className="text-red-400 hover:text-red-300 transition-colors">Mighty&apos;s Citadel</a>
+          </h3>
+          <p className="text-sm text-foreground/70 mb-4">
+            Every query and response passes through Citadel&apos;s security scanner — guarding against prompt injection, data exfiltration, and adversarial attacks.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <a href="https://github.com/TryMightyAI/citadel" target="_blank" rel="noopener noreferrer" className="rounded-xl border border-card-border bg-card p-4 block hover:border-green-500/40 transition-colors">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="px-2 py-0.5 rounded-md bg-green-500/10 border border-green-500/20 text-green-400 text-[11px] font-bold">OSS</div>
+                <span className="text-sm font-semibold">Citadel Open Source</span>
+              </div>
+              <p className="text-sm text-foreground/60">Text-based input/output scanning. Detects prompt injection and data exfiltration in text payloads. Free and open source.</p>
+            </a>
+            <a href="https://trymighty.ai" target="_blank" rel="noopener noreferrer" className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 block hover:border-red-500/40 transition-colors">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="px-2 py-0.5 rounded-md bg-red-500/10 border border-red-500/20 text-red-400 text-[11px] font-bold">PRO</div>
+                <span className="text-sm font-semibold">Citadel Pro</span>
+              </div>
+              <p className="text-sm text-foreground/60">Full multimodal protection — scans images, audio, documents, and video for adversarial attacks, steganography, and hidden instructions.</p>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmergencyFlowDiagram() {
+  const steps = [
+    { actor: "Hospital", action: "Issues UCAN token", detail: "Scoped to attending_physician, 2hr expiry, ed25519 signed", color: "text-amber-400", bg: "bg-amber-500/10", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2z"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg> },
+    { actor: "Bob's Agent", action: "Validates token", detail: "Checks signature, expiry, audience DID, and issuer registry", color: "text-blue-400", bg: "bg-blue-500/10", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> },
+    { actor: "Scope Filter", action: "Role-based filtering", detail: "Doctor: meds, allergies, conditions. Nurse: blood type, vitals only", color: "text-green-400", bg: "bg-green-500/10", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg> },
+    { actor: "Audit System", action: "Logs everything", detail: "Actor, role, capsules accessed, decision reasoning, timestamp", color: "text-purple-400", bg: "bg-purple-500/10", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> },
+    { actor: "Bob", action: "Gets notified", detail: "\"Riverside Hospital accessed your medical data at 2:34 AM\"", color: "text-cyan-400", bg: "bg-cyan-500/10", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> },
+  ];
+
+  return (
+    <div className="rounded-2xl border border-card-border bg-card p-6 md:p-8">
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <h3 className="text-lg font-semibold mb-1">Emergency Access Protocol</h3>
+          <p className="text-sm text-foreground/60">Bob collapses at the hospital. His doctor needs his medical data — now.</p>
+        </div>
+        <div className="shrink-0 px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-semibold">
+          <Tip label="UCAN" desc={ACRONYMS["UCAN"]} />
+        </div>
+      </div>
+
+      <div className="flex flex-col">
+        {steps.map((step, i) => (
+          <div key={i} className="flex gap-3.5 relative">
+            {/* Connector line */}
+            {i < steps.length - 1 && (
+              <div className="absolute left-[17px] top-[38px] bottom-0 w-px bg-card-border" />
+            )}
+            {/* Icon circle */}
+            <div className={cn("w-[35px] h-[35px] rounded-full shrink-0 flex items-center justify-center border relative z-10", step.bg, `border-${step.color.replace('text-', '')}/30`)}>
+              <span className={step.color}>{step.icon}</span>
+            </div>
+            {/* Content */}
+            <div className="pb-5 flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className={cn("text-sm font-bold", step.color)}>{step.actor}</span>
+                <span className="text-sm text-foreground">{step.action}</span>
+              </div>
+              <p className="text-sm text-foreground/50 mt-0.5">{step.detail}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Role scope table */}
+      <div className="mt-5 pt-5 border-t border-card-border">
+        <p className="text-xs font-semibold text-foreground/60 mb-3 uppercase tracking-wider">Role-Based Scoping</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+          {[
+            { role: "Doctor", scope: "Medications, allergies, conditions, history", color: "border-green-500/30 bg-green-500/5" },
+            { role: "ER Nurse", scope: "Blood type, weight, height, allergies", color: "border-blue-500/30 bg-blue-500/5" },
+            { role: "Paramedic", scope: "Blood type, allergies, DNR status", color: "border-amber-500/30 bg-amber-500/5" },
+            { role: "Admin", scope: "Insurance, emergency contacts, next of kin", color: "border-purple-500/30 bg-purple-500/5" },
+          ].map((r) => (
+            <div key={r.role} className={cn("rounded-lg border p-3", r.color)}>
+              <div className="text-xs font-bold text-foreground">{r.role}</div>
+              <div className="text-xs text-foreground/50 mt-1 leading-relaxed">{r.scope}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════ TAB COMPONENTS ═══════════════ */
+
+function EnvironmentTab() {
+  return (
+    <div className="space-y-8">
+      {/* Layer map */}
+      <div>
+        <h2 className="text-xl font-bold mb-1">The Agent Framework Landscape</h2>
+        <p className="text-sm text-foreground/60 mb-5">Seven frameworks across seven layers. Each solves one piece — none solves the whole puzzle.</p>
+
+        <div className="rounded-2xl border border-card-border bg-card">
+          {/* Layer rows */}
+          {LAYERS.map((layer, i) => (
+            <div key={layer.name} className={cn("flex items-center gap-4 px-5 py-3.5 border-b border-card-border/50 last:border-b-0 hover:bg-card-hover/30 transition-colors", i % 2 === 0 ? "bg-transparent" : "bg-card-hover/10")}>
+              {/* Layer label */}
+              <div className="w-28 shrink-0">
+                <span className={cn("text-sm font-bold", layer.color)}>{layer.name}</span>
+              </div>
+              {/* Framework chips */}
+              <div className="flex items-center gap-2 flex-1">
+                {layer.frameworks.length > 0 ? layer.frameworks.map((fw) => (
+                  <div key={`${layer.name}-${fw.name}`} className={cn("px-3 py-1.5 rounded-lg text-xs font-semibold border", fw.color, fw.textColor, `border-${fw.textColor.replace('text-', '')}/20`)}>
+                    <Tip label={fw.name} desc={ACRONYMS[fw.name] || fw.name} />
+                    <span className="text-[10px] font-normal text-foreground/40 ml-1.5">{fw.by}</span>
                   </div>
+                )) : (
+                  <span className="text-xs text-foreground/30 italic">No framework exists</span>
                 )}
               </div>
-              <p className="text-xs text-muted-foreground">{layer.trustmesh}</p>
+              {/* Gap indicator */}
+              <div className="text-xs text-red-400 flex items-center gap-1.5 shrink-0 max-w-[240px]">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="shrink-0"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                <span className="hidden md:inline text-foreground/50">{layer.gap}</span>
+              </div>
             </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Missing layers callout */}
+      <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-red-400"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <span className="text-sm font-semibold text-red-400">No framework provides these</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {MISSING_LAYERS.map((m) => (
+            <div key={m.name} className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-background/50 border border-red-500/20">
+              <span className="text-sm font-semibold text-foreground">{m.name}</span>
+              <span className="text-xs text-foreground/50">— {m.desc}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Coverage Matrix */}
+      <div className="rounded-2xl border border-card-border bg-card p-6">
+        <h3 className="text-lg font-semibold mb-1">Capability Coverage</h3>
+        <p className="text-sm text-foreground/60 mb-4">What each framework covers — and what only TrustMesh provides end-to-end. <span className="text-foreground/40">Hover a name to learn more.</span></p>
+        <div className="overflow-x-auto overflow-y-visible">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr>
+                <th className="text-left py-2.5 px-2 border-b border-card-border text-foreground/60 font-medium">Capability</th>
+                {fwNames.map((name) => (
+                  <th key={name} className={cn("py-2.5 px-2 border-b border-card-border text-center font-medium", name === "TrustMesh" ? "text-accent" : "text-foreground/60")}>
+                    {ACRONYMS[name] ? <Tip label={name} desc={ACRONYMS[name]} /> : name}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {capabilities.map((cap) => (
+                <tr key={cap} className="hover:bg-card-hover/50">
+                  <td className="py-2 px-2 border-b border-card-border/50 text-foreground/70">{cap}</td>
+                  {fwNames.map((name) => (
+                    <td key={name} className="py-2 px-2 border-b border-card-border/50 text-center">
+                      {coverage[name]?.has(cap) ? (
+                        <span className={name === "TrustMesh" ? "text-accent" : "text-green-400"}>
+                          <svg className={cn("inline", name === "TrustMesh" ? "w-4.5 h-4.5" : "w-4 h-4")} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={name === "TrustMesh" ? "3" : "2.5"} strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        </span>
+                      ) : (
+                        <span className="text-foreground/20">—</span>
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProblemTab() {
+  return (
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-xl font-bold mb-1">The Missing Trust Layer</h2>
+        <p className="text-sm text-foreground/60">Agents can communicate — but they can&apos;t verify who they&apos;re talking to, what data to share, or log what happened.</p>
+      </div>
+
+      {/* Gap diagram */}
+      <GapDiagram />
+
+      {/* Multimodal attack callout */}
+      <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5">
+        <div className="flex items-center gap-2 mb-2">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-amber-400"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span className="text-sm font-semibold text-amber-400">The Multimodal Blind Spot</span>
+        </div>
+        <p className="text-sm text-foreground/60 leading-relaxed">
+          Current frameworks only handle text. But agents increasingly process <strong className="text-foreground/80">images, audio, documents, and video</strong> — all of which can carry hidden adversarial instructions. A malicious image can hijack an agent&apos;s behavior just as effectively as a text prompt injection. No existing framework addresses this.
+        </p>
+      </div>
+
+      {/* Scenario comparison */}
+      <div className="rounded-2xl border border-card-border bg-card p-6 md:p-8">
+        <h3 className="text-lg font-semibold mb-1">The Scenario</h3>
+        <p className="text-sm text-foreground/60 mb-5">Bob collapses at a hospital. His doctor needs his medical data. What happens?</p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Without */}
+          <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-5">
+            <h4 className="text-sm font-semibold text-red-400 mb-3 flex items-center gap-2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              Without TrustMesh
+            </h4>
+            <div className="space-y-2.5">
+              {[
+                "Doctor calls records department",
+                "Fax machines, phone trees, manual lookup",
+                "30-60 min delay in critical moments",
+                "Full record exposed — or nothing at all",
+                "No audit trail of who saw what",
+                "Bob never knows who accessed his data",
+              ].map((text, i) => (
+                <div key={i} className="flex gap-2.5 text-sm">
+                  <span className="text-red-400/70 shrink-0 font-mono text-xs mt-0.5">{i + 1}</span>
+                  <span className="text-foreground/60">{text}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* With */}
+          <div className="rounded-xl border border-green-500/20 bg-green-500/5 p-5">
+            <h4 className="text-sm font-semibold text-green-400 mb-3 flex items-center gap-2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              With TrustMesh
+            </h4>
+            <div className="space-y-2.5">
+              {[
+                "Hospital issues scoped UCAN token",
+                "Bob's agent validates cryptographically",
+                "Instant access — under 2 seconds",
+                "Only role-appropriate data shared",
+                "Full audit log with decision reasoning",
+                "Bob gets notification when he recovers",
+              ].map((text, i) => (
+                <div key={i} className="flex gap-2.5 text-sm">
+                  <span className="text-green-400/70 shrink-0 font-mono text-xs mt-0.5">{i + 1}</span>
+                  <span className="text-foreground/60">{text}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Impact stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {[
+          { stat: "4/6", label: "pipeline steps missing", color: "text-red-400" },
+          { stat: "0", label: "frameworks scan multimodal", color: "text-red-400" },
+          { stat: "0", label: "frameworks audit access", color: "text-red-400" },
+          { stat: "1", label: "framework covers all 11", color: "text-accent" },
+        ].map((s, i) => (
+          <div key={i} className="rounded-xl border border-card-border bg-card p-4 text-center">
+            <div className={cn("text-3xl font-bold", s.color)}>{s.stat}</div>
+            <div className="text-xs text-foreground/50 mt-1">{s.label}</div>
           </div>
         ))}
       </div>
@@ -326,46 +610,115 @@ function ArchitectureDiagram() {
   );
 }
 
-function EmergencyFlowDiagram() {
+function SolutionTab() {
   return (
-    <div className="space-y-3">
-      {EMERGENCY_STEPS.map((step, i) => (
-        <div key={i} className="flex gap-3">
-          {/* Step number + connector */}
-          <div className="flex flex-col items-center">
-            <div className="w-7 h-7 rounded-full bg-card border border-card-border flex items-center justify-center text-xs font-bold text-foreground/80">
-              {i + 1}
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-xl font-bold mb-1">How TrustMesh Solves It</h2>
+        <p className="text-sm text-foreground/60">
+          TrustMesh doesn&apos;t replace existing frameworks — it <strong className="text-foreground">weaves them together</strong> with the missing trust, encryption, and sovereignty layers.
+        </p>
+      </div>
+
+      {/* Query protocol flow */}
+      <ProtocolFlowDiagram />
+
+      {/* Citadel callout */}
+      <CitadelCallout />
+
+      {/* Architecture stack */}
+      <div className="rounded-2xl border border-card-border bg-card p-6 md:p-8">
+        <h3 className="text-lg font-semibold mb-1">Architecture Stack</h3>
+        <p className="text-sm text-foreground/60 mb-5">Each layer builds on the ones below. Existing standards integrated where they fit.</p>
+
+        <div className="space-y-2">
+          {[
+            { label: "Encrypted Vault", color: "bg-red-500", tech: "AES-256-GCM", desc: "Tiered capsules (private / network / public)", frameworks: [] },
+            { label: "Agent Identity", color: "bg-purple-500", tech: "ed25519 + DID", desc: "Cryptographic keypairs per agent", frameworks: ["DID"] },
+            { label: "Authorization", color: "bg-amber-500", tech: "UCAN Tokens", desc: "Role-scoped, time-bounded, delegatable", frameworks: ["UCAN"] },
+            { label: "Security Scanning", color: "bg-red-500", tech: "Citadel", desc: "Text + multimodal prompt injection & exfil detection", frameworks: [] },
+            { label: "Trust Networks", color: "bg-green-500", tech: "Graph scoring", desc: "Connections + shared networks + trust tiers", frameworks: [] },
+            { label: "Communication", color: "bg-blue-500", tech: "REST + SSE", desc: "A2A discovery, streaming responses", frameworks: ["A2A", "MCP"] },
+            { label: "Audit & Compliance", color: "bg-indigo-500", tech: "Immutable log", desc: "Actor, role, scope, decision for every access", frameworks: [] },
+          ].map((layer) => (
+            <div key={layer.label} className="flex items-center gap-3 group">
+              <div className={cn("w-1.5 h-12 rounded-full shrink-0 opacity-80", layer.color)} />
+              <div className="flex-1 flex items-center gap-3 bg-card-hover/20 rounded-xl px-4 py-3 group-hover:bg-card-hover/40 transition-colors">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-sm font-semibold">{layer.label}</span>
+                    <span className="text-xs text-foreground/40 font-mono">{layer.tech}</span>
+                  </div>
+                  <div className="text-sm text-foreground/50">{layer.desc}</div>
+                </div>
+                {layer.frameworks.length > 0 && (
+                  <div className="flex gap-1.5 shrink-0">
+                    {layer.frameworks.map((fw) => (
+                      <span key={fw} className="px-2.5 py-1 rounded-md bg-card border border-card-border text-xs font-medium text-foreground/60">
+                        <Tip label={fw} desc={ACRONYMS[fw] || fw} />
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            {i < EMERGENCY_STEPS.length - 1 && (
-              <div className="w-px flex-1 bg-card-border my-1" />
-            )}
-          </div>
-          {/* Content */}
-          <div className="flex-1 pb-3">
-            <div className="flex items-center gap-2 mb-0.5">
-              <span className={cn("text-xs font-bold", step.color)}>{step.actor}</span>
-              <span className="text-xs text-foreground font-medium">{step.action}</span>
-            </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">{step.detail}</p>
-          </div>
+          ))}
         </div>
-      ))}
+      </div>
+
+      {/* Emergency access flow */}
+      <EmergencyFlowDiagram />
+
+      {/* CTA */}
+      <div className="text-center py-8">
+        <p className="text-base text-foreground/60 mb-5">Ready to see it in action?</p>
+        <div className="flex justify-center gap-3">
+          <Link href="/" className="inline-flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover text-accent-fg font-semibold rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-accent/20">
+            Try the Demo
+          </Link>
+          <Link href="/graph" className="inline-flex items-center gap-2 px-6 py-3 bg-card border border-card-border hover:border-accent/30 text-foreground font-medium rounded-xl text-sm transition-all hover:bg-card-hover">
+            View Trust Graph
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }
 
-function SeverityBadge({ severity }: { severity: string }) {
-  const styles: Record<string, string> = {
-    critical: "bg-red-500/10 text-red-400 border-red-500/20",
-    high: "bg-amber-500/10 text-amber-400 border-amber-500/20",
-    medium: "bg-blue-500/10 text-blue-400 border-blue-500/20",
-  };
-  return <Badge variant="outline" className={cn("text-[10px] uppercase", styles[severity])}>{severity}</Badge>;
+/* ═══════════════ TABS ═══════════════ */
+
+function TabButton({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all",
+        active
+          ? "bg-accent text-accent-fg"
+          : "text-muted-foreground hover:text-foreground hover:bg-card-hover"
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
 }
 
-/* ─────────────── Page ─────────────── */
+/* ═══════════════ PAGE ═══════════════ */
 
 export default function AboutPage() {
+  const [tab, setTab] = useState<"environment" | "problem" | "solution">("environment");
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -383,8 +736,8 @@ export default function AboutPage() {
                   Why <span className="text-gradient">TrustMesh</span>?
                 </h1>
               </div>
-              <p className="text-sm text-muted-foreground max-w-xl">
-                AI agents are learning to talk. But they haven&apos;t learned to trust. Here&apos;s why that matters and how TrustMesh solves it.
+              <p className="text-sm text-foreground/60 max-w-xl">
+                AI agents are learning to talk. But they haven&apos;t learned to trust.
               </p>
             </div>
             <Link
@@ -403,238 +756,32 @@ export default function AboutPage() {
 
       {/* Content */}
       <div className="max-w-5xl mx-auto px-6 py-8">
-        <Tabs defaultValue="environment" className="w-full">
-          <TabsList className="mb-8 bg-card border border-card-border rounded-xl p-1">
-            <TabsTrigger value="environment" className="rounded-lg data-[state=active]:bg-accent data-[state=active]:text-accent-fg">
-              <svg className="w-3.5 h-3.5 mr-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-              </svg>
-              Environment
-            </TabsTrigger>
-            <TabsTrigger value="problem" className="rounded-lg data-[state=active]:bg-accent data-[state=active]:text-accent-fg">
-              <svg className="w-3.5 h-3.5 mr-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-                <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
-              Problem
-            </TabsTrigger>
-            <TabsTrigger value="solution" className="rounded-lg data-[state=active]:bg-accent data-[state=active]:text-accent-fg">
-              <svg className="w-3.5 h-3.5 mr-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
-              Solution
-            </TabsTrigger>
-          </TabsList>
+        {/* Tab bar */}
+        <div className="flex gap-1 mb-8 bg-card border border-card-border rounded-xl p-1 w-fit">
+          <TabButton
+            active={tab === "environment"}
+            onClick={() => setTab("environment")}
+            icon={<svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>}
+            label="Environment"
+          />
+          <TabButton
+            active={tab === "problem"}
+            onClick={() => setTab("problem")}
+            icon={<svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>}
+            label="Problem"
+          />
+          <TabButton
+            active={tab === "solution"}
+            onClick={() => setTab("solution")}
+            icon={<svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>}
+            label="Solution"
+          />
+        </div>
 
-          {/* ── Environment Tab ── */}
-          <TabsContent value="environment" className="space-y-8">
-            <div>
-              <h2 className="text-lg font-bold mb-1">The Agent Framework Landscape</h2>
-              <p className="text-sm text-muted-foreground mb-6">
-                Seven major frameworks are shaping how AI agents interact. Each solves a piece of the puzzle — but none solves the whole thing.
-              </p>
-
-              {/* Layer legend */}
-              <div className="flex flex-wrap gap-2 mb-6">
-                {LAYER_ORDER.map((layer) => (
-                  <Badge key={layer} variant="outline" className="text-xs">{layer}</Badge>
-                ))}
-              </div>
-
-              {/* Framework cards grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-                {FRAMEWORKS.map((fw) => (
-                  <FrameworkCard key={fw.name} fw={fw} />
-                ))}
-              </div>
-            </div>
-
-            {/* Coverage Matrix */}
-            <Card className="bg-card border-card-border">
-              <CardHeader>
-                <CardTitle className="text-base">Capability Coverage Matrix</CardTitle>
-                <CardDescription>
-                  How each framework contributes — and what only TrustMesh provides end-to-end.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <CoverageMatrix />
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* ── Problem Tab ── */}
-          <TabsContent value="problem" className="space-y-8">
-            <div>
-              <h2 className="text-lg font-bold mb-1">What&apos;s Missing</h2>
-              <p className="text-sm text-muted-foreground mb-6">
-                The current agent ecosystem has critical gaps. No framework addresses the fundamental question: <strong className="text-foreground">how do agents trust each other with your private data?</strong>
-              </p>
-            </div>
-
-            {/* Problem cards */}
-            <div className="space-y-4">
-              {PROBLEMS.map((p) => (
-                <Card key={p.title} className="bg-card border-card-border hover:border-accent/20 transition-all">
-                  <CardContent className="pt-6">
-                    <div className="flex gap-4">
-                      <div className="text-muted-foreground shrink-0 mt-0.5">{p.icon}</div>
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2">
-                          <h3 className="text-base font-semibold">{p.title}</h3>
-                          <SeverityBadge severity={p.severity} />
-                        </div>
-                        <p className="text-sm text-muted-foreground mb-2">{p.description}</p>
-                        <p className="text-xs text-muted-foreground/80 leading-relaxed">{p.detail}</p>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-
-            {/* Visual: The Gap Diagram */}
-            <Card className="bg-card border-card-border">
-              <CardHeader>
-                <CardTitle className="text-base">The Scenario</CardTitle>
-                <CardDescription>Bob collapses at a hospital. His doctor needs his medical data. What happens today?</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Without TrustMesh */}
-                  <div className="p-4 rounded-xl border border-red-500/20 bg-red-500/5">
-                    <h4 className="text-sm font-semibold text-red-400 mb-3 flex items-center gap-2">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                      </svg>
-                      Without TrustMesh
-                    </h4>
-                    <ul className="space-y-2 text-xs text-muted-foreground">
-                      <li className="flex gap-2"><span className="text-red-400 shrink-0">1.</span> Doctor calls records department</li>
-                      <li className="flex gap-2"><span className="text-red-400 shrink-0">2.</span> Fax machines, phone trees, manual lookup</li>
-                      <li className="flex gap-2"><span className="text-red-400 shrink-0">3.</span> 30-60 min delay in critical moments</li>
-                      <li className="flex gap-2"><span className="text-red-400 shrink-0">4.</span> Full record exposed or nothing at all</li>
-                      <li className="flex gap-2"><span className="text-red-400 shrink-0">5.</span> No audit trail of who saw what</li>
-                      <li className="flex gap-2"><span className="text-red-400 shrink-0">6.</span> Bob never knows who accessed his data</li>
-                    </ul>
-                  </div>
-
-                  {/* With TrustMesh */}
-                  <div className="p-4 rounded-xl border border-green-500/20 bg-green-500/5">
-                    <h4 className="text-sm font-semibold text-green-400 mb-3 flex items-center gap-2">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <polyline points="20 6 9 17 4 12" />
-                      </svg>
-                      With TrustMesh
-                    </h4>
-                    <ul className="space-y-2 text-xs text-muted-foreground">
-                      <li className="flex gap-2"><span className="text-green-400 shrink-0">1.</span> Hospital issues scoped UCAN token</li>
-                      <li className="flex gap-2"><span className="text-green-400 shrink-0">2.</span> Bob&apos;s agent validates cryptographically</li>
-                      <li className="flex gap-2"><span className="text-green-400 shrink-0">3.</span> Instant access — under 2 seconds</li>
-                      <li className="flex gap-2"><span className="text-green-400 shrink-0">4.</span> Only role-appropriate data shared</li>
-                      <li className="flex gap-2"><span className="text-green-400 shrink-0">5.</span> Full audit log with decision reasoning</li>
-                      <li className="flex gap-2"><span className="text-green-400 shrink-0">6.</span> Bob gets notification when he recovers</li>
-                    </ul>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* ── Solution Tab ── */}
-          <TabsContent value="solution" className="space-y-8">
-            <div>
-              <h2 className="text-lg font-bold mb-1">How TrustMesh Solves It</h2>
-              <p className="text-sm text-muted-foreground mb-6">
-                TrustMesh doesn&apos;t replace existing frameworks — it <strong className="text-foreground">weaves them together</strong> with the missing trust and sovereignty layers.
-              </p>
-            </div>
-
-            {/* Architecture Stack */}
-            <Card className="bg-card border-card-border">
-              <CardHeader>
-                <CardTitle className="text-base">Architecture Stack</CardTitle>
-                <CardDescription>Each layer builds on the ones below. Existing standards are integrated where they fit.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ArchitectureDiagram />
-              </CardContent>
-            </Card>
-
-            {/* Emergency Access Flow */}
-            <Card className="bg-card border-card-border">
-              <CardHeader>
-                <CardTitle className="text-base">Emergency Access Flow</CardTitle>
-                <CardDescription>Real-world example: hospital needs a patient&apos;s medical data via UCAN token.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <EmergencyFlowDiagram />
-              </CardContent>
-            </Card>
-
-            {/* Key innovations */}
-            <div>
-              <h3 className="text-base font-semibold mb-4">Key Innovations</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {[
-                  {
-                    title: "Trust-Tiered Knowledge Capsules",
-                    description: "Knowledge stored in encrypted capsules with three tiers: private (only you), network (shared groups), and public (everyone). Each capsule has freshness tracking, category tags, and context modes.",
-                    icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>,
-                  },
-                  {
-                    title: "Citadel Security Scanning",
-                    description: "Every query passes through Citadel — an LLM-based security scanner that detects prompt injection, data exfiltration attempts, and unsafe content before any data is shared.",
-                    icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
-                  },
-                  {
-                    title: "Proactive AI Agents",
-                    description: "Each user gets a personal AI agent (Claude Opus 4.6) that manages their vault, generates briefings, handles queries, and acts on their behalf — all within their trust policies.",
-                    icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>,
-                  },
-                  {
-                    title: "Cryptographic Emergency Access",
-                    description: "UCAN tokens signed with ed25519 enable role-scoped, time-bounded emergency access. A paramedic sees blood type; a doctor sees full history. Every access is audited.",
-                    icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
-                  },
-                ].map((item) => (
-                  <Card key={item.title} className="bg-card border-card-border">
-                    <CardContent className="pt-6">
-                      <div className="flex items-start gap-3">
-                        <div className="text-accent shrink-0 mt-0.5">{item.icon}</div>
-                        <div>
-                          <h4 className="text-sm font-semibold mb-1">{item.title}</h4>
-                          <p className="text-xs text-muted-foreground leading-relaxed">{item.description}</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </div>
-
-            {/* CTA */}
-            <div className="text-center py-8">
-              <p className="text-sm text-muted-foreground mb-4">
-                Ready to see it in action?
-              </p>
-              <div className="flex justify-center gap-3">
-                <Link
-                  href="/"
-                  className="inline-flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover text-accent-fg font-semibold rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-accent/20"
-                >
-                  Try the Demo
-                </Link>
-                <Link
-                  href="/graph"
-                  className="inline-flex items-center gap-2 px-6 py-3 bg-card border border-card-border hover:border-accent/30 text-foreground font-medium rounded-xl text-sm transition-all hover:bg-card-hover"
-                >
-                  View Trust Graph
-                </Link>
-              </div>
-            </div>
-          </TabsContent>
-        </Tabs>
+        {/* Tab content */}
+        {tab === "environment" && <EnvironmentTab />}
+        {tab === "problem" && <ProblemTab />}
+        {tab === "solution" && <SolutionTab />}
       </div>
     </div>
   );

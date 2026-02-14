@@ -123,7 +123,7 @@ export default function OnboardPage() {
           } catch {}
         }
       }
-    } catch (err) {
+    } catch {
       setMessages((prev) => [
         ...prev.slice(0, -1).length === prev.length ? prev : prev.slice(0, -1),
         {
