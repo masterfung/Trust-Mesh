@@ -1,13 +1,15 @@
 """Network invite routes — email invitations for cold start."""
 
+import html
 import os
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.auth import get_current_user_id
 from src.database import get_db
 from src.models import Network, NetworkInvite, NetworkMembership, Notification, User, new_uuid, utcnow
 
@@ -30,11 +32,18 @@ class InviteResponse(BaseModel):
 
 
 @router.post("/networks/{network_id}/invite", response_model=InviteResponse)
-async def send_invite(network_id: str, req: InviteRequest, db: AsyncSession = Depends(get_db)):
+async def send_invite(
+    network_id: str,
+    req: InviteRequest,
+    db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
     """Send an email invite to join a network."""
     network = await db.get(Network, network_id)
     if not network:
         raise HTTPException(404, "Network not found")
+    if network.owner_id != auth_user_id:
+        raise HTTPException(403, "Only the network owner can invite members")
 
     # Generate a secure token
     token = secrets.token_urlsafe(32)
@@ -64,22 +73,27 @@ async def send_invite(network_id: str, req: InviteRequest, db: AsyncSession = De
             inviter = await db.get(User, network.owner_id)
             inviter_name = inviter.display_name if inviter else "Someone"
 
+            inviter_name_safe = html.escape(inviter_name)
+            network_name_safe = html.escape(network.name)
+            invite_url_safe = html.escape(invite_url)
+            message_safe = html.escape(req.message or "")
+
             resend.Emails.send({
                 "from": from_email,
                 "to": [req.email],
-                "subject": f"{inviter_name} invited you to join {network.name} on TrustMesh",
+                "subject": f"{inviter_name_safe} invited you to join {network_name_safe} on TrustMesh",
                 "html": f"""
                 <div style="font-family: system-ui, sans-serif; max-width: 500px; margin: 0 auto; padding: 40px 20px;">
                     <h1 style="color: #7c5cfc; margin-bottom: 4px;">TrustMesh</h1>
                     <p style="color: #888; margin-top: 0;">Trust-Aware Knowledge Sharing</p>
                     <hr style="border: 1px solid #eee; margin: 24px 0;">
-                    <p><strong>{inviter_name}</strong> invited you to join the <strong>{network.name}</strong> network.</p>
-                    {f'<p style="color: #666; font-style: italic;">"{req.message}"</p>' if req.message else ''}
+                    <p><strong>{inviter_name_safe}</strong> invited you to join the <strong>{network_name_safe}</strong> network.</p>
+                    {f'<p style="color: #666; font-style: italic;">"{message_safe}"</p>' if message_safe else ''}
                     <p>TrustMesh is where your personal AI agent holds your knowledge and shares it with the right people — powered by trust networks and encrypted vaults.</p>
-                    <a href="{invite_url}" style="display: inline-block; background: #7c5cfc; color: white; padding: 12px 32px; border-radius: 12px; text-decoration: none; font-weight: 600; margin: 16px 0;">
+                    <a href="{invite_url_safe}" style="display: inline-block; background: #7c5cfc; color: white; padding: 12px 32px; border-radius: 12px; text-decoration: none; font-weight: 600; margin: 16px 0;">
                         Accept Invite
                     </a>
-                    <p style="color: #888; font-size: 13px;">Or copy this link: {invite_url}</p>
+                    <p style="color: #888; font-size: 13px;">Or copy this link: {invite_url_safe}</p>
                 </div>
                 """,
             })
@@ -122,7 +136,11 @@ async def validate_invite(token: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/invite/{token}/accept")
-async def accept_invite(token: str, user_id: str, db: AsyncSession = Depends(get_db)):
+async def accept_invite(
+    token: str,
+    db: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
     """Accept an invite — adds user to the network."""
     result = await db.execute(
         select(NetworkInvite).where(NetworkInvite.token == token, NetworkInvite.status == "pending")
@@ -176,8 +194,17 @@ async def accept_invite(token: str, user_id: str, db: AsyncSession = Depends(get
 
 
 @router.get("/networks/{network_id}/invites")
-async def list_invites(network_id: str, db: AsyncSession = Depends(get_db)):
+async def list_invites(
+    network_id: str,
+    db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
     """List pending invites for a network."""
+    network = await db.get(Network, network_id)
+    if not network:
+        raise HTTPException(404, "Network not found")
+    if network.owner_id != auth_user_id:
+        raise HTTPException(403, "Only the network owner can view invites")
     result = await db.execute(
         select(NetworkInvite).where(NetworkInvite.network_id == network_id).order_by(NetworkInvite.created_at.desc())
     )

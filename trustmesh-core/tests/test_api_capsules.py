@@ -5,6 +5,7 @@ for the capsule and connection routes, using httpOnly cookie-based auth.
 """
 
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from src.auth import sessions, _login_attempts
@@ -16,7 +17,7 @@ from src.rate_limit import _connection_limiter
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def setup_db():
     """Reset DB, auth state, and rate limiters for each test."""
     sessions.clear()
@@ -39,7 +40,7 @@ def _make_transport():
     return ASGITransport(app=app)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client():
     """Create an async test client."""
     transport = _make_transport()
@@ -47,7 +48,7 @@ async def client():
         yield ac
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def anon_client():
     """A second, always-unauthenticated client (no stored cookies)."""
     transport = _make_transport()
@@ -89,8 +90,8 @@ CAPSULE_PAYLOAD = {
 async def signup_user(client: AsyncClient, user_data: dict) -> tuple[dict, dict]:
     """Sign up a user and return (user_json, cookies_dict).
 
-    The cookies dict can be passed to subsequent requests as
-    ``cookies=cookies``.
+    Note: httpx is deprecating per-request ``cookies=...``. Prefer
+    setting cookies on a client instance via ``client.cookies.update(cookies)``.
     """
     resp = await client.post("/api/users", json=user_data)
     assert resp.status_code == 200, f"Signup failed: {resp.text}"
@@ -99,13 +100,20 @@ async def signup_user(client: AsyncClient, user_data: dict) -> tuple[dict, dict]
     return resp.json(), cookies
 
 
+def _as_user(client: AsyncClient, cookies: dict) -> None:
+    """Authenticate subsequent requests on this client as the given cookies."""
+    client.cookies.clear()
+    client.cookies.update(cookies)
+
+
 async def create_capsule(
     client: AsyncClient, user_id: str, cookies: dict, payload: dict | None = None,
 ) -> dict:
     """Create a capsule for a user and return the response JSON."""
     data = payload or CAPSULE_PAYLOAD
+    _as_user(client, cookies)
     resp = await client.post(
-        f"/api/users/{user_id}/capsules", json=data, cookies=cookies,
+        f"/api/users/{user_id}/capsules", json=data,
     )
     assert resp.status_code == 200, f"Create capsule failed: {resp.text}"
     return resp.json()
@@ -150,10 +158,10 @@ async def test_create_capsule_as_different_user(client):
     user_a, _cookies_a = await signup_user(client, VALID_USER_A)
     _user_b, cookies_b = await signup_user(client, VALID_USER_B)
 
+    _as_user(client, cookies_b)
     resp = await client.post(
         f"/api/users/{user_a['id']}/capsules",
         json=CAPSULE_PAYLOAD,
-        cookies=cookies_b,
     )
     assert resp.status_code == 403
 
@@ -171,9 +179,8 @@ async def test_list_capsules_authenticated(client):
         **CAPSULE_PAYLOAD, "title": "Capsule Two",
     })
 
-    resp = await client.get(
-        f"/api/users/{user['id']}/capsules", cookies=cookies,
-    )
+    _as_user(client, cookies)
+    resp = await client.get(f"/api/users/{user['id']}/capsules")
     assert resp.status_code == 200
     capsules = resp.json()
     assert len(capsules) == 2
@@ -199,9 +206,8 @@ async def test_list_capsules_as_different_user(client):
     _user_b, cookies_b = await signup_user(client, VALID_USER_B)
     await create_capsule(client, user_a["id"], cookies_a)
 
-    resp = await client.get(
-        f"/api/users/{user_a['id']}/capsules", cookies=cookies_b,
-    )
+    _as_user(client, cookies_b)
+    resp = await client.get(f"/api/users/{user_a['id']}/capsules")
     assert resp.status_code == 403
 
 
@@ -215,9 +221,8 @@ async def test_update_capsule_owner(client):
         "title": "Updated Title",
         "content": "Updated content here.",
     }
-    resp = await client.put(
-        f"/api/capsules/{capsule['id']}", json=update_payload, cookies=cookies,
-    )
+    _as_user(client, cookies)
+    resp = await client.put(f"/api/capsules/{capsule['id']}", json=update_payload)
     assert resp.status_code == 200
     updated = resp.json()
     assert updated["title"] == "Updated Title"
@@ -232,10 +237,10 @@ async def test_update_capsule_not_owner(client):
     _user_b, cookies_b = await signup_user(client, VALID_USER_B)
     capsule = await create_capsule(client, user_a["id"], cookies_a)
 
+    _as_user(client, cookies_b)
     resp = await client.put(
         f"/api/capsules/{capsule['id']}",
         json={"title": "Hijacked"},
-        cookies=cookies_b,
     )
     assert resp.status_code == 403
 
@@ -247,16 +252,14 @@ async def test_delete_capsule_owner(client):
     capsule = await create_capsule(client, user["id"], cookies)
 
     # Delete
-    resp = await client.delete(
-        f"/api/capsules/{capsule['id']}", cookies=cookies,
-    )
+    _as_user(client, cookies)
+    resp = await client.delete(f"/api/capsules/{capsule['id']}")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
     # List should be empty
-    list_resp = await client.get(
-        f"/api/users/{user['id']}/capsules", cookies=cookies,
-    )
+    _as_user(client, cookies)
+    list_resp = await client.get(f"/api/users/{user['id']}/capsules")
     assert list_resp.status_code == 200
     assert len(list_resp.json()) == 0
 
@@ -268,9 +271,8 @@ async def test_delete_capsule_not_owner(client):
     _user_b, cookies_b = await signup_user(client, VALID_USER_B)
     capsule = await create_capsule(client, user_a["id"], cookies_a)
 
-    resp = await client.delete(
-        f"/api/capsules/{capsule['id']}", cookies=cookies_b,
-    )
+    _as_user(client, cookies_b)
+    resp = await client.delete(f"/api/capsules/{capsule['id']}")
     assert resp.status_code == 403
 
 
@@ -280,9 +282,8 @@ async def test_create_capsule_invalid_type(client):
     user, cookies = await signup_user(client, VALID_USER_A)
 
     bad_payload = {**CAPSULE_PAYLOAD, "capsule_type": "invalid_type"}
-    resp = await client.post(
-        f"/api/users/{user['id']}/capsules", json=bad_payload, cookies=cookies,
-    )
+    _as_user(client, cookies)
+    resp = await client.post(f"/api/users/{user['id']}/capsules", json=bad_payload)
     assert resp.status_code == 422
 
 
@@ -292,9 +293,8 @@ async def test_create_capsule_empty_title(client):
     user, cookies = await signup_user(client, VALID_USER_A)
 
     bad_payload = {**CAPSULE_PAYLOAD, "title": ""}
-    resp = await client.post(
-        f"/api/users/{user['id']}/capsules", json=bad_payload, cookies=cookies,
-    )
+    _as_user(client, cookies)
+    resp = await client.post(f"/api/users/{user['id']}/capsules", json=bad_payload)
     assert resp.status_code == 422
 
 
@@ -304,9 +304,8 @@ async def test_create_capsule_content_exceeds_max_length(client):
     user, cookies = await signup_user(client, VALID_USER_A)
 
     bad_payload = {**CAPSULE_PAYLOAD, "content": "x" * 100001}
-    resp = await client.post(
-        f"/api/users/{user['id']}/capsules", json=bad_payload, cookies=cookies,
-    )
+    _as_user(client, cookies)
+    resp = await client.post(f"/api/users/{user['id']}/capsules", json=bad_payload)
     assert resp.status_code == 422
 
 
@@ -326,9 +325,8 @@ async def test_send_connection_request_authenticated(client):
         "to_user_id": user_b["id"],
         "message": "Hello, let's connect!",
     }
-    resp = await client.post(
-        "/api/connections/request", json=payload, cookies=cookies_a,
-    )
+    _as_user(client, cookies_a)
+    resp = await client.post("/api/connections/request", json=payload)
     assert resp.status_code == 200
     data = resp.json()
     assert data["from_user_id"] == user_a["id"]
@@ -365,9 +363,8 @@ async def test_send_connection_request_as_wrong_user(client):
         "to_user_id": user_b["id"],
         "message": "Spoofed",
     }
-    resp = await client.post(
-        "/api/connections/request", json=payload, cookies=cookies_b,
-    )
+    _as_user(client, cookies_b)
+    resp = await client.post("/api/connections/request", json=payload)
     assert resp.status_code == 403
 
 
@@ -381,9 +378,8 @@ async def test_send_connection_request_to_self(client):
         "to_user_id": user_a["id"],
         "message": "Self connect",
     }
-    resp = await client.post(
-        "/api/connections/request", json=payload, cookies=cookies_a,
-    )
+    _as_user(client, cookies_a)
+    resp = await client.post("/api/connections/request", json=payload)
     assert resp.status_code == 400
     assert "yourself" in resp.text.lower()
 
@@ -400,25 +396,20 @@ async def test_accept_connection_request(client):
         "to_user_id": user_b["id"],
         "message": "Let's connect",
     }
-    req_resp = await client.post(
-        "/api/connections/request", json=req_payload, cookies=cookies_a,
-    )
+    _as_user(client, cookies_a)
+    req_resp = await client.post("/api/connections/request", json=req_payload)
     assert req_resp.status_code == 200
     request_id = req_resp.json()["id"]
 
     # Accept as B (the recipient)
-    accept_resp = await client.put(
-        f"/api/connection-requests/{request_id}",
-        json={"status": "accepted"},
-        cookies=cookies_b,
-    )
+    _as_user(client, cookies_b)
+    accept_resp = await client.put(f"/api/connection-requests/{request_id}", json={"status": "accepted"})
     assert accept_resp.status_code == 200
     assert accept_resp.json()["status"] == "accepted"
 
     # Verify connection appears in B's connection list
-    conn_resp = await client.get(
-        f"/api/users/{user_b['id']}/connections", cookies=cookies_b,
-    )
+    _as_user(client, cookies_b)
+    conn_resp = await client.get(f"/api/users/{user_b['id']}/connections")
     assert conn_resp.status_code == 200
     connections = conn_resp.json()
     assert len(connections) == 1
@@ -437,17 +428,13 @@ async def test_accept_connection_by_wrong_user(client):
         "to_user_id": user_b["id"],
         "message": "Connect",
     }
-    req_resp = await client.post(
-        "/api/connections/request", json=req_payload, cookies=cookies_a,
-    )
+    _as_user(client, cookies_a)
+    req_resp = await client.post("/api/connections/request", json=req_payload)
     request_id = req_resp.json()["id"]
 
     # A (the sender) tries to accept -- should be denied
-    accept_resp = await client.put(
-        f"/api/connection-requests/{request_id}",
-        json={"status": "accepted"},
-        cookies=cookies_a,
-    )
+    _as_user(client, cookies_a)
+    accept_resp = await client.put(f"/api/connection-requests/{request_id}", json={"status": "accepted"})
     assert accept_resp.status_code == 403
 
 
@@ -456,9 +443,8 @@ async def test_list_connections_authenticated(client):
     """20. List connections (auth) returns 200."""
     user_a, cookies_a = await signup_user(client, VALID_USER_A)
 
-    resp = await client.get(
-        f"/api/users/{user_a['id']}/connections", cookies=cookies_a,
-    )
+    _as_user(client, cookies_a)
+    resp = await client.get(f"/api/users/{user_a['id']}/connections")
     assert resp.status_code == 200
     assert resp.json() == []  # No connections yet
 
@@ -486,14 +472,12 @@ async def test_duplicate_connection_request(client):
     }
 
     # First request succeeds
-    resp1 = await client.post(
-        "/api/connections/request", json=payload, cookies=cookies_a,
-    )
+    _as_user(client, cookies_a)
+    resp1 = await client.post("/api/connections/request", json=payload)
     assert resp1.status_code == 200
 
     # Second identical request fails
-    resp2 = await client.post(
-        "/api/connections/request", json=payload, cookies=cookies_a,
-    )
+    _as_user(client, cookies_a)
+    resp2 = await client.post("/api/connections/request", json=payload)
     assert resp2.status_code == 400
     assert "pending" in resp2.text.lower() or "already" in resp2.text.lower()

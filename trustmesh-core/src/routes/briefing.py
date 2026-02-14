@@ -103,8 +103,12 @@ async def get_briefing(user_id: str, db: AsyncSession = Depends(get_db),
         net_capsule_result = await db.execute(
             select(KnowledgeCapsule)
             .join(CapsuleNetworkAccess, CapsuleNetworkAccess.capsule_id == KnowledgeCapsule.id)
+            # Defense-in-depth: ensure the capsule owner is actually a member of the network
+            # they're "sharing" into.
+            .join(NetworkMembership, NetworkMembership.network_id == CapsuleNetworkAccess.network_id)
             .where(
                 CapsuleNetworkAccess.network_id.in_(user_network_ids),
+                NetworkMembership.user_id == KnowledgeCapsule.owner_id,
                 KnowledgeCapsule.owner_id != user_id,
                 KnowledgeCapsule.created_at >= cutoff,
                 KnowledgeCapsule.is_archived == False,  # noqa: E712

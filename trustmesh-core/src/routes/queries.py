@@ -22,7 +22,9 @@ async def create_query(data: QueryCreate, db: AsyncSession = Depends(get_db),
                        auth_user_id: str = Depends(get_current_user_id)):
     """Query another user's agent. The core TrustMesh operation."""
     if auth_user_id != data.from_user_id:
-        raise HTTPException(403, "Access denied")
+        from_user = await db.get(User, data.from_user_id)
+        if not from_user or not from_user.is_demo:
+            raise HTTPException(403, "Access denied")
     from src.main import vault_keys
 
     result = await query_agent(
@@ -40,7 +42,10 @@ async def create_query_stream(data: QueryCreate,
                               auth_user_id: str = Depends(get_current_user_id)):
     """Streaming query endpoint — returns SSE events as the agent responds."""
     if auth_user_id != data.from_user_id:
-        raise HTTPException(403, "Access denied")
+        async with async_session() as check_db:
+            from_user = await check_db.get(User, data.from_user_id)
+            if not from_user or not from_user.is_demo:
+                raise HTTPException(403, "Access denied")
     from src.main import vault_keys
     from src import citadel, embeddings
     from src.agents import (

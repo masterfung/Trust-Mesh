@@ -9,6 +9,7 @@ Covers:
 """
 
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from src.auth import sessions, _login_attempts
@@ -18,7 +19,7 @@ from src.database import engine, init_db, drop_db
 # ── Fixtures ──────────────────────────────────────────
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def setup_db():
     """Reset DB, sessions, and rate limiters for each test."""
     sessions.clear()
@@ -50,7 +51,7 @@ def _make_transport():
     return ASGITransport(app=app)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client():
     """Create an async test client. Each test gets a fresh client (no leftover cookies)."""
     transport = _make_transport()
@@ -58,7 +59,7 @@ async def client():
         yield ac
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def anon_client():
     """A second, always-unauthenticated client (never receives signup cookies)."""
     transport = _make_transport()
@@ -117,20 +118,22 @@ async def create_connection(
 
     # A sends request to B
     async with AsyncClient(transport=transport, base_url="http://test") as tmp:
+        tmp.cookies.clear()
+        tmp.cookies.update(cookies_a)
         req_resp = await tmp.post(
             "/api/connections/request",
             json={"from_user_id": user_a_id, "to_user_id": user_b_id},
-            cookies=cookies_a,
         )
         assert req_resp.status_code == 200, f"Connection request failed: {req_resp.text}"
         request_id = req_resp.json()["id"]
 
     # B accepts
     async with AsyncClient(transport=transport, base_url="http://test") as tmp:
+        tmp.cookies.clear()
+        tmp.cookies.update(cookies_b)
         accept_resp = await tmp.put(
             f"/api/connection-requests/{request_id}",
             json={"status": "accepted"},
-            cookies=cookies_b,
         )
         assert accept_resp.status_code == 200, f"Accept connection failed: {accept_resp.text}"
 
@@ -146,6 +149,8 @@ async def create_network_helper(
     """Create a network and return its response JSON."""
     transport = _make_transport()
     async with AsyncClient(transport=transport, base_url="http://test") as tmp:
+        tmp.cookies.clear()
+        tmp.cookies.update(cookies)
         resp = await tmp.post(
             "/api/networks",
             json={
@@ -156,7 +161,6 @@ async def create_network_helper(
                 "is_public": is_public,
                 "join_policy": join_policy,
             },
-            cookies=cookies,
         )
         assert resp.status_code == 200, f"Create network failed: {resp.text}"
         return resp.json()
@@ -166,28 +170,36 @@ async def _api_post(path: str, json: dict, cookies: dict) -> "httpx.Response":
     """Perform an authenticated POST via a throwaway client."""
     transport = _make_transport()
     async with AsyncClient(transport=transport, base_url="http://test") as tmp:
-        return await tmp.post(path, json=json, cookies=cookies)
+        tmp.cookies.clear()
+        tmp.cookies.update(cookies)
+        return await tmp.post(path, json=json)
 
 
 async def _api_get(path: str, cookies: dict) -> "httpx.Response":
     """Perform an authenticated GET via a throwaway client."""
     transport = _make_transport()
     async with AsyncClient(transport=transport, base_url="http://test") as tmp:
-        return await tmp.get(path, cookies=cookies)
+        tmp.cookies.clear()
+        tmp.cookies.update(cookies)
+        return await tmp.get(path)
 
 
 async def _api_put(path: str, json: dict, cookies: dict) -> "httpx.Response":
     """Perform an authenticated PUT via a throwaway client."""
     transport = _make_transport()
     async with AsyncClient(transport=transport, base_url="http://test") as tmp:
-        return await tmp.put(path, json=json, cookies=cookies)
+        tmp.cookies.clear()
+        tmp.cookies.update(cookies)
+        return await tmp.put(path, json=json)
 
 
 async def _api_delete(path: str, cookies: dict) -> "httpx.Response":
     """Perform an authenticated DELETE via a throwaway client."""
     transport = _make_transport()
     async with AsyncClient(transport=transport, base_url="http://test") as tmp:
-        return await tmp.delete(path, cookies=cookies)
+        tmp.cookies.clear()
+        tmp.cookies.update(cookies)
+        return await tmp.delete(path)
 
 
 async def _api_get_anon(path: str) -> "httpx.Response":

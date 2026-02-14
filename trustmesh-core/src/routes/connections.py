@@ -90,11 +90,18 @@ async def send_connection_request(
 
 
 @router.get("/users/{user_id}/connections", response_model=list[ConnectionResponse])
-async def list_connections(user_id: str, db: AsyncSession = Depends(get_db),
+async def list_connections(user_id: str, context: str | None = None,
+                           db: AsyncSession = Depends(get_db),
                            auth_user_id: str = Depends(get_current_user_id)):
-    """List accepted connections for a user."""
+    """List accepted connections for a user. Optional context filter."""
     if auth_user_id != user_id:
         raise HTTPException(403, "Access denied")
+
+    # If no context param, check user's active_context
+    if context is None:
+        user = await db.get(User, user_id)
+        context = user.active_context if user else "all"
+
     result = await db.execute(
         select(Connection).where(
             Connection.status == "accepted",
@@ -102,8 +109,17 @@ async def list_connections(user_id: str, db: AsyncSession = Depends(get_db),
         )
     )
     connections = result.scalars().all()
-    response = []
+
+    # Filter by context
+    filtered = []
     for conn in connections:
+        if context and context != "all":
+            if conn.context and conn.context != context:
+                continue
+        filtered.append(conn)
+
+    response = []
+    for conn in filtered:
         peer_id = conn.to_user_id if conn.from_user_id == user_id else conn.from_user_id
         peer = await db.get(User, peer_id)
         response.append(ConnectionResponse(

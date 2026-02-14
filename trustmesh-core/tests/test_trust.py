@@ -1,6 +1,7 @@
 """Tests for trust resolution between users."""
 
 import pytest
+import pytest_asyncio
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -9,7 +10,7 @@ from src.models import Base, Connection, Network, NetworkMembership, User
 from src.trust import get_accepted_connection, get_shared_networks, resolve_trust_level
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     """Create an in-memory test database."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -25,7 +26,7 @@ async def db():
     await engine.dispose()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def seeded_db(db: AsyncSession):
     """Create test users, connections, and networks."""
     # Users

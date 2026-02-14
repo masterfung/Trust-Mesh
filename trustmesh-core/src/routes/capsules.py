@@ -4,11 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.audit import log_event
 from src.auth import get_current_user_id
 from src.crypto import content_hash, decrypt_text, encrypt_text
 from src.database import get_db
 from src.embeddings import delete_capsule_embedding, upsert_capsule_embedding
-from src.models import CapsuleNetworkAccess, KnowledgeCapsule
+from src.models import CapsuleNetworkAccess, KnowledgeCapsule, NetworkMembership
 from src.schemas import CapsuleCreate, CapsuleResponse, CapsuleShareRequest, CapsuleUpdate
 
 router = APIRouter(prefix="/api", tags=["capsules"])
@@ -23,6 +24,34 @@ def _vault_key_for_user(user_id: str) -> bytes:
     return key
 
 
+async def _validate_network_ids(
+    db: AsyncSession, user_id: str, network_ids: list[str] | None
+) -> list[str]:
+    """Validate that the user is a member of each requested network id.
+
+    This prevents injecting CapsuleNetworkAccess rows into networks the caller
+    does not belong to.
+    """
+    if not network_ids:
+        return []
+
+    # Preserve caller order but drop duplicates.
+    unique_ids = list(dict.fromkeys(network_ids))
+
+    result = await db.execute(
+        select(NetworkMembership.network_id).where(
+            NetworkMembership.user_id == user_id,
+            NetworkMembership.network_id.in_(unique_ids),
+        )
+    )
+    allowed = set(result.scalars().all())
+    missing = [nid for nid in unique_ids if nid not in allowed]
+    if missing:
+        raise HTTPException(400, "Invalid network_ids (must be a member of each network)")
+
+    return unique_ids
+
+
 def _capsule_to_response(capsule: KnowledgeCapsule, content: str, network_ids: list[str]) -> CapsuleResponse:
     return CapsuleResponse(
         id=capsule.id,
@@ -31,6 +60,9 @@ def _capsule_to_response(capsule: KnowledgeCapsule, content: str, network_ids: l
         title=capsule.title,
         content=content,
         tier=capsule.tier,
+        visibility=capsule.visibility,
+        emergency_accessible=capsule.emergency_accessible,
+        can_reshare=capsule.can_reshare,
         category=capsule.category,
         context=capsule.context,
         freshness=capsule.freshness,
@@ -54,13 +86,17 @@ async def create_capsule(
         raise HTTPException(403, "Access denied")
     vault_key = _vault_key_for_user(user_id)
 
+    network_ids = await _validate_network_ids(db, user_id, data.network_ids)
+
     capsule = KnowledgeCapsule(
         owner_id=user_id,
         capsule_type=data.capsule_type,
         title=data.title,
         content_encrypted=encrypt_text(data.content, vault_key),
         content_hash=content_hash(data.content),
-        tier=data.tier,
+        visibility=data.effective_visibility(),
+        emergency_accessible=data.emergency_accessible,
+        can_reshare=data.can_reshare,
         category=data.category,
         context=data.context,
         freshness=data.freshness,
@@ -71,7 +107,7 @@ async def create_capsule(
     await db.flush()
 
     # Add network access
-    for nid in data.network_ids:
+    for nid in network_ids:
         db.add(CapsuleNetworkAccess(capsule_id=capsule.id, network_id=nid))
 
     await db.commit()
@@ -84,19 +120,35 @@ async def create_capsule(
         {"capsule_id": capsule.id, "owner_id": user_id, "tier": data.tier},
     )
 
-    return _capsule_to_response(capsule, data.content, data.network_ids)
+    # Audit log
+    await log_event(
+        db, actor_user_id=user_id, target_user_id=user_id,
+        event_type="capsule", action="capsule_created",
+        details={"capsule_id": capsule.id, "title": data.title,
+                 "capsule_type": data.capsule_type, "visibility": capsule.visibility,
+                 "category": data.category},
+    )
+    await db.commit()
+
+    return _capsule_to_response(capsule, data.content, network_ids)
 
 
 @router.get("/users/{user_id}/capsules", response_model=list[CapsuleResponse])
-async def list_capsules(user_id: str, db: AsyncSession = Depends(get_db),
+async def list_capsules(user_id: str, context: str | None = None,
+                        db: AsyncSession = Depends(get_db),
                         auth_user_id: str = Depends(get_current_user_id)):
-    """List all capsules for a user (owner view)."""
+    """List all capsules for a user (owner view). Optional context filter."""
     if auth_user_id != user_id:
         raise HTTPException(403, "Access denied")
     vault_key = _vault_key_for_user(user_id)
+
+    filters = [KnowledgeCapsule.owner_id == user_id]
+    if context and context != "all":
+        filters.append(KnowledgeCapsule.context.in_([context, "both"]))
+
     result = await db.execute(
         select(KnowledgeCapsule)
-        .where(KnowledgeCapsule.owner_id == user_id)
+        .where(*filters)
         .order_by(KnowledgeCapsule.created_at.desc())
     )
     capsules = result.scalars().all()
@@ -138,8 +190,13 @@ async def update_capsule(
     if data.content is not None:
         capsule.content_encrypted = encrypt_text(data.content, vault_key)
         capsule.content_hash = content_hash(data.content)
-    if data.tier is not None:
-        capsule.tier = data.tier
+    eff_vis = data.effective_visibility()
+    if eff_vis is not None:
+        capsule.visibility = eff_vis
+    if data.emergency_accessible is not None:
+        capsule.emergency_accessible = data.emergency_accessible
+    if data.can_reshare is not None:
+        capsule.can_reshare = data.can_reshare
     if data.category is not None:
         capsule.category = data.category
     if data.freshness is not None:
@@ -150,13 +207,14 @@ async def update_capsule(
         capsule.auto_archive_days = data.auto_archive_days
 
     if data.network_ids is not None:
+        network_ids = await _validate_network_ids(db, capsule.owner_id, data.network_ids)
         # Clear existing and re-add
         existing = await db.execute(
             select(CapsuleNetworkAccess).where(CapsuleNetworkAccess.capsule_id == capsule_id)
         )
         for na in existing.scalars().all():
             await db.delete(na)
-        for nid in data.network_ids:
+        for nid in network_ids:
             db.add(CapsuleNetworkAccess(capsule_id=capsule_id, network_id=nid))
 
     await db.commit()
@@ -170,8 +228,16 @@ async def update_capsule(
     upsert_capsule_embedding(
         capsule.id,
         f"{capsule.title}: {content}",
-        {"capsule_id": capsule.id, "owner_id": capsule.owner_id, "tier": capsule.tier},
+        {"capsule_id": capsule.id, "owner_id": capsule.owner_id, "tier": capsule.tier, "visibility": capsule.visibility},
     )
+
+    # Audit log
+    await log_event(
+        db, actor_user_id=auth_user_id, target_user_id=capsule.owner_id,
+        event_type="capsule", action="capsule_updated",
+        details={"capsule_id": capsule_id, "title": capsule.title},
+    )
+    await db.commit()
 
     na_result = await db.execute(
         select(CapsuleNetworkAccess.network_id).where(CapsuleNetworkAccess.capsule_id == capsule_id)
@@ -197,9 +263,19 @@ async def delete_capsule(capsule_id: str, db: AsyncSession = Depends(get_db),
     for na in na_result.scalars().all():
         await db.delete(na)
 
+    title = capsule.title
     await db.delete(capsule)
     await db.commit()
     delete_capsule_embedding(capsule_id)
+
+    # Audit log
+    await log_event(
+        db, actor_user_id=auth_user_id, target_user_id=auth_user_id,
+        event_type="capsule", action="capsule_deleted",
+        details={"capsule_id": capsule_id, "title": title},
+    )
+    await db.commit()
+
     return {"ok": True}
 
 
@@ -215,7 +291,8 @@ async def share_capsule(
     if capsule.owner_id != auth_user_id:
         raise HTTPException(403, "Access denied")
 
-    for nid in data.network_ids:
+    network_ids = await _validate_network_ids(db, capsule.owner_id, data.network_ids)
+    for nid in network_ids:
         existing = await db.execute(
             select(CapsuleNetworkAccess).where(
                 CapsuleNetworkAccess.capsule_id == capsule_id,
@@ -225,8 +302,8 @@ async def share_capsule(
         if not existing.scalar_one_or_none():
             db.add(CapsuleNetworkAccess(capsule_id=capsule_id, network_id=nid))
 
-    if capsule.tier == "private":
-        capsule.tier = "network"
+    if capsule.visibility == "private":
+        capsule.visibility = "internal"
 
     await db.commit()
     await db.refresh(capsule)
@@ -241,4 +318,14 @@ async def share_capsule(
         select(CapsuleNetworkAccess.network_id).where(CapsuleNetworkAccess.capsule_id == capsule_id)
     )
     network_ids = list(na_result.scalars().all())
+
+    # Audit log
+    await log_event(
+        db, actor_user_id=auth_user_id, target_user_id=capsule.owner_id,
+        event_type="capsule", action="capsule_shared",
+        details={"capsule_id": capsule_id, "network_ids": network_ids,
+                 "visibility": capsule.visibility},
+    )
+    await db.commit()
+
     return _capsule_to_response(capsule, content, network_ids)

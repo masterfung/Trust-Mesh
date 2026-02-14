@@ -1,13 +1,14 @@
 """Tests for the API auth endpoints (login, logout, me) using FastAPI TestClient."""
 
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from src.auth import sessions, _login_attempts
 from src.database import init_db, drop_db
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def setup_db():
     """Reset DB and auth state for each test."""
     sessions.clear()
@@ -18,7 +19,7 @@ async def setup_db():
     await drop_db()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client():
     """Create an async test client."""
     from src.main import app
@@ -48,9 +49,9 @@ async def test_signup_sets_cookie(client):
 async def test_signup_then_me(client):
     resp = await client.post("/api/users", json=VALID_USER)
     assert resp.status_code == 200
-    cookies = resp.cookies
 
-    me_resp = await client.get("/api/auth/me", cookies=cookies)
+    # Cookie persists on the client instance (avoid per-request cookies=... which is deprecated in httpx)
+    me_resp = await client.get("/api/auth/me")
     assert me_resp.status_code == 200
     assert me_resp.json()["username"] == "testauth"
 
@@ -98,16 +99,15 @@ async def test_me_without_cookie(client):
 @pytest.mark.asyncio
 async def test_logout_clears_session(client):
     # Signup
-    signup_resp = await client.post("/api/users", json=VALID_USER)
-    cookies = signup_resp.cookies
+    await client.post("/api/users", json=VALID_USER)
 
     # Logout
-    logout_resp = await client.post("/api/auth/logout", cookies=cookies)
+    logout_resp = await client.post("/api/auth/logout")
     assert logout_resp.status_code == 200
     assert logout_resp.json()["status"] == "ok"
 
     # Session should be invalid now
-    me_resp = await client.get("/api/auth/me", cookies=cookies)
+    me_resp = await client.get("/api/auth/me")
     assert me_resp.status_code == 401
 
 

@@ -81,6 +81,48 @@ def content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+# ── PIN Hashing (Argon2id) ──────────────────────────────────
+
+PIN_ARGON2_TIME_COST = 2
+PIN_ARGON2_MEMORY_COST = 19456  # ~19 MiB (fast enough for interactive use)
+PIN_ARGON2_PARALLELISM = 1
+
+
+def hash_pin(pin: str) -> str:
+    """Hash a PIN with Argon2id. Returns salt$hash as hex string."""
+    salt = os.urandom(16)
+    raw_hash = hash_secret_raw(
+        secret=pin.encode("utf-8"),
+        salt=salt,
+        time_cost=PIN_ARGON2_TIME_COST,
+        memory_cost=PIN_ARGON2_MEMORY_COST,
+        parallelism=PIN_ARGON2_PARALLELISM,
+        hash_len=32,
+        type=Type.ID,
+    )
+    return salt.hex() + "$" + raw_hash.hex()
+
+
+def verify_pin(pin: str, pin_hash: str) -> bool:
+    """Verify a PIN against its Argon2id hash."""
+    try:
+        salt_hex, hash_hex = pin_hash.split("$")
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(hash_hex)
+        raw_hash = hash_secret_raw(
+            secret=pin.encode("utf-8"),
+            salt=salt,
+            time_cost=PIN_ARGON2_TIME_COST,
+            memory_cost=PIN_ARGON2_MEMORY_COST,
+            parallelism=PIN_ARGON2_PARALLELISM,
+            hash_len=32,
+            type=Type.ID,
+        )
+        return raw_hash == expected
+    except Exception:
+        return False
+
+
 # ── Ed25519 Agent Identity ──────────────────────────────────
 
 

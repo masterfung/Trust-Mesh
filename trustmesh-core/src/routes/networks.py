@@ -92,16 +92,28 @@ async def create_network(data: NetworkCreate, db: AsyncSession = Depends(get_db)
 
 
 @router.get("/users/{user_id}/networks", response_model=list[NetworkResponse])
-async def list_user_networks(user_id: str, db: AsyncSession = Depends(get_db),
+async def list_user_networks(user_id: str, context: str | None = None,
+                             db: AsyncSession = Depends(get_db),
                              auth_user_id: str = Depends(get_current_user_id)):
-    """List networks a user belongs to."""
+    """List networks a user belongs to. Optional context filter."""
     if auth_user_id != user_id:
         raise HTTPException(403, "Access denied")
-    result = await db.execute(
+
+    # If no context param, check user's active_context
+    if context is None:
+        user = await db.get(User, user_id)
+        context = user.active_context if user else "all"
+
+    query = (
         select(Network)
         .join(NetworkMembership, NetworkMembership.network_id == Network.id)
         .where(NetworkMembership.user_id == user_id)
     )
+    # Filter by network context
+    if context and context != "all":
+        query = query.where(Network.context.in_([context, "both"]))
+
+    result = await db.execute(query)
     networks = result.scalars().all()
     return [await _network_response(db, n) for n in networks]
 

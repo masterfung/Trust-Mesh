@@ -245,7 +245,11 @@ class CapsuleCreate(BaseModel):
     capsule_type: str = Field(pattern=r"^(memory|skill|procedure|schedule|preference|contact)$")
     title: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1, max_length=100000)
-    tier: str = Field(default="private", pattern=r"^(public|network|private)$")
+    # Governance: accept both old tier and new visibility
+    tier: str | None = Field(default=None, pattern=r"^(public|network|private)$")
+    visibility: str = Field(default="private", pattern=r"^(private|internal|shareable|open)$")
+    emergency_accessible: bool = False
+    can_reshare: bool = False
     category: str = Field(default="", max_length=100)
     context: str = "personal"  # work | personal | both
     freshness: str = "permanent"
@@ -253,18 +257,35 @@ class CapsuleCreate(BaseModel):
     auto_archive_days: int | None = None
     network_ids: list[str] = []
 
+    def effective_visibility(self) -> str:
+        """Map old tier to new visibility if tier was provided."""
+        if self.tier is not None:
+            return {"private": "private", "network": "internal", "public": "open"}.get(self.tier, self.visibility)
+        return self.visibility
+
 
 class CapsuleUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     content: str | None = Field(default=None, max_length=100000)
     capsule_type: str | None = Field(default=None, pattern=r"^(memory|skill|procedure|schedule|preference|contact)$")
     tier: str | None = Field(default=None, pattern=r"^(public|network|private)$")
+    visibility: str | None = Field(default=None, pattern=r"^(private|internal|shareable|open)$")
+    emergency_accessible: bool | None = None
+    can_reshare: bool | None = None
     category: str | None = Field(default=None, max_length=100)
     context: str | None = Field(default=None, pattern=r"^(work|personal|both)$")
     freshness: str | None = Field(default=None, max_length=50)
     expires_at: datetime | None = None
     auto_archive_days: int | None = Field(default=None, ge=1, le=365)
     network_ids: list[str] | None = None
+
+    def effective_visibility(self) -> str | None:
+        """Map old tier to new visibility if tier was provided."""
+        if self.visibility is not None:
+            return self.visibility
+        if self.tier is not None:
+            return {"private": "private", "network": "internal", "public": "open"}.get(self.tier, self.tier)
+        return None
 
 
 class CapsuleResponse(BaseModel):
@@ -273,7 +294,10 @@ class CapsuleResponse(BaseModel):
     capsule_type: str
     title: str
     content: str  # Decrypted for owner view
-    tier: str
+    tier: str  # backward-compat alias
+    visibility: str = "private"
+    emergency_accessible: bool = False
+    can_reshare: bool = False
     category: str
     context: str = "personal"
     freshness: str
@@ -290,6 +314,62 @@ class CapsuleResponse(BaseModel):
 
 class CapsuleShareRequest(BaseModel):
     network_ids: list[str]
+
+
+# ── Share Grants (for shareable visibility) ───────
+
+class ShareGrantCreate(BaseModel):
+    capsule_id: str
+    grantee_user_id: str | None = None
+    grantee_network_id: str | None = None
+    can_reshare: bool = False
+    expires_in_days: int = Field(default=30, ge=1, le=365)
+
+class ShareGrantResponse(BaseModel):
+    id: str
+    capsule_id: str
+    grantee_user_id: str | None = None
+    grantee_network_id: str | None = None
+    can_reshare: bool
+    expires_at: datetime | None = None
+    granted_by: str
+    granted_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── Sharing Delegates ────────────────────────────
+
+class DelegateCreate(BaseModel):
+    delegate_user_id: str
+    category: str = Field(max_length=50)
+
+class DelegateResponse(BaseModel):
+    id: str
+    owner_id: str
+    delegate_user_id: str
+    category: str
+    granted_at: datetime
+    revoked_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+# ── PIN ──────────────────────────────────────────
+
+class PinSetRequest(BaseModel):
+    pin: str = Field(pattern=r"^\d{4,8}$")
+
+class PinVerifyRequest(BaseModel):
+    pin: str = Field(pattern=r"^\d{4,8}$")
+
+class PinVerifyResponse(BaseModel):
+    verified: bool
+    token: str | None = None
+    expires_in: int = 300  # 5 minutes
+
+class PinStatusResponse(BaseModel):
+    has_pin: bool
 
 
 # ── Queries ────────────────────────────────────────
@@ -522,3 +602,5 @@ class EmergencyAccessResponse(BaseModel):
     categories: list[str]
     audit_id: str
     expires_at: datetime
+    family_notified: int = 0
+    fhir_bundle_url: str | None = None

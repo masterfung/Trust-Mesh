@@ -79,7 +79,8 @@ def search_capsules(
         return []
 
     # Filter to accessible IDs only
-    return [cid for cid in results["ids"][0] if cid in set(accessible_ids)][:top_k]
+    accessible_set = set(accessible_ids)
+    return [cid for cid in results["ids"][0] if cid in accessible_set][:top_k]
 
 
 def reset_collection():

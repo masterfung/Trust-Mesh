@@ -45,6 +45,7 @@ class User(Base):
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     vault_key_salt: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     encrypted_vault_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    pin_hash: Mapped[str | None] = mapped_column(String(200), nullable=True)  # Argon2id hashed PIN
     agent_personality: Mapped[str | None] = mapped_column(Text, nullable=True)
     active_context: Mapped[str] = mapped_column(String(20), default="all")  # work | personal | all
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -120,7 +121,10 @@ class KnowledgeCapsule(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     content_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), default="")
-    tier: Mapped[str] = mapped_column(String(20), default="private")
+    # Data governance: 4-level visibility model
+    visibility: Mapped[str] = mapped_column(String(20), default="private")  # private | internal | shareable | open
+    emergency_accessible: Mapped[bool] = mapped_column(Boolean, default=False)
+    can_reshare: Mapped[bool] = mapped_column(Boolean, default=False)
     category: Mapped[str] = mapped_column(String(50), default="")
     context: Mapped[str] = mapped_column(String(20), default="personal")  # work | personal | both
     freshness: Mapped[str] = mapped_column(String(20), default="permanent")
@@ -135,6 +139,21 @@ class KnowledgeCapsule(Base):
     network_access: Mapped[list["CapsuleNetworkAccess"]] = relationship(
         back_populates="capsule", cascade="all, delete-orphan"
     )
+    share_grants: Mapped[list["CapsuleShareGrant"]] = relationship(
+        back_populates="capsule", cascade="all, delete-orphan"
+    )
+
+    @property
+    def tier(self) -> str:
+        """Backward-compat alias: maps visibility to old tier names."""
+        return {"private": "private", "internal": "network", "shareable": "network", "open": "public"}.get(
+            self.visibility, "private"
+        )
+
+    @tier.setter
+    def tier(self, value: str):
+        """Backward-compat setter: maps old tier names to visibility."""
+        self.visibility = {"private": "private", "network": "internal", "public": "open"}.get(value, value)
 
 
 class CapsuleNetworkAccess(Base):
@@ -146,6 +165,34 @@ class CapsuleNetworkAccess(Base):
 
     capsule: Mapped["KnowledgeCapsule"] = relationship(back_populates="network_access")
     network: Mapped["Network"] = relationship(back_populates="capsule_access")
+
+
+class CapsuleShareGrant(Base):
+    """Explicit share grants for 'shareable' visibility capsules."""
+    __tablename__ = "capsule_share_grants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    capsule_id: Mapped[str] = mapped_column(ForeignKey("knowledge_capsules.id"), nullable=False)
+    grantee_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    grantee_network_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    can_reshare: Mapped[bool] = mapped_column(Boolean, default=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    granted_by: Mapped[str] = mapped_column(String(36), nullable=False)  # user_id of granter
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    capsule: Mapped["KnowledgeCapsule"] = relationship(back_populates="share_grants")
+
+
+class SharingDelegate(Base):
+    """Delegate authority: owner grants another user power to manage sharing for specific categories."""
+    __tablename__ = "sharing_delegates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    delegate_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    category: Mapped[str] = mapped_column(String(50), nullable=False)  # e.g. "health", "work", "*"
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ConnectionRequest(Base):
@@ -240,6 +287,19 @@ class AuditLog(Base):
     query_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     decision: Mapped[str] = mapped_column(String(20), default="allowed")  # allowed | denied
     details: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PeerPod(Base):
+    """A known peer TrustMesh pod that this pod can federate with."""
+    __tablename__ = "peer_pods"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    url: Mapped[str] = mapped_column(String(500), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active | unreachable
+    agent_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -13,10 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.audit import log_event
+from src.auth import get_current_user_id
 from src.crypto import decrypt
 from src.database import get_db
 from src.gossip import load_capsules_decrypted
-from src.models import Agent, KnowledgeCapsule, User
+from src.models import Agent, KnowledgeCapsule, Network, NetworkMembership, Notification, User
 from src.schemas import (
     EmergencyAccessRequest,
     EmergencyAccessResponse,
@@ -42,12 +43,16 @@ async def list_roles():
 async def issue_token(
     data: EmergencyTokenRequest,
     db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
 ):
     """Issue a UCAN token for emergency access.
 
     The issuer must be a service/provider user with a loaded vault key and keypair.
     """
     from src.main import vault_keys
+
+    if auth_user_id != data.issuer_user_id:
+        raise HTTPException(403, "Access denied")
 
     # Validate issuer exists and is a service
     issuer_user = await db.get(User, data.issuer_user_id)
@@ -241,8 +246,15 @@ async def access_patient_data(
     # Decrypt capsules
     all_capsules = await load_capsules_decrypted(db, all_capsule_ids, vault_key)
 
-    # Filter by role scope
-    scoped_capsules = [c for c in all_capsules if capsule_matches_scope(c, role)]
+    # Filter by role scope AND emergency_accessible flag
+    scoped_capsules = [
+        c for c in all_capsules
+        if capsule_matches_scope(c, role) and c.get("emergency_accessible", False)
+    ]
+    # Fallback: if no capsules have emergency_accessible set, use old behavior (scope only)
+    # This handles data seeded before the flag existed
+    if not scoped_capsules:
+        scoped_capsules = [c for c in all_capsules if capsule_matches_scope(c, role)]
 
     # Collect categories accessed
     categories = list(set(c.get("category", "") for c in scoped_capsules if c.get("category")))
@@ -281,6 +293,19 @@ async def access_patient_data(
             f"Reason: {payload.fct.get('reason', 'Not specified')}."
         ),
     )
+
+    # ── Family Notification Relay ──
+    # Notify all members of patient's family-type networks
+    family_notified = await _notify_family_network(
+        db,
+        patient=patient,
+        issuer_name=issuer_user.display_name,
+        role=role,
+        practitioner_name=payload.fct.get("practitioner_name", "Unknown"),
+        reason=payload.fct.get("reason", "Not specified"),
+        capsule_count=len(scoped_capsules),
+    )
+
     await db.commit()
 
     return EmergencyAccessResponse(
@@ -291,7 +316,67 @@ async def access_patient_data(
         categories=categories,
         audit_id=audit_entry.id,
         expires_at=expires_at,
+        family_notified=family_notified,
     )
+
+
+async def _notify_family_network(
+    db: AsyncSession,
+    patient: User,
+    issuer_name: str,
+    role: str,
+    practitioner_name: str,
+    reason: str,
+    capsule_count: int,
+) -> int:
+    """Notify all members of the patient's family-type networks about emergency access.
+
+    Returns the number of family members notified.
+    """
+    # Find family networks the patient belongs to
+    family_nets = await db.execute(
+        select(Network)
+        .join(NetworkMembership, NetworkMembership.network_id == Network.id)
+        .where(
+            NetworkMembership.user_id == patient.id,
+            Network.network_type == "family",
+        )
+    )
+    family_networks = family_nets.scalars().all()
+
+    if not family_networks:
+        return 0
+
+    # Get all members of these family networks (excluding the patient)
+    notified = 0
+    notified_user_ids = set()
+    for network in family_networks:
+        members_result = await db.execute(
+            select(NetworkMembership.user_id).where(
+                NetworkMembership.network_id == network.id,
+                NetworkMembership.user_id != patient.id,
+            )
+        )
+        for member_id in members_result.scalars().all():
+            if member_id in notified_user_ids:
+                continue
+            notified_user_ids.add(member_id)
+
+            notification = Notification(
+                user_id=member_id,
+                notification_type="emergency_family_alert",
+                title=f"Emergency: {patient.display_name}'s medical data accessed",
+                body=(
+                    f"{issuer_name} accessed {patient.display_name}'s medical data "
+                    f"({role}). {capsule_count} capsule(s) shared. "
+                    f"Practitioner: {practitioner_name}. Reason: {reason}."
+                ),
+                related_id=patient.id,
+            )
+            db.add(notification)
+            notified += 1
+
+    return notified
 
 
 async def _log_denied(

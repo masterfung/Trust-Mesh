@@ -30,39 +30,90 @@ async def get_accessible_capsule_ids(
     owner_id: str,
     trust_level: str,
     shared_networks: list[Network],
+    requester_id: str | None = None,
+    context_filter: str | None = None,
 ) -> list[str]:
-    """Get IDs of capsules accessible at the given trust level."""
+    """Get IDs of capsules accessible at the given trust level.
+
+    4-level visibility model:
+    - private: owner only (self-query)
+    - internal: owner + trusted networks (family, work team, care circle)
+    - shareable: explicitly shared via allow-list grants (with expiry)
+    - open: discoverable by anyone
+    """
+    from datetime import datetime, timezone
+    from src.models import CapsuleShareGrant
+
+    base_filter = [
+        KnowledgeCapsule.owner_id == owner_id,
+        KnowledgeCapsule.is_archived == False,  # noqa: E712
+    ]
+    if context_filter and context_filter != "all":
+        base_filter.append(KnowledgeCapsule.context.in_([context_filter, "both"]))
+
+    # Self-query: full access
     if trust_level == "private":
         result = await db.execute(
-            select(KnowledgeCapsule.id).where(
-                KnowledgeCapsule.owner_id == owner_id,
-                KnowledgeCapsule.is_archived == False,  # noqa: E712
-            )
+            select(KnowledgeCapsule.id).where(*base_filter)
         )
         return list(result.scalars().all())
 
-    # Public capsules always accessible
-    public_result = await db.execute(
+    # Level 4: open capsules always accessible
+    open_result = await db.execute(
         select(KnowledgeCapsule.id).where(
-            KnowledgeCapsule.owner_id == owner_id,
-            KnowledgeCapsule.tier == "public",
-            KnowledgeCapsule.is_archived == False,  # noqa: E712
+            *base_filter,
+            KnowledgeCapsule.visibility == "open",
         )
     )
-    ids = list(public_result.scalars().all())
+    ids = list(open_result.scalars().all())
 
+    # Level 2: internal — accessible via shared networks
     if trust_level == "network" and shared_networks:
         network_ids = [n.id for n in shared_networks]
+        # Internal capsules shared to these networks
         network_result = await db.execute(
             select(CapsuleNetworkAccess.capsule_id)
             .join(KnowledgeCapsule, KnowledgeCapsule.id == CapsuleNetworkAccess.capsule_id)
             .where(
                 CapsuleNetworkAccess.network_id.in_(network_ids),
                 KnowledgeCapsule.owner_id == owner_id,
+                KnowledgeCapsule.visibility.in_(["internal", "shareable"]),
                 KnowledgeCapsule.is_archived == False,  # noqa: E712
             )
         )
         ids.extend(network_result.scalars().all())
+
+    # Level 3: shareable — explicit grants to the requester (with expiry check)
+    if requester_id:
+        now = datetime.now(timezone.utc)
+        # Direct user grants
+        grant_result = await db.execute(
+            select(CapsuleShareGrant.capsule_id)
+            .join(KnowledgeCapsule, KnowledgeCapsule.id == CapsuleShareGrant.capsule_id)
+            .where(
+                CapsuleShareGrant.grantee_user_id == requester_id,
+                KnowledgeCapsule.owner_id == owner_id,
+                KnowledgeCapsule.is_archived == False,  # noqa: E712
+                # Check expiry: null means no expiry, or not yet expired
+                (CapsuleShareGrant.expires_at == None) | (CapsuleShareGrant.expires_at > now),  # noqa: E711
+            )
+        )
+        ids.extend(grant_result.scalars().all())
+
+        # Network-based grants (grantee is a network the requester belongs to)
+        if shared_networks:
+            network_ids = [n.id for n in shared_networks]
+            net_grant_result = await db.execute(
+                select(CapsuleShareGrant.capsule_id)
+                .join(KnowledgeCapsule, KnowledgeCapsule.id == CapsuleShareGrant.capsule_id)
+                .where(
+                    CapsuleShareGrant.grantee_network_id.in_(network_ids),
+                    KnowledgeCapsule.owner_id == owner_id,
+                    KnowledgeCapsule.is_archived == False,  # noqa: E712
+                    (CapsuleShareGrant.expires_at == None) | (CapsuleShareGrant.expires_at > now),  # noqa: E711
+                )
+            )
+            ids.extend(net_grant_result.scalars().all())
 
     return list(set(ids))
 
@@ -89,6 +140,9 @@ async def load_capsules_decrypted(
             "title": c.title,
             "content": content,
             "tier": c.tier,
+            "visibility": c.visibility,
+            "emergency_accessible": c.emergency_accessible,
+            "can_reshare": c.can_reshare,
             "category": c.category,
             "freshness": c.freshness,
             "expires_at": str(c.expires_at) if c.expires_at else None,
@@ -134,6 +188,145 @@ def _error_result(
         "citadel_output": None,
         "latency_ms": latency_ms,
         "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def query_agent_public(
+    db: AsyncSession,
+    target_user_id: str,
+    question: str,
+    from_did: str,
+    from_pod: str,
+    vault_keys: dict[str, bytes],
+) -> dict:
+    """Handle a cross-pod query at public trust level.
+
+    Remote agents without a local connection get:
+    - Trust level = "public" (only "open" capsules visible)
+    - Citadel scanning on input AND output
+    - Audit logging with remote agent DID
+    - Read-only (no tools)
+    """
+    start = time.time()
+
+    to_user = await db.get(User, target_user_id)
+    if not to_user:
+        return _error_result("remote", target_user_id, question, "User not found")
+
+    agent_result = await db.execute(
+        select(Agent).where(Agent.owner_id == target_user_id)
+    )
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        return _error_result("remote", target_user_id, question, "Agent not found")
+
+    # Citadel: scan input
+    input_scan = await citadel.scan_input(question)
+    if input_scan.decision == "BLOCK":
+        latency = int((time.time() - start) * 1000)
+        await log_event(
+            db,
+            actor_did=from_did,
+            target_user_id=target_user_id,
+            action="remote_query_blocked",
+            event_type="query",
+            decision="denied",
+            details={"from_pod": from_pod, "citadel_score": input_scan.heuristic_score},
+        )
+        await db.commit()
+        return _error_result(
+            "remote", target_user_id, question,
+            "Blocked: potential security threat detected",
+            trust_level="public", latency_ms=latency,
+        )
+
+    # Public trust: only "open" capsules
+    accessible_ids = await get_accessible_capsule_ids(
+        db, target_user_id, "public", shared_networks=[],
+    )
+
+    # Semantic retrieval
+    relevant_ids = embeddings.search_capsules(question, accessible_ids, top_k=5)
+    if not relevant_ids:
+        relevant_ids = accessible_ids[:5]
+
+    # Decrypt capsules
+    vault_key = vault_keys.get(target_user_id)
+    if not vault_key:
+        return _error_result(
+            "remote", target_user_id, question,
+            "Vault key not available — target user needs to log in first",
+            trust_level="public",
+        )
+
+    capsules = await load_capsules_decrypted(db, relevant_ids, vault_key)
+
+    # Agent responds (read-only, no tools)
+    try:
+        response_text = await agent_respond(
+            agent=agent,
+            question=question,
+            trust_level="public",
+            shared_networks=[],
+            capsules=capsules,
+            requester_name=f"Remote agent ({from_did[:20]}...)",
+            owner_name=to_user.display_name,
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Remote query agent error for {target_user_id}: {e}")
+        response_text = "I'm sorry, I encountered an issue processing your request."
+
+    # Citadel: scan output
+    output_scan = await citadel.scan_output(response_text)
+    decision = "allowed"
+    if not output_scan.is_safe:
+        decision = "redacted"
+        response_text = f"Response redacted: {', '.join(output_scan.findings)}"
+
+    latency = int((time.time() - start) * 1000)
+
+    # Log query
+    query_record = Query(
+        from_user_id="remote",
+        to_user_id=target_user_id,
+        question=question,
+        trust_level="public",
+        shared_networks="[]",
+        response=response_text,
+        decision=decision,
+        citadel_input_score=input_scan.heuristic_score,
+        citadel_input_decision=input_scan.decision,
+        citadel_output_safe=output_scan.is_safe,
+        citadel_output_findings=json.dumps(output_scan.findings) if output_scan.findings else None,
+        latency_ms=latency,
+    )
+    db.add(query_record)
+
+    # Audit log
+    await log_event(
+        db,
+        actor_did=from_did,
+        target_user_id=target_user_id,
+        action="remote_query",
+        event_type="query",
+        query_id=query_record.id,
+        decision=decision,
+        details={"from_pod": from_pod, "trust_level": "public", "capsules_count": len(capsules)},
+    )
+
+    await db.commit()
+
+    return {
+        "from_did": from_did,
+        "from_pod": from_pod,
+        "to_user_id": target_user_id,
+        "question": question,
+        "trust_level": "public",
+        "shared_networks": [],
+        "response": response_text,
+        "decision": decision,
+        "latency_ms": latency,
     }
 
 
@@ -231,8 +424,13 @@ async def query_agent(
                 "created_at": query_record.created_at.isoformat(),
             }
 
-    # 3. Get accessible capsules
-    accessible_ids = await get_accessible_capsule_ids(db, to_user_id, trust_level, shared_networks)
+    # 3. Get accessible capsules (with context filter for self-query)
+    ctx_filter = to_user.active_context if is_self_query else None
+    accessible_ids = await get_accessible_capsule_ids(
+        db, to_user_id, trust_level, shared_networks,
+        requester_id=from_user_id if not is_self_query else None,
+        context_filter=ctx_filter,
+    )
 
     # 4. Semantic retrieval
     relevant_ids = embeddings.search_capsules(question, accessible_ids, top_k=5)

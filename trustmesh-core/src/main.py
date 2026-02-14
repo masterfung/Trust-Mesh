@@ -14,19 +14,23 @@ else:
     # Fallback: try trustmesh-core/.env
     load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, or_
 
-from src.crypto import decrypt, derive_vault_key, public_key_to_b64
+from src.crypto import decrypt, decrypt_text, derive_vault_key, public_key_to_b64
 from src.database import async_session, init_db
-from src.models import Agent, Connection, Network, NetworkMembership, User, parse_profile_data
-from src.routes import audit, briefing, capsules, connections, emergency, intake, invites, networks, notifications, queries, services, tasks, users
+from src.models import Agent, Connection, KnowledgeCapsule, Network, NetworkMembership, User, parse_profile_data
+from src.routes import audit, briefing, capsules, connections, emergency, fhir, intake, invites, networks, notifications, pin, pod, queries, services, tasks, users
 from src.schemas import GraphEdge, GraphNetwork, GraphNode, GraphResponse
 
 # In-memory vault key store (user_id -> decrypted vault master key)
 # Populated at startup from seed data or on user login
 vault_keys: dict[str, bytes] = {}
+
+# In-memory PIN auth tokens (token -> {user_id, expires_at, created_at})
+# Short-lived (5 min) tokens for governance changes after PIN verification
+pin_tokens: dict[str, dict] = {}
 
 DEMO_PASSWORD = "TrustMesh-demo-2026"
 
@@ -48,11 +52,37 @@ async def _load_vault_keys():
                     pass  # Skip users with bad keys
 
 
+async def _rebuild_embeddings():
+    """Rebuild ChromaDB embeddings from DB for all users with loaded vault keys."""
+    from src.embeddings import reset_collection, upsert_capsule_embedding
+
+    reset_collection()
+    async with async_session() as db:
+        result = await db.execute(select(KnowledgeCapsule))
+        count = 0
+        for cap in result.scalars().all():
+            vk = vault_keys.get(cap.owner_id)
+            if not vk:
+                continue
+            try:
+                text = decrypt_text(cap.content_encrypted, vk)
+                upsert_capsule_embedding(
+                    cap.id,
+                    f"{cap.title}: {text}",
+                    {"capsule_id": cap.id, "owner_id": cap.owner_id, "visibility": cap.visibility},
+                )
+                count += 1
+            except Exception:
+                pass
+    print(f"Rebuilt {count} embeddings.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifecycle: init DB + load vault keys on startup."""
+    """Application lifecycle: init DB + load vault keys + rebuild embeddings on startup."""
     await init_db()
     await _load_vault_keys()
+    await _rebuild_embeddings()
     yield
 
 
@@ -85,13 +115,57 @@ app.include_router(invites.router)
 app.include_router(intake.router)
 app.include_router(emergency.router)
 app.include_router(audit.router)
+app.include_router(pin.router)
+app.include_router(fhir.router)
+app.include_router(pod.router)
 
 
 @app.post("/api/demo/warmup")
-async def demo_warmup():
-    """Reload vault keys for all demo users. Called by graph page before running scenarios."""
+async def demo_warmup(request: Request):
+    """Reload vault keys for all demo users and ensure a demo session exists.
+
+    Called by graph page before running scenarios.  If the caller has no valid
+    session, we auto-login as the first demo user (peter) so that subsequent
+    /api/query calls don't 401.
+    """
+    from fastapi.responses import JSONResponse
+    from src.auth import COOKIE_NAME, create_session, get_session_token, validate_session
+
     await _load_vault_keys()
-    return {"status": "ok", "keys_loaded": len(vault_keys)}
+
+    # Check if caller already has a valid session
+    token = get_session_token(request)
+    existing_user = validate_session(token) if token else None
+
+    if existing_user:
+        return {"status": "ok", "keys_loaded": len(vault_keys)}
+
+    # No session — auto-login as first demo user
+    async with async_session() as db:
+        result = await db.execute(
+            select(User).where(User.is_demo == True).order_by(User.display_name).limit(1)  # noqa: E712
+        )
+        demo_user = result.scalar_one_or_none()
+
+    if not demo_user:
+        return {"status": "ok", "keys_loaded": len(vault_keys)}
+
+    session_token = create_session(demo_user.id)
+    response = JSONResponse(content={
+        "status": "ok",
+        "keys_loaded": len(vault_keys),
+        "auto_login": demo_user.username,
+    })
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=session_token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=86400,
+        path="/",
+    )
+    return response
 
 
 @app.get("/health")
@@ -220,42 +294,75 @@ async def get_user_graph(user_id: str):
         return await _build_graph(db, user_id=user_id)
 
 
-@app.get("/.well-known/agent.json")
-async def agent_discovery():
-    """A2A agent discovery endpoint — lists all agents with DIDs and capabilities."""
+async def _build_agent_card() -> dict:
+    """Build A2A-compatible agent card for this pod."""
+    from src.federation import POD_NAME, POD_URL
+
     async with async_session() as db:
         result = await db.execute(
             select(Agent, User).join(User, Agent.owner_id == User.id).order_by(User.display_name)
         )
-        agents = []
+        skills = []
+        first_agent = None
         for agent, user in result.all():
-            capabilities = ["knowledge-query", "trust-aware-sharing"]
+            if not first_agent:
+                first_agent = (agent, user)
+
+            skill = {
+                "id": f"agent-{user.username}",
+                "name": f"{user.display_name}'s Knowledge",
+                "description": f"Query {user.display_name}'s shared knowledge (trust-level dependent)",
+            }
+            skills.append(skill)
+
             if user.user_type == "service":
-                capabilities.extend(["quote-request", "availability-check"])
-                # Check if this is a healthcare service (has medical skills in profile)
                 pd = parse_profile_data(user.profile_data)
                 if pd:
                     skill_categories = [s.get("category", "") for s in pd.get("skills", [])]
                     if "medical" in skill_categories:
-                        capabilities.append("emergency-access")
+                        skills.append({
+                            "id": f"emergency-{user.username}",
+                            "name": "Emergency Medical Access",
+                            "description": f"UCAN-authorized emergency access to {user.display_name}'s health data",
+                        })
 
-            agents.append({
-                "name": agent.name,
-                "did": agent.did,
-                "public_key_b64": public_key_to_b64(agent.public_key) if agent.public_key else None,
-                "owner": {
-                    "id": user.id,
-                    "username": user.username,
-                    "display_name": user.display_name,
-                    "user_type": user.user_type,
-                },
-                "capabilities": capabilities,
-                "url": f"/api/users/{user.id}/agent/a2a",
-                "protocol": "trustmesh/1.0",
-            })
+        # Build A2A-compatible agent card
+        pod_did = first_agent[0].did if first_agent else None
+        pod_pubkey = public_key_to_b64(first_agent[0].public_key) if first_agent and first_agent[0].public_key else None
 
         return {
-            "protocol": "trustmesh/1.0",
-            "agents": agents,
-            "total": len(agents),
+            "name": f"{POD_NAME} Agent",
+            "description": f"TrustMesh pod agent for {POD_NAME}",
+            "url": f"{POD_URL}/api/pod/a2a",
+            "version": "0.1.0",
+            "capabilities": {
+                "streaming": False,
+                "pushNotifications": False,
+            },
+            "authentication": {
+                "schemes": ["ucan", "session"],
+            },
+            "skills": skills,
+            "defaultInputModes": ["text"],
+            "defaultOutputModes": ["text"],
+            "trustmesh": {
+                "pod_name": POD_NAME,
+                "pod_url": POD_URL,
+                "protocol": "trustmesh/0.1",
+                "did": pod_did,
+                "public_key_b64": pod_pubkey,
+                "agent_count": len(skills),
+            },
         }
+
+
+@app.get("/.well-known/agent-card.json")
+async def agent_card():
+    """A2A-compatible agent card — the primary discovery endpoint for federation."""
+    return await _build_agent_card()
+
+
+@app.get("/.well-known/agent.json")
+async def agent_discovery():
+    """Legacy agent discovery endpoint — redirects to A2A agent card."""
+    return await _build_agent_card()

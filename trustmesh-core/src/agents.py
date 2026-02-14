@@ -75,14 +75,32 @@ AGENT_TOOLS = [
                         "contact (people/phone/email)"
                     ),
                 },
-                "tier": {
+                "visibility": {
                     "type": "string",
-                    "enum": ["public", "network", "private"],
+                    "enum": ["private", "internal", "shareable", "open"],
                     "description": (
-                        "Access level: public (anyone can see), network (shared with specific networks), "
-                        "private (only you). Health/safety info should typically be 'network' for family. "
-                        "Personal observations/diary entries should be 'private'. "
-                        "Professional bio info can be 'public'."
+                        "Visibility level: "
+                        "private (owner only — diary entries, secrets), "
+                        "internal (owner + trusted networks — family health info, work data), "
+                        "shareable (explicitly shared with specific people, has expiry), "
+                        "open (discoverable by anyone — professional bio). "
+                        "Use category defaults: health→internal, personal→private, work→internal, general→open."
+                    ),
+                },
+                "emergency_accessible": {
+                    "type": "boolean",
+                    "description": (
+                        "Can verified healthcare providers access this via emergency UCAN tokens? "
+                        "Default true for health category (allergies, medications, conditions). "
+                        "Default false for everything else. Owner can override."
+                    ),
+                },
+                "can_reshare": {
+                    "type": "boolean",
+                    "description": (
+                        "Can someone who views this data share it with others? "
+                        "Default false for health/personal, true for open/general. "
+                        "When false, viewing agents say 'This is shared for your reference only.'"
                     ),
                 },
                 "category": {
@@ -121,7 +139,7 @@ AGENT_TOOLS = [
                     ),
                 },
             },
-            "required": ["title", "content", "capsule_type", "tier", "category", "freshness"],
+            "required": ["title", "content", "capsule_type", "visibility", "category", "freshness"],
         },
     },
     {
@@ -255,6 +273,49 @@ AGENT_TOOLS = [
             },
         },
     },
+    {
+        "name": "check_calendar",
+        "description": (
+            "Check the owner's calendar for upcoming events. "
+            "Use when asked about schedule, appointments, meetings, or 'what's on my calendar'. "
+            "Returns events for the requested time range."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "time_range": {
+                    "type": "string",
+                    "enum": ["today", "tomorrow", "this_week", "next_week"],
+                    "description": "Time range to check. Default: 'this_week'.",
+                },
+            },
+        },
+    },
+    {
+        "name": "draft_email",
+        "description": (
+            "Draft an email and save it as a capsule. Use when the owner asks to "
+            "compose, draft, or write an email to someone."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Recipient name or email",
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Email subject line",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Email body content",
+                },
+            },
+            "required": ["to", "subject", "body"],
+        },
+    },
 ]
 
 
@@ -318,7 +379,8 @@ async def handle_search_vault(ctx: ToolContext, query: str) -> str:
             "id": c.id,
             "title": c.title,
             "capsule_type": c.capsule_type,
-            "tier": c.tier,
+            "visibility": c.visibility,
+            "emergency_accessible": c.emergency_accessible,
             "category": c.category,
             "content": content[:500],  # Truncate for context window
         })
@@ -341,11 +403,23 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
     title = params["title"]
     content = params["content"]
     capsule_type = params["capsule_type"]
-    tier = params["tier"]
+    # Support both old "tier" and new "visibility" from agent
+    visibility = params.get("visibility") or params.get("tier", "private")
+    # Map old tier names to new visibility names
+    tier_to_vis = {"public": "open", "network": "internal", "private": "private"}
+    visibility = tier_to_vis.get(visibility, visibility)
+    emergency_accessible = params.get("emergency_accessible", False)
+    can_reshare = params.get("can_reshare", False)
     category = params["category"]
     freshness = params["freshness"]
     network_names = params.get("network_names", [])
     existing_id = params.get("existing_capsule_id")
+
+    # Apply category defaults if not explicitly set
+    if category == "health" and not params.get("emergency_accessible"):
+        emergency_accessible = True
+    if visibility == "open" and not params.get("can_reshare"):
+        can_reshare = True
 
     # Resolve network names to IDs
     network_ids = []
@@ -357,8 +431,8 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
                 resolved_network_names.append(net["name"])
                 break
 
-    # If tier is "network" but no networks specified, default to first network
-    if tier == "network" and not network_ids and ctx.networks:
+    # If internal but no networks specified, default to first network
+    if visibility == "internal" and not network_ids and ctx.networks:
         network_ids = [ctx.networks[0]["id"]]
         resolved_network_names = [ctx.networks[0]["name"]]
 
@@ -373,7 +447,9 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
         capsule.content_encrypted = encrypt_text(content, ctx.vault_key)
         capsule.content_hash = content_hash(content)
         capsule.capsule_type = capsule_type
-        capsule.tier = tier
+        capsule.visibility = visibility
+        capsule.emergency_accessible = emergency_accessible
+        capsule.can_reshare = can_reshare
         capsule.category = category
         capsule.freshness = freshness
 
@@ -392,7 +468,7 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
         upsert_capsule_embedding(
             capsule.id,
             f"{title}: {content}",
-            {"capsule_id": capsule.id, "owner_id": ctx.owner_id, "tier": tier},
+            {"capsule_id": capsule.id, "owner_id": ctx.owner_id, "visibility": visibility},
         )
 
         action = {
@@ -401,7 +477,8 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
             "title": title,
             "old_title": old_title,
             "capsule_type": capsule_type,
-            "tier": tier,
+            "visibility": visibility,
+            "emergency_accessible": emergency_accessible,
             "category": category,
             "networks": resolved_network_names,
         }
@@ -412,7 +489,7 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
             "action": "updated",
             "capsule_id": capsule.id,
             "title": title,
-            "message": f"Updated capsule '{title}' ({capsule_type}, {tier}, {category})",
+            "message": f"Updated capsule '{title}' ({capsule_type}, {visibility}, {category})",
         })
     else:
         # CREATE new capsule
@@ -422,7 +499,9 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
             title=title,
             content_encrypted=encrypt_text(content, ctx.vault_key),
             content_hash=content_hash(content),
-            tier=tier,
+            visibility=visibility,
+            emergency_accessible=emergency_accessible,
+            can_reshare=can_reshare,
             category=category,
             freshness=freshness,
         )
@@ -439,15 +518,25 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
         upsert_capsule_embedding(
             capsule.id,
             f"{title}: {content}",
-            {"capsule_id": capsule.id, "owner_id": ctx.owner_id, "tier": tier},
+            {"capsule_id": capsule.id, "owner_id": ctx.owner_id, "visibility": visibility},
         )
+
+        # Build governance summary for confirmation
+        gov_notes = []
+        if emergency_accessible:
+            gov_notes.append("emergency-accessible")
+        if can_reshare:
+            gov_notes.append("reshare-allowed")
+        gov_str = f" [{', '.join(gov_notes)}]" if gov_notes else ""
 
         action = {
             "type": "capsule_created",
             "capsule_id": capsule.id,
             "title": title,
             "capsule_type": capsule_type,
-            "tier": tier,
+            "visibility": visibility,
+            "emergency_accessible": emergency_accessible,
+            "can_reshare": can_reshare,
             "category": category,
             "networks": resolved_network_names,
         }
@@ -458,7 +547,7 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
             "action": "created",
             "capsule_id": capsule.id,
             "title": title,
-            "message": f"Created capsule '{title}' ({capsule_type}, {tier}, {category})"
+            "message": f"Created capsule '{title}' ({capsule_type}, {visibility}, {category}){gov_str}"
                        + (f" shared with {', '.join(resolved_network_names)}" if resolved_network_names else ""),
         })
 
@@ -783,6 +872,144 @@ async def handle_discover_networks(ctx: ToolContext, interest: str = "") -> str:
     })
 
 
+# ═══════════════════════════════════════════════════════════════
+# Mock Calendar & Email (same interface real OAuth/MCP would use)
+# ═══════════════════════════════════════════════════════════════
+
+MOCK_CALENDARS: dict[str, list[dict]] = {
+    "molly": [
+        {"time": "9:00 AM", "title": "Team Standup", "location": "Zoom", "day": "today", "recurring": True},
+        {"time": "11:00 AM", "title": "1:1 with Kyle", "location": "Conference Room B", "day": "today"},
+        {"time": "2:00 PM", "title": "Q4 Planning Review", "location": "Main Board Room", "day": "today"},
+        {"time": "6:00 PM", "title": "Pick up Jane from soccer", "location": "Roosevelt Field", "day": "today"},
+        {"time": "10:00 AM", "title": "Sprint Retrospective", "location": "Zoom", "day": "tomorrow"},
+        {"time": "3:00 PM", "title": "Dentist — Jane", "location": "Dr. Kim's Office", "day": "tomorrow"},
+        {"time": "All day", "title": "Flight to Austin — SRE Conference", "location": "SFO → AUS", "day": "this_week"},
+        {"time": "7:00 PM", "title": "Visit Grandma Rose", "location": "Sunrise Assisted Living", "day": "this_week"},
+    ],
+    "peter": [
+        {"time": "8:30 AM", "title": "Client Sync — Martinez Account", "location": "Office", "day": "today"},
+        {"time": "12:00 PM", "title": "Lunch with Bill", "location": "Tony's Deli", "day": "today"},
+        {"time": "4:00 PM", "title": "Jane's Piano Recital", "location": "Roosevelt Middle School", "day": "this_week"},
+        {"time": "9:00 AM", "title": "Quarterly Review Prep", "location": "Home Office", "day": "tomorrow"},
+        {"time": "6:30 PM", "title": "Dinner at Mom's", "location": "Sunrise Assisted Living", "day": "this_week"},
+    ],
+    "jane": [
+        {"time": "3:30 PM", "title": "Soccer Practice", "location": "Roosevelt Field", "day": "today", "recurring": True},
+        {"time": "4:00 PM", "title": "Piano Lesson", "location": "Ms. Chen's Studio", "day": "tomorrow"},
+        {"time": "10:00 AM", "title": "SAT Practice Test", "location": "AceTutor Center", "day": "this_week"},
+        {"time": "2:00 PM", "title": "Study Group — History", "location": "Library", "day": "this_week"},
+    ],
+    "bill": [
+        {"time": "10:00 AM", "title": "Guitar Practice", "location": "Home", "day": "today"},
+        {"time": "2:00 PM", "title": "Coding Club", "location": "School Lab", "day": "today", "recurring": True},
+        {"time": "11:00 AM", "title": "Basketball Game", "location": "Community Center", "day": "this_week"},
+    ],
+    "dorothy": [
+        {"time": "9:00 AM", "title": "Physical Therapy", "location": "Sunrise Wellness Center", "day": "today"},
+        {"time": "11:00 AM", "title": "Bridge Club", "location": "Community Room", "day": "today", "recurring": True},
+        {"time": "2:00 PM", "title": "Video Call with Harold", "location": "Room 204", "day": "tomorrow"},
+        {"time": "10:00 AM", "title": "Dr. Patel — Checkup", "location": "Riverside General", "day": "this_week"},
+    ],
+    "kyle": [
+        {"time": "9:00 AM", "title": "Team Standup", "location": "Zoom", "day": "today", "recurring": True},
+        {"time": "11:00 AM", "title": "1:1 with Molly", "location": "Conference Room B", "day": "today"},
+        {"time": "2:00 PM", "title": "Architecture Review — Auth Service", "location": "Zoom", "day": "tomorrow"},
+        {"time": "5:00 PM", "title": "Board Game Night", "location": "Kyle's Place", "day": "this_week"},
+    ],
+}
+
+
+async def handle_check_calendar(ctx: ToolContext, time_range: str = "this_week") -> str:
+    """Return mock calendar events for the owner."""
+    # Find the owner's username
+    from sqlalchemy import select
+    from src.models import User
+    user = await ctx.db.execute(select(User.username).where(User.id == ctx.owner_id))
+    username = user.scalar_one_or_none() or ""
+
+    events = MOCK_CALENDARS.get(username, [])
+
+    # Filter by time range
+    range_order = {"today": 0, "tomorrow": 1, "this_week": 2, "next_week": 3}
+    target = range_order.get(time_range, 2)
+    filtered = [e for e in events if range_order.get(e["day"], 2) <= target]
+
+    if not filtered:
+        return json.dumps({
+            "success": True,
+            "events": [],
+            "message": f"No events found for {time_range}.",
+        })
+
+    ctx.actions.append({"type": "calendar_checked", "time_range": time_range, "event_count": len(filtered)})
+
+    return json.dumps({
+        "success": True,
+        "time_range": time_range,
+        "events": filtered,
+        "event_count": len(filtered),
+        "message": f"Found {len(filtered)} event(s) for {time_range}.",
+    })
+
+
+async def handle_draft_email(ctx: ToolContext, params: dict) -> str:
+    """Draft an email and save it as a capsule."""
+    from src.crypto import content_hash, encrypt_text
+    from src.embeddings import upsert_capsule_embedding
+
+    to = params["to"]
+    subject = params["subject"]
+    body = params["body"]
+
+    # Save as a capsule (draft)
+    email_content = f"To: {to}\nSubject: {subject}\n\n{body}"
+    capsule = KnowledgeCapsule(
+        owner_id=ctx.owner_id,
+        capsule_type="memory",
+        title=f"Email Draft: {subject}",
+        content_encrypted=encrypt_text(email_content, ctx.vault_key),
+        content_hash=content_hash(email_content),
+        visibility="private",
+        category="work",
+        freshness="temporary",
+    )
+    ctx.db.add(capsule)
+    await ctx.db.flush()
+
+    upsert_capsule_embedding(
+        capsule.id,
+        f"Email Draft: {subject} to {to}: {body[:200]}",
+        {"capsule_id": capsule.id, "owner_id": ctx.owner_id, "visibility": "private"},
+    )
+
+    # Create notification
+    notification = Notification(
+        user_id=ctx.owner_id,
+        notification_type="email_draft",
+        title=f"Email draft saved: {subject}",
+        body=f"To: {to}. Draft saved to your vault.",
+        related_id=capsule.id,
+    )
+    ctx.db.add(notification)
+    await ctx.db.flush()
+
+    ctx.actions.append({
+        "type": "email_drafted",
+        "to": to,
+        "subject": subject,
+        "capsule_id": capsule.id,
+    })
+
+    return json.dumps({
+        "success": True,
+        "capsule_id": capsule.id,
+        "to": to,
+        "subject": subject,
+        "message": f"Email draft to {to} saved to your vault. Subject: '{subject}'.",
+    })
+
+
 async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> str:
     """Route a tool call to its handler. Returns JSON string."""
     if tool_name == "search_vault":
@@ -803,6 +1030,10 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
         return await handle_list_services(ctx)
     elif tool_name == "discover_networks":
         return await handle_discover_networks(ctx, tool_input.get("interest", ""))
+    elif tool_name == "check_calendar":
+        return await handle_check_calendar(ctx, tool_input.get("time_range", "this_week"))
+    elif tool_name == "draft_email":
+        return await handle_draft_email(ctx, tool_input)
     else:
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
@@ -819,13 +1050,14 @@ def build_trust_context(trust_level: str, shared_networks: list[Network], reques
         network_names = ", ".join(n.name for n in shared_networks)
         return (
             f"{requester_name} is connected and shares these networks: {network_names}. "
-            f"They can access public capsules and capsules shared to these networks."
+            f"They can access open capsules, internal capsules shared to these networks, "
+            f"and any capsules explicitly shared with them."
         )
     else:
         return (
             f"{requester_name} has public access only. "
             f"They are not in any of your owner's networks. "
-            f"Only share information from public capsules."
+            f"Only share information from open capsules."
         )
 
 
@@ -842,9 +1074,16 @@ def format_capsules(capsules: list[dict]) -> str:
         elif c.get("freshness") == "temporary":
             freshness_note = " [Temporary — may be outdated]"
 
+        gov_flags = []
+        if c.get("emergency_accessible"):
+            gov_flags.append("emergency-accessible")
+        if c.get("can_reshare"):
+            gov_flags.append("reshare-ok")
+        gov_str = f" | Flags: {', '.join(gov_flags)}" if gov_flags else ""
+
         parts.append(
             f"[{c['capsule_type'].upper()}] {c['title']}{freshness_note}\n"
-            f"Tier: {c['tier']} | Category: {c.get('category', 'general')}\n"
+            f"Visibility: {c.get('visibility', c.get('tier', 'private'))} | Category: {c.get('category', 'general')}{gov_str}\n"
             f"{c['content']}\n"
         )
     return "\n---\n".join(parts)
@@ -889,7 +1128,9 @@ These are the knowledge capsules you can draw from for this requester:
 4. NEVER reveal information beyond what the capsules above contain
 5. For health/medical procedures, always err on the side of completeness and accuracy
 6. Be warm and helpful — you represent {owner_name}
-7. Keep responses concise but complete. Don't add unnecessary preamble."""
+7. Keep responses concise but complete. Don't add unnecessary preamble.
+8. **Reshare control**: If a capsule has can_reshare=false (or the flag isn't set), tell the requester: "This information is shared for your reference only — please don't pass it along."
+9. **Visibility awareness**: Only share capsules that appear in the list above. The system has already filtered by the requester's access level."""
 
 
 # ── Self-query prompt (tool-enabled) ──
@@ -905,7 +1146,7 @@ You are talking directly to {owner_name} (your owner). You have FULL access to t
 {formatted_capsules}
 
 ## What You Can Do
-You have nine tools:
+You have eleven tools:
 
 1. **search_vault** — Search for existing capsules before saving. ALWAYS search first to avoid duplicates.
 2. **save_capsule** — Save new knowledge or update existing capsules.
@@ -916,6 +1157,8 @@ You have nine tools:
 7. **list_connections** — See who you're connected to and shared networks. Use before query_peer.
 8. **list_services** — See what service providers are in the mesh. Use before request_quotes.
 9. **discover_networks** — Find public networks/groups the owner can join (music, dance, sports, neighborhood, etc.).
+10. **check_calendar** — Check the owner's calendar for upcoming events, meetings, and appointments.
+11. **draft_email** — Compose and save an email draft (saved to vault as a capsule).
 
 ## When to use tools — be PROACTIVE:
 - User asks about services, businesses, or providers → ALWAYS list_services first, then request_quotes for matching ones, then web_search for more
@@ -930,6 +1173,10 @@ You have nine tools:
 - User asks about family plans → search_vault + query_peer family members for their info
 - User asks about groups, communities, social clubs → discover_networks (with interest filter if specific)
 - User asks "what can I join?" or "any groups nearby?" → discover_networks
+- User asks about schedule, calendar, meetings, appointments → check_calendar
+- User asks "what's on my calendar?" or "when is my next meeting?" → check_calendar
+- User asks to write/draft/compose an email → draft_email
+- User asks about upcoming plans → check_calendar + search_vault
 
 ## IMPORTANT: Always check the mesh FIRST
 When the user asks about ANY type of provider, service, or business — ALWAYS call list_services before web_search.
@@ -967,12 +1214,27 @@ Classify saved knowledge smartly and ACCURATELY. Pay close attention to what the
 - "I'm allergic to X" / "X allergy" / "allergic reaction" → This IS an allergy. Category should be "health".
 - Do NOT escalate dislikes into medical conditions. If someone says "I hate peanuts", that means they don't enjoy eating them — it does NOT mean they have a peanut allergy. These are fundamentally different.
 
-**tier:**
-- Health/safety (actual allergies, medications, emergencies) → "network" shared with family network
-- Food dislikes, hobby preferences → "network" if they asked family to know, "private" otherwise
-- Personal diary/secrets → "private"
-- Professional bio → "public"
-- When in doubt, use "private" (owner can change later)
+**visibility (4-level data governance):**
+- `private` — Owner only. Diary entries, personal secrets, sensitive notes.
+- `internal` — Owner + trusted networks. Health/safety info shared with family, work data shared with team.
+- `shareable` — Explicitly shared with specific people. Temporal — access grants expire.
+- `open` — Discoverable by anyone. Professional bio, public skills.
+
+**Category defaults (use these unless owner says otherwise):**
+| Category | Default visibility | emergency_accessible | can_reshare |
+|----------|-------------------|---------------------|-------------|
+| health   | internal          | true                | false       |
+| personal | private           | false               | false       |
+| work     | internal          | false               | false       |
+| family   | internal          | false               | false       |
+| home     | internal          | false               | false       |
+| general  | open              | false               | true        |
+
+After saving, confirm the governance: "I saved Rose's medication list as **internal** with emergency access enabled. Your Care Circle can see it, and verified healthcare providers can access it in emergencies."
+
+**emergency_accessible:** Set `true` for health capsules (allergies, medications, conditions). Verified healthcare providers can access these via UCAN tokens regardless of visibility level.
+
+**can_reshare:** Set `true` for open/general capsules. When `false`, viewing agents say "This is shared for your reference only."
 
 **category:**
 - Actual medical allergies, medications → "health"
@@ -988,8 +1250,8 @@ Classify saved knowledge smartly and ACCURATELY. Pay close attention to what the
 - When updating, merge the new information with the old content — don't lose existing data
 
 ### Network Assignment
-- Family health/safety info → share with family network
-- Work-related knowledge → share with work network
+- Family health/safety info → share with family network (visibility: internal)
+- Work-related knowledge → share with work network (visibility: internal)
 - Personal observations about relationships → keep "private" unless owner specifies
 - If unsure, default to "private" and tell the owner they can share it later
 
