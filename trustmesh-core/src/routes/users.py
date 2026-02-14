@@ -231,7 +231,7 @@ async def get_agent_card(user_id: str, db: AsyncSession = Depends(get_db)):
         public_key_b64=public_key_to_b64(agent.public_key) if agent.public_key else None,
         did=agent.did,
         capabilities=["knowledge-query", "trust-aware-sharing"]
-        + (["quote-request", "availability-check"] if user.user_type == "service" else []),
+        + (["quote-request", "availability-check"] if user.user_type in ("service", "organization") else []),
         skills=skills,
     )
 

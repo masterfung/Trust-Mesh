@@ -1,4 +1,4 @@
-"""Tests for trust resolution between users."""
+"""Tests for trust resolution between users and capsule visibility enforcement."""
 
 import pytest
 import pytest_asyncio
@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from src.models import Base, Connection, Network, NetworkMembership, User
+from src.models import Base, CapsuleNetworkAccess, Connection, KnowledgeCapsule, Network, NetworkMembership, User
 from src.trust import get_accepted_connection, get_shared_networks, resolve_trust_level
+from src.gossip import get_accessible_capsule_ids
 
 
 @pytest_asyncio.fixture
@@ -155,3 +156,112 @@ async def test_trust_level_no_connection_kyle_jane(seeded_db):
     level, networks = await resolve_trust_level(seeded_db, "kyle-id", "jane-id")
     assert level == "public"
     assert networks == []
+
+
+# ── Capsule Visibility Enforcement Tests ──
+
+@pytest_asyncio.fixture
+async def capsule_db(seeded_db: AsyncSession):
+    """Add capsules with various visibility levels to the seeded DB."""
+    db = seeded_db
+
+    # Peter's capsules with different visibility levels
+    capsules = [
+        KnowledgeCapsule(
+            id="cap-private", owner_id="peter-id", capsule_type="note",
+            title="Private Note", content_encrypted=b"encrypted",
+            visibility="private", category="personal",
+        ),
+        KnowledgeCapsule(
+            id="cap-internal", owner_id="peter-id", capsule_type="note",
+            title="Family Info", content_encrypted=b"encrypted",
+            visibility="internal", category="family",
+        ),
+        KnowledgeCapsule(
+            id="cap-shareable", owner_id="peter-id", capsule_type="note",
+            title="Shareable Doc", content_encrypted=b"encrypted",
+            visibility="shareable", category="work",
+        ),
+        KnowledgeCapsule(
+            id="cap-open", owner_id="peter-id", capsule_type="note",
+            title="Public Bio", content_encrypted=b"encrypted",
+            visibility="open", category="personal",
+        ),
+    ]
+    db.add_all(capsules)
+    await db.flush()
+
+    # Link internal capsule to family network
+    db.add(CapsuleNetworkAccess(capsule_id="cap-internal", network_id="family-id"))
+    await db.commit()
+
+    return db
+
+
+@pytest.mark.asyncio
+async def test_public_trust_only_sees_open_capsules(capsule_db):
+    """Public trust level should ONLY return open capsules. This is the security core."""
+    ids = await get_accessible_capsule_ids(
+        capsule_db, "peter-id", "public", shared_networks=[]
+    )
+    assert "cap-open" in ids
+    assert "cap-private" not in ids
+    assert "cap-internal" not in ids
+    assert "cap-shareable" not in ids
+    assert len(ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_network_trust_sees_open_and_internal(capsule_db):
+    """Network trust should see open + internal capsules shared to the network."""
+    from src.models import Network
+    family = await capsule_db.get(Network, "family-id")
+
+    ids = await get_accessible_capsule_ids(
+        capsule_db, "peter-id", "network", shared_networks=[family],
+        requester_id="molly-id",
+    )
+    assert "cap-open" in ids
+    assert "cap-internal" in ids
+    assert "cap-private" not in ids
+    # shareable is only accessible via explicit grants, which we haven't created
+    assert len([i for i in ids if i.startswith("cap-")]) >= 2
+
+
+@pytest.mark.asyncio
+async def test_private_trust_sees_all_capsules(capsule_db):
+    """Private trust (self-query) should see ALL capsules."""
+    ids = await get_accessible_capsule_ids(
+        capsule_db, "peter-id", "private", shared_networks=[]
+    )
+    assert "cap-private" in ids
+    assert "cap-internal" in ids
+    assert "cap-shareable" in ids
+    assert "cap-open" in ids
+    assert len(ids) == 4
+
+
+@pytest.mark.asyncio
+async def test_network_trust_without_shared_networks_sees_only_open(capsule_db):
+    """Network trust with empty shared_networks behaves like public."""
+    ids = await get_accessible_capsule_ids(
+        capsule_db, "peter-id", "network", shared_networks=[]
+    )
+    assert "cap-open" in ids
+    assert "cap-internal" not in ids
+    assert "cap-private" not in ids
+
+
+@pytest.mark.asyncio
+async def test_archived_capsules_excluded(capsule_db):
+    """Archived capsules should never appear regardless of trust level."""
+    # Archive the open capsule
+    cap = await capsule_db.get(KnowledgeCapsule, "cap-open")
+    cap.is_archived = True
+    await capsule_db.commit()
+
+    ids = await get_accessible_capsule_ids(
+        capsule_db, "peter-id", "private", shared_networks=[]
+    )
+    assert "cap-open" not in ids
+    assert "cap-private" in ids

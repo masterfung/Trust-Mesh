@@ -58,7 +58,7 @@ async def issue_token(
     issuer_user = await db.get(User, data.issuer_user_id)
     if not issuer_user:
         raise HTTPException(404, "Issuer user not found")
-    if issuer_user.user_type != "service":
+    if issuer_user.user_type not in ("service", "organization"):
         raise HTTPException(403, "Only service providers can issue emergency tokens")
 
     # Get issuer's agent + keypair
@@ -206,7 +206,7 @@ async def access_patient_data(
 
     # Verify issuer is a service/provider
     issuer_user = await db.get(User, issuer_agent.owner_id)
-    if not issuer_user or issuer_user.user_type != "service":
+    if not issuer_user or issuer_user.user_type not in ("service", "organization"):
         await _log_denied(db, issuer_agent.owner_id, patient.id, data.token, "Issuer is not a service provider")
         raise HTTPException(403, "Issuer is not a service provider")
 

@@ -39,7 +39,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
     bio: Mapped[str] = mapped_column(Text, default="")
-    user_type: Mapped[str] = mapped_column(String(20), default="person")  # "person" | "service"
+    user_type: Mapped[str] = mapped_column(String(20), default="person")  # "person" | "organization" | "government"
     profile_data: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON structured profile
     is_discoverable: Mapped[bool] = mapped_column(Boolean, default=True)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -34,5 +34,10 @@ chroma_data/
 screenshots/
 *.png
 
+# Dev script artifacts
+.backend.log
+.backend.pid
+trustmesh-core/trustmesh.db.snapshot
+
 # Playwright MCP
 .playwright-mcp/

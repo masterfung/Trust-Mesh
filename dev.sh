@@ -7,7 +7,9 @@
 #   ./dev.sh restart  # Stop then start
 #   ./dev.sh status   # Show running processes
 #   ./dev.sh logs     # Tail both log files
-#   ./dev.sh seed     # Re-seed the database
+#   ./dev.sh seed     # Re-seed the database (auto-snapshots)
+#   ./dev.sh snapshot # Save current DB as snapshot
+#   ./dev.sh restore  # Restore DB from snapshot
 
 set -euo pipefail
 
@@ -76,7 +78,29 @@ cmd_seed() {
   echo "Seeding database..."
   cd "$BACKEND_DIR"
   uv run python -m src.seed
+  if [[ -f "$BACKEND_DIR/trustmesh.db" ]]; then
+    cp "$BACKEND_DIR/trustmesh.db" "$BACKEND_DIR/trustmesh.db.snapshot"
+    echo "Snapshot saved: trustmesh.db.snapshot"
+  fi
   echo "Seed complete."
+}
+
+cmd_snapshot() {
+  if [[ -f "$BACKEND_DIR/trustmesh.db" ]]; then
+    cp "$BACKEND_DIR/trustmesh.db" "$BACKEND_DIR/trustmesh.db.snapshot"
+    echo "Snapshot saved: trustmesh.db.snapshot"
+  else
+    echo "No database to snapshot. Run ./dev.sh seed first."
+  fi
+}
+
+cmd_restore() {
+  if [[ -f "$BACKEND_DIR/trustmesh.db.snapshot" ]]; then
+    cp "$BACKEND_DIR/trustmesh.db.snapshot" "$BACKEND_DIR/trustmesh.db"
+    echo "Database restored from snapshot."
+  else
+    echo "No snapshot found. Run ./dev.sh snapshot first."
+  fi
 }
 
 cmd_start() {
@@ -176,14 +200,16 @@ cmd_logs() {
 # ── Main ──
 
 case "${1:-start}" in
-  start)   cmd_start   ;;
-  stop)    cmd_stop    ;;
-  restart) cmd_restart ;;
-  status)  cmd_status  ;;
-  logs)    cmd_logs    ;;
-  seed)    cmd_seed    ;;
+  start)    cmd_start    ;;
+  stop)     cmd_stop     ;;
+  restart)  cmd_restart  ;;
+  status)   cmd_status   ;;
+  logs)     cmd_logs     ;;
+  seed)     cmd_seed     ;;
+  snapshot) cmd_snapshot ;;
+  restore)  cmd_restore  ;;
   *)
-    echo "Usage: ./dev.sh {start|stop|restart|status|logs|seed}"
+    echo "Usage: ./dev.sh {start|stop|restart|status|logs|seed|snapshot|restore}"
     exit 1
     ;;
 esac

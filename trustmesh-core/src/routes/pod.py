@@ -1,7 +1,7 @@
-"""Pod federation routes — discovery, peering, and cross-pod queries."""
+"""Pod federation routes — discovery, peering, cross-pod queries, and A2A messaging."""
 
+import logging
 from datetime import datetime, timezone
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -17,6 +17,8 @@ from src.federation import (
 )
 from src.models import Agent, PeerPod, User
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/pod", tags=["pod"])
 
 
@@ -31,6 +33,35 @@ class RemoteQueryRequest(BaseModel):
     from_pod: str
     to_username: str
     question: str
+
+
+class A2AMessagePart(BaseModel):
+    type: str = "text"
+    text: str = ""
+
+
+class A2AMessage(BaseModel):
+    role: str = "user"
+    parts: list[A2AMessagePart] = []
+
+
+class A2AMetadata(BaseModel):
+    from_did: str | None = None
+    trust_context: str = "public"
+    to_username: str | None = None
+
+
+class A2AParams(BaseModel):
+    message: A2AMessage
+    metadata: A2AMetadata = A2AMetadata()
+
+
+class A2ARequest(BaseModel):
+    """A2A JSON-RPC compatible request."""
+    jsonrpc: str = "2.0"
+    method: str = "message/send"
+    id: str | int | None = None
+    params: A2AParams
 
 
 # ── This Pod ──
@@ -188,3 +219,94 @@ async def receive_remote_query(req: RemoteQueryRequest):
             from src.main import vault_keys
             response = await query_agent_public(db, target_user.id, req.question, req.from_did, req.from_pod, vault_keys)
             return response
+
+
+# ── A2A Protocol Endpoint ──
+
+@router.post("/a2a")
+async def a2a_message(req: A2ARequest):
+    """A2A-compatible JSON-RPC message endpoint.
+
+    This makes our agent card's URL actually functional. Any A2A-compatible
+    agent can send messages here following the A2A protocol spec.
+
+    Supported methods:
+    - message/send: Send a message to an agent on this pod
+    """
+    if req.method != "message/send":
+        return {
+            "jsonrpc": "2.0",
+            "id": req.id,
+            "error": {"code": -32601, "message": f"Method '{req.method}' not supported"},
+        }
+
+    # Extract the text from the message parts
+    text_parts = [p.text for p in req.params.message.parts if p.type == "text" and p.text]
+    if not text_parts:
+        return {
+            "jsonrpc": "2.0",
+            "id": req.id,
+            "error": {"code": -32602, "message": "No text content in message"},
+        }
+    question = " ".join(text_parts)
+
+    metadata = req.params.metadata
+    from_did = metadata.from_did or "anonymous"
+
+    async with async_session() as db:
+        # If a target username is specified, query that user
+        if metadata.to_username:
+            result = await db.execute(select(User).where(User.username == metadata.to_username))
+            target_user = result.scalar_one_or_none()
+            if not target_user:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "error": {"code": -32602, "message": f"User '{metadata.to_username}' not found"},
+                }
+        else:
+            # No target specified — route to the first agent (pod default)
+            result = await db.execute(select(User).order_by(User.created_at).limit(1))
+            target_user = result.scalar_one_or_none()
+            if not target_user:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "error": {"code": -32602, "message": "No agents available on this pod"},
+                }
+
+        # Check if the requester has a local account (higher trust)
+        agent_result = await db.execute(select(Agent).where(Agent.did == from_did))
+        requesting_agent = agent_result.scalar_one_or_none()
+
+        if requesting_agent:
+            from src.gossip import query_agent
+            from src.main import vault_keys
+            response = await query_agent(db, requesting_agent.owner_id, target_user.id, question, vault_keys)
+        else:
+            from src.gossip import query_agent_public
+            from src.main import vault_keys
+            response = await query_agent_public(db, target_user.id, question, from_did, "a2a", vault_keys)
+
+    # Format as A2A Task response
+    return {
+        "jsonrpc": "2.0",
+        "id": req.id,
+        "result": {
+            "id": response.get("id", "task-1"),
+            "status": {
+                "state": "completed" if response.get("decision") != "denied" else "failed",
+                "message": {
+                    "role": "agent",
+                    "parts": [{"type": "text", "text": response.get("response", "")}],
+                },
+            },
+            "metadata": {
+                "trust_level": response.get("trust_level", "public"),
+                "decision": response.get("decision", "allowed"),
+                "latency_ms": response.get("latency_ms", 0),
+                "pod_name": POD_NAME,
+                "pod_url": POD_URL,
+            },
+        },
+    }

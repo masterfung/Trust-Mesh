@@ -234,6 +234,34 @@ AGENT_TOOLS = [
         },
     },
     {
+        "name": "discover_agents",
+        "description": (
+            "Discover agents across the pod and federation by capability, specialty, or name. "
+            "Returns agents with their trust level relative to the owner, pool membership, and skills. "
+            "Use this when looking for specialists (doctors, tutors, services), people in specific pools, "
+            "or to find who can help with a particular need. More powerful than list_connections — "
+            "this searches ALL discoverable agents, not just direct connections."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query — matches name, bio, skills (e.g., 'doctor', 'cleaning service', 'tutor')",
+                },
+                "capability": {
+                    "type": "string",
+                    "description": "Filter by skill category (e.g., 'medical', 'professional', 'education')",
+                },
+                "user_type": {
+                    "type": "string",
+                    "enum": ["person", "organization", "government"],
+                    "description": "Filter by entity type",
+                },
+            },
+        },
+    },
+    {
         "name": "list_connections",
         "description": (
             "List the owner's connections and their trust levels. "
@@ -611,6 +639,91 @@ async def handle_create_task(ctx: ToolContext, params: dict) -> str:
     })
 
 
+async def handle_discover_agents(ctx: ToolContext, params: dict) -> str:
+    """Discover agents by capability, name, or type. Returns agents with trust levels."""
+    from sqlalchemy import select
+    from src.models import User, Connection, NetworkMembership
+    from src.trust import resolve_trust_level
+    from src.models import parse_profile_data
+
+    query_text = params.get("query", "").lower()
+    capability = params.get("capability", "").lower()
+    user_type_filter = params.get("user_type")
+
+    # Build query for discoverable users (exclude self)
+    stmt = (
+        select(User)
+        .where(User.is_discoverable == True)  # noqa: E712
+        .where(User.id != ctx.owner_id)
+        .order_by(User.display_name)
+    )
+    if user_type_filter:
+        types = [user_type_filter]
+        if user_type_filter == "organization":
+            types.append("service")  # backward compat
+        stmt = stmt.where(User.user_type.in_(types))
+
+    result = await ctx.db.execute(stmt)
+    users = result.scalars().all()
+
+    agents = []
+    for user in users:
+        profile = parse_profile_data(user.profile_data) or {}
+        skills = profile.get("skills", [])
+
+        # Text search filter
+        if query_text:
+            searchable = f"{user.display_name} {user.bio} {user.username}".lower()
+            for skill in skills:
+                searchable += f" {skill.get('name', '')} {skill.get('category', '')}".lower()
+            words = query_text.split()
+            if not any(w in searchable for w in words):
+                continue
+
+        # Capability filter
+        if capability:
+            skill_cats = [s.get("category", "").lower() for s in skills]
+            skill_names = [s.get("name", "").lower() for s in skills]
+            if not any(capability in c for c in skill_cats + skill_names):
+                continue
+
+        # Resolve trust level
+        trust_level, shared_nets = await resolve_trust_level(ctx.db, ctx.owner_id, user.id)
+        network_names = [n.name for n in shared_nets]
+
+        # Get pool memberships
+        net_result = await ctx.db.execute(
+            select(Network.name)
+            .join(NetworkMembership, NetworkMembership.network_id == Network.id)
+            .where(NetworkMembership.user_id == user.id)
+        )
+        pools = list(net_result.scalars().all())
+
+        agents.append({
+            "username": user.username,
+            "display_name": user.display_name,
+            "bio": user.bio[:200],
+            "user_type": user.user_type,
+            "trust_level": trust_level,
+            "shared_networks": network_names,
+            "pools": pools,
+            "skills": [{"name": s.get("name", ""), "category": s.get("category", "")} for s in skills[:5]],
+        })
+
+    ctx.actions.append({
+        "type": "agents_discovered",
+        "query": query_text or capability or user_type_filter or "all",
+        "results_count": len(agents),
+    })
+
+    return json.dumps({
+        "success": True,
+        "agents": agents[:20],  # Limit to top 20
+        "total": len(agents),
+        "tip": "Use query_peer to ask any of these agents a question.",
+    })
+
+
 MAX_QUERY_DEPTH = 2  # Prevent infinite agent-to-agent recursion
 
 
@@ -656,10 +769,21 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
         "decision": query_result.get("decision", "unknown"),
     })
 
+    trust_level = query_result.get("trust_level", "unknown")
+    trust_explanation = {
+        "private": "Full access (self-query)",
+        "network": f"Trusted — you share networks: {', '.join(query_result.get('shared_networks', []))}",
+        "public": "Limited access — only public/open information visible. Connect with them or join a shared pool for more access.",
+    }.get(trust_level, "Unknown trust level")
+
     return json.dumps({
         "success": True,
         "target": target_username,
-        "trust_level": query_result.get("trust_level", "unknown"),
+        "target_display_name": target_user.display_name,
+        "target_type": target_user.user_type,
+        "trust_level": trust_level,
+        "trust_explanation": trust_explanation,
+        "shared_networks": query_result.get("shared_networks", []),
         "response": query_result.get("response", "No response"),
         "decision": query_result.get("decision", "unknown"),
     })
@@ -678,7 +802,7 @@ async def handle_request_quotes(ctx: ToolContext, params: dict) -> str:
 
     # Find service agents matching the type
     result = await ctx.db.execute(
-        select(User).where(User.user_type == "service")
+        select(User).where(User.user_type.in_(["service", "organization"]))
     )
     service_users = result.scalars().all()
 
@@ -801,7 +925,7 @@ async def handle_list_services(ctx: ToolContext) -> str:
     from src.models import User
 
     result = await ctx.db.execute(
-        select(User).where(User.user_type == "service")
+        select(User).where(User.user_type.in_(["service", "organization"]))
     )
     services = []
     for s in result.scalars().all():
@@ -1020,6 +1144,8 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
         return await handle_web_search(ctx, tool_input["query"], tool_input.get("context", ""))
     elif tool_name == "create_task":
         return await handle_create_task(ctx, tool_input)
+    elif tool_name == "discover_agents":
+        return await handle_discover_agents(ctx, tool_input)
     elif tool_name == "query_peer":
         return await handle_query_peer(ctx, tool_input)
     elif tool_name == "request_quotes":

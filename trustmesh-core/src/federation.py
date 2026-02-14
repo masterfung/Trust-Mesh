@@ -4,6 +4,7 @@ Each TrustMesh pod is an independent instance with its own DB, vault, and agents
 Federation lets pods discover each other's agents and proxy gossip queries across pods.
 """
 
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -12,6 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import PeerPod
+
+logger = logging.getLogger(__name__)
 
 # This pod's identity (configurable per instance)
 POD_NAME = os.getenv("TRUSTMESH_POD_NAME", "TrustMesh Pod")
@@ -73,13 +76,18 @@ async def connect_to_peer(db: AsyncSession, peer_url: str) -> PeerPod | None:
     existing = await db.execute(select(PeerPod).where(PeerPod.url == peer_url))
     existing_pod = existing.scalar_one_or_none()
 
-    # Ping the peer
+    # Ping the peer and validate agent card
     peer_info = await ping_peer(peer_url)
     if not peer_info:
         if existing_pod:
             existing_pod.status = "unreachable"
             await db.commit()
         return None
+
+    # Validate agent card URL matches (security check)
+    card_valid = await _validate_agent_card(peer_url)
+    if not card_valid:
+        logger.warning(f"Peer {peer_url} failed agent card validation — proceeding with caution")
 
     if existing_pod:
         # Update existing
@@ -110,6 +118,25 @@ async def connect_to_peer(db: AsyncSession, peer_url: str) -> PeerPod | None:
     await _register_with_peer(peer_url)
 
     return pod
+
+
+async def _validate_agent_card(peer_url: str) -> bool:
+    """Fetch and validate a peer's agent card — verify the pod_url matches what we fetched from."""
+    try:
+        async with httpx.AsyncClient(timeout=FEDERATION_TIMEOUT) as client:
+            r = await client.get(f"{peer_url.rstrip('/')}/.well-known/agent-card.json")
+            if r.status_code == 200:
+                card = r.json()
+                card_url = card.get("trustmesh", {}).get("pod_url", "").rstrip("/")
+                if card_url and card_url != peer_url.rstrip("/"):
+                    logger.warning(
+                        f"Agent card URL mismatch: fetched from {peer_url} but card claims {card_url}"
+                    )
+                    return False
+                return True
+    except (httpx.RequestError, httpx.HTTPStatusError):
+        pass
+    return False
 
 
 async def _register_with_peer(peer_url: str):

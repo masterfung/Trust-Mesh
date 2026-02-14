@@ -230,3 +230,148 @@ async def test_peer_pod_model():
     # These should NOT exist (removed per design)
     assert "did" not in columns
     assert "public_key" not in columns
+
+
+# ── A2A Endpoint ──
+
+
+@pytest.mark.asyncio
+async def test_a2a_endpoint_unsupported_method(client):
+    """POST /api/pod/a2a with unsupported method should return JSON-RPC error."""
+    resp = await client.post("/api/pod/a2a", json={
+        "jsonrpc": "2.0",
+        "method": "task/cancel",
+        "id": "1",
+        "params": {
+            "message": {"role": "user", "parts": [{"type": "text", "text": "hello"}]},
+        },
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "error" in data
+    assert data["error"]["code"] == -32601
+
+
+@pytest.mark.asyncio
+async def test_a2a_endpoint_no_text(client):
+    """POST /api/pod/a2a with empty text parts should return error."""
+    resp = await client.post("/api/pod/a2a", json={
+        "jsonrpc": "2.0",
+        "method": "message/send",
+        "id": "2",
+        "params": {
+            "message": {"role": "user", "parts": []},
+        },
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "error" in data
+    assert data["error"]["code"] == -32602
+
+
+@pytest.mark.asyncio
+async def test_a2a_endpoint_valid_query(client):
+    """POST /api/pod/a2a with valid user should return A2A task response."""
+    # Create a user first
+    await client.post("/api/users", json=VALID_USER)
+
+    resp = await client.post("/api/pod/a2a", json={
+        "jsonrpc": "2.0",
+        "method": "message/send",
+        "id": "3",
+        "params": {
+            "message": {"role": "user", "parts": [{"type": "text", "text": "What do you know?"}]},
+            "metadata": {"to_username": "testpod"},
+        },
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "result" in data
+    assert data["result"]["status"]["state"] in ("completed", "failed")
+    assert "metadata" in data["result"]
+    assert data["result"]["metadata"]["trust_level"] == "public"
+
+
+@pytest.mark.asyncio
+async def test_a2a_endpoint_nonexistent_user(client):
+    """POST /api/pod/a2a targeting unknown user should return error."""
+    resp = await client.post("/api/pod/a2a", json={
+        "jsonrpc": "2.0",
+        "method": "message/send",
+        "id": "4",
+        "params": {
+            "message": {"role": "user", "parts": [{"type": "text", "text": "Hello"}]},
+            "metadata": {"to_username": "nobody"},
+        },
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "error" in data
+
+
+# ── Registry Endpoints ──
+
+
+@pytest.mark.asyncio
+async def test_registry_agents_empty(client):
+    """GET /api/registry/agents should return empty list when no users."""
+    resp = await client.get("/api/registry/agents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_registry_agents_after_signup(client):
+    """GET /api/registry/agents should include agents after user creation."""
+    await client.post("/api/users", json=VALID_USER)
+    resp = await client.get("/api/registry/agents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] >= 1
+    assert any(a["username"] == "testpod" for a in data["agents"])
+
+
+@pytest.mark.asyncio
+async def test_registry_search(client):
+    """GET /api/registry/search should find agents by query."""
+    await client.post("/api/users", json=VALID_USER)
+    resp = await client.get("/api/registry/search", params={"q": "testpod"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_registry_search_no_results(client):
+    """GET /api/registry/search with no matching query returns empty."""
+    resp = await client.get("/api/registry/search", params={"q": "zzz_nonexistent_zzz"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_registry_lookup_not_found(client):
+    """GET /api/registry/lookup/{did} with bad DID returns 404."""
+    resp = await client.get("/api/registry/lookup/did:key:z6MkNonexistent")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_registry_lookup_by_did(client):
+    """GET /api/registry/lookup/{did} should find agent by DID."""
+    await client.post("/api/users", json=VALID_USER)
+
+    # Get the agent's DID via registry (which has it)
+    agents_resp = await client.get("/api/registry/agents")
+    agents = agents_resp.json()["agents"]
+    did = next(a["did"] for a in agents if a["username"] == "testpod")
+
+    # Lookup by DID
+    resp = await client.get(f"/api/registry/lookup/{did}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["did"] == did
+    assert data["username"] == "testpod"
+    assert "pod" in data

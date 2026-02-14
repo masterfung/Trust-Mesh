@@ -50,7 +50,7 @@ def _build_agent_card(user: User, agent: Agent) -> AgentCard:
         public_key_b64=public_key_to_b64(agent.public_key) if agent.public_key else None,
         did=agent.did,
         capabilities=["knowledge-query", "trust-aware-sharing"]
-        + (["quote-request", "availability-check"] if user.user_type == "service" else []),
+        + (["quote-request", "availability-check"] if user.user_type in ("service", "organization") else []),
         skills=skills,
     )
 
@@ -59,7 +59,7 @@ def _build_agent_card(user: User, agent: Agent) -> AgentCard:
 async def list_services(db: AsyncSession = Depends(get_db)):
     """List all service provider agents with their cards."""
     result = await db.execute(
-        select(User).where(User.user_type == "service").order_by(User.display_name)
+        select(User).where(User.user_type.in_(["service", "organization"])).order_by(User.display_name)
     )
     services = []
     for user in result.scalars().all():
@@ -76,7 +76,7 @@ async def list_services(db: AsyncSession = Depends(get_db)):
             username=user.username,
             display_name=user.display_name,
             bio=user.bio,
-            user_type="service",
+            user_type=user.user_type,
             profile_data=profile,
             agent_card=card,
         ))
@@ -101,7 +101,7 @@ async def create_service(data: ServiceCreate, db: AsyncSession = Depends(get_db)
         username=data.username,
         display_name=data.display_name,
         bio=data.bio,
-        user_type="service",
+        user_type="organization",
         profile_data=json.dumps(profile) if profile else None,
         is_discoverable=True,
         vault_key_salt=salt,
@@ -157,7 +157,7 @@ async def create_service(data: ServiceCreate, db: AsyncSession = Depends(get_db)
         username=user.username,
         display_name=user.display_name,
         bio=user.bio,
-        user_type="service",
+        user_type="organization",
         profile_data=profile,
         agent_card=card,
     )

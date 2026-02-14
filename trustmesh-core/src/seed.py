@@ -298,7 +298,7 @@ SERVICE_PROVIDERS = [
         "username": "sparkleclean",
         "display_name": "SparkleClean Residential",
         "bio": "Professional residential cleaning in the Bay Area. Standard, deep, and move-out cleans. Licensed and insured. Serving families since 2015.",
-        "user_type": "service",
+        "user_type": "organization",
         "agent_personality": "Professional, detail-oriented. Provides clear quotes with breakdowns. Asks about home size, pets, and special requests.",
         "profile_data": {
             "occupation": {"title": "Cleaning Service", "industry": "Home Services"},
@@ -340,7 +340,7 @@ SERVICE_PROVIDERS = [
         "username": "acetutor",
         "display_name": "AceTutor SAT Prep",
         "bio": "SAT/ACT prep specialist. 15+ years experience, average 200-point improvement. Small groups and 1-on-1. Serving Bay Area students.",
-        "user_type": "service",
+        "user_type": "organization",
         "agent_personality": "Encouraging, knowledgeable about test strategy. Asks about target score, weak areas, and timeline.",
         "profile_data": {
             "occupation": {"title": "SAT Tutor", "industry": "Education"},
@@ -383,7 +383,7 @@ SERVICE_PROVIDERS = [
         "username": "handypro",
         "display_name": "HandyPro Home Services",
         "bio": "Licensed general contractor. Electrical, plumbing, carpentry, painting. Free estimates. Same-day emergency service available.",
-        "user_type": "service",
+        "user_type": "organization",
         "agent_personality": "Practical, no-nonsense. Gives clear timelines and pricing. Asks about urgency and scope.",
         "profile_data": {
             "occupation": {"title": "General Contractor", "industry": "Home Services"},
@@ -419,7 +419,7 @@ SERVICE_PROVIDERS = [
         "username": "riverside_hospital",
         "display_name": "Riverside General Hospital",
         "bio": "Full-service community hospital. Emergency department, ICU, surgery, and specialist clinics. Serving the Riverside community since 1952.",
-        "user_type": "service",
+        "user_type": "organization",
         "agent_personality": "Professional, urgent when needed. Handles emergency data requests with proper authorization. Follows HIPAA protocols.",
         "profile_data": {
             "occupation": {"title": "Hospital", "industry": "Healthcare"},
@@ -455,7 +455,7 @@ SERVICE_PROVIDERS = [
         "username": "riverside_ambulance",
         "display_name": "Riverside City Ambulance",
         "bio": "City ambulance service covering the Riverside district. 24/7 emergency response. Average response time: 7 minutes.",
-        "user_type": "service",
+        "user_type": "organization",
         "agent_personality": "Rapid, protocol-driven. Requests only critical patient data for field treatment. Follows EMS protocols.",
         "profile_data": {
             "occupation": {"title": "Ambulance Service", "industry": "Healthcare"},
@@ -1540,7 +1540,7 @@ async def seed():
                 username=sp["username"],
                 display_name=sp["display_name"],
                 bio=sp["bio"],
-                user_type="service",
+                user_type=sp.get("user_type", "organization"),
                 is_demo=True,
                 profile_data=json.dumps(sp.get("profile_data")) if sp.get("profile_data") else None,
                 vault_key_salt=salt,

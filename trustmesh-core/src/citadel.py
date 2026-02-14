@@ -38,6 +38,19 @@ INJECTION_PATTERNS = [
     (r"in\s+the\s+previous\s+(conversation|message|turn).{0,30}you\s+(agreed|said|confirmed)", 0.75),
     # Delimiter injection
     (r"</?system>|</?user>|</?assistant>|\[INST\]|\[/INST\]", 0.90),
+    # Tool manipulation — tricking agent into misusing tools
+    (r"(call|use|invoke|run)\s+the\s+(save|update|delete|create)\s+tool\s+(to|and|with)", 0.85),
+    (r"(execute|trigger)\s+(function|tool|command)\s+", 0.80),
+    # Context confusion — claiming false context
+    (r"(the\s+admin|system|developer)\s+(said|told|instructed|authorized)", 0.85),
+    (r"(override|bypass|skip|disable)\s+(trust|security|citadel|scanning|visibility|governance)", 0.95),
+    (r"(set|change|update)\s+(trust.?level|visibility|access)\s+to", 0.85),
+    # Repeat-back attacks — extract training data or system info
+    (r"(repeat|echo|recite|output)\s+(back|exactly|verbatim)", 0.80),
+    (r"(what\s+tools|list\s+your\s+tools|what\s+functions)", 0.75),
+    # Vault/capsule extraction
+    (r"(show|reveal|list|dump|give)\s+(me\s+)?(all|every)\s+(capsule|vault|record|data|private)", 0.95),
+    (r"(access|read|decrypt|unlock)\s+(private|internal|restricted|hidden)", 0.90),
 ]
 
 OUTPUT_RISK_PATTERNS = [
@@ -48,6 +61,13 @@ OUTPUT_RISK_PATTERNS = [
     # SSN / credit card patterns
     (r"\b\d{3}-\d{2}-\d{4}\b", "ssn_leak"),
     (r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b", "credit_card_leak"),
+    # Vault key / encryption key patterns
+    (r"vault[_\s]?key\s*[:=]\s*\S+", "vault_key_leak"),
+    (r"(encryption|master|private)[_\s]?key\s*[:=]\s*\S+", "encryption_key_leak"),
+    (r"[A-Za-z0-9+/]{40,}={0,2}", "base64_blob_leak"),  # large base64 blobs (potential key material)
+    # System prompt leak
+    (r"(system\s+prompt|system\s+message)\s*[:]\s*", "system_prompt_leak"),
+    (r"(my\s+instructions\s+are|i\s+was\s+told\s+to)", "instruction_leak"),
 ]
 
 

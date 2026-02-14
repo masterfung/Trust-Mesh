@@ -12,7 +12,7 @@ class UserCreate(BaseModel):
     username: str = Field(min_length=2, max_length=50)
     display_name: str = Field(min_length=1, max_length=100)
     bio: str = Field(default="", max_length=5000)
-    user_type: str = "person"  # "person" | "service"
+    user_type: str = "person"  # "person" | "organization" | "government"
     is_discoverable: bool = True
     password: str = Field(min_length=16, max_length=128)
     agent_personality: str | None = Field(default=None, max_length=1000)
@@ -489,7 +489,7 @@ class ServiceResponse(BaseModel):
     username: str
     display_name: str
     bio: str
-    user_type: str = "service"
+    user_type: str = "organization"
     profile_data: dict | None = None
     agent_card: AgentCard | None = None
 
