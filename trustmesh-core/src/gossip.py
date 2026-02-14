@@ -277,8 +277,8 @@ async def query_agent_public(
         logging.getLogger(__name__).error(f"Remote query agent error for {target_user_id}: {e}")
         response_text = "I'm sorry, I encountered an issue processing your request."
 
-    # Citadel: scan output
-    output_scan = await citadel.scan_output(response_text)
+    # Citadel: scan output (always public trust for remote queries)
+    output_scan = await citadel.scan_output(response_text, trust_level="public")
     decision = "allowed"
     if not output_scan.is_safe:
         decision = "redacted"
@@ -489,7 +489,7 @@ async def query_agent(
     output_scan = None
     decision = "allowed"
     if not is_self_query:
-        output_scan = await citadel.scan_output(response_text)
+        output_scan = await citadel.scan_output(response_text, trust_level=trust_level)
         if not output_scan.is_safe:
             decision = "redacted"
             response_text = f"Response redacted: {', '.join(output_scan.findings)}"

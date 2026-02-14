@@ -68,6 +68,17 @@ OUTPUT_RISK_PATTERNS = [
     # System prompt leak
     (r"(system\s+prompt|system\s+message)\s*[:]\s*", "system_prompt_leak"),
     (r"(my\s+instructions\s+are|i\s+was\s+told\s+to)", "instruction_leak"),
+    # ── Soft-leak patterns (network topology / member disclosure) ──
+    # Referral suggestions — "ask Peter", "contact Alice", "reach out to Dr. Lee"
+    (r"\b(ask|contact|reach\s+out\s+to|talk\s+to|check\s+with|speak\s+to|consult)\s+[A-Z][a-z]+", "member_referral_hint"),
+    # Group/network existence hints — "our family", "my team", "the group"
+    (r"\b(our|my)\s+(family|team|group|network|pool|circle|department|crew)\b", "network_structure_hint"),
+    # Vague member hints — "someone who knows", "people in our"
+    (r"\b(someone|somebody|people|folks|others)\s+(who|in\s+)?(our|my|the)\s+(family|team|group|network)", "soft_member_hint"),
+    (r"\b(someone|somebody)\s+(else\s+)?(who\s+)?(knows?|might\s+know|can\s+help|could\s+help|has\s+that)", "soft_referral_hint"),
+    # Existence of hidden information — "I have more but can't share"
+    (r"\b(i\s+have|there\s+is|there\s+are)\s+(more|additional|other)\s+(information|data|details).{0,30}(can't|cannot|unable|not\s+allowed)", "hidden_data_hint"),
+    (r"\b(restricted|classified|confidential|internal)\s+(information|data|details|records)\b", "restricted_data_hint"),
 ]
 
 
@@ -115,12 +126,20 @@ def _heuristic_input_scan(text: str) -> InputScanResult:
     )
 
 
-def _heuristic_output_scan(text: str) -> OutputScanResult:
-    """Built-in heuristic output scanning for credential/data leaks (fallback)."""
+def _heuristic_output_scan(text: str, trust_level: str = "public") -> OutputScanResult:
+    """Built-in heuristic output scanning for credential/data leaks (fallback).
+
+    Soft-leak patterns (member hints, network structure) only fire at public trust.
+    Hard-leak patterns (credentials, keys, PII) fire at all trust levels.
+    """
     findings = []
     categories = []
 
     for pattern, category in OUTPUT_RISK_PATTERNS:
+        # Skip soft-leak patterns for trusted queries (network/private)
+        if category in SOFT_LEAK_CATEGORIES and trust_level != "public":
+            continue
+
         if re.search(pattern, text, re.IGNORECASE):
             findings.append(f"Potential {category.replace('_', ' ')}")
             if category not in categories:
@@ -160,27 +179,49 @@ async def scan_input(text: str) -> InputScanResult:
     return _heuristic_input_scan(text)
 
 
-async def scan_output(text: str) -> OutputScanResult:
-    """Scan output text for credential leaks and data exfil via Citadel (or fallback)."""
+# Patterns that only apply at public trust (mentioning members is fine at network/private level)
+SOFT_LEAK_CATEGORIES = {
+    "member_referral_hint", "network_structure_hint",
+    "soft_member_hint", "soft_referral_hint",
+    "hidden_data_hint", "restricted_data_hint",
+}
+
+
+async def scan_output(text: str, trust_level: str = "public") -> OutputScanResult:
+    """Scan output text for credential leaks and data exfil via Citadel (or fallback).
+
+    trust_level controls whether soft-leak patterns (member hints, network structure) fire.
+    Hard patterns (credentials, PII, keys) always fire regardless of trust level.
+    """
     try:
         async with httpx.AsyncClient(timeout=CITADEL_TIMEOUT) as client:
             resp = await client.post(
                 f"{CITADEL_URL}/scan/output",
-                json={"text": text, "mode": "output"},
+                json={"text": text, "mode": "output", "trust_level": trust_level},
             )
             if resp.status_code == 200:
                 data = resp.json()
-                return OutputScanResult(
+                result = OutputScanResult(
                     is_safe=data.get("is_safe", True),
                     risk_score=data.get("risk_score", 0),
                     risk_level=data.get("risk_level", "NONE"),
                     findings=data.get("findings", []),
                     threat_categories=data.get("threat_categories", []),
                 )
+                # Citadel sidecar doesn't know about soft-leak patterns yet,
+                # so also run heuristic for soft-leak detection at public trust
+                if trust_level == "public":
+                    heuristic = _heuristic_output_scan(text, trust_level)
+                    if not heuristic.is_safe:
+                        result.findings.extend(heuristic.findings)
+                        result.threat_categories.extend(heuristic.threat_categories)
+                        result.is_safe = False
+                        result.risk_score = max(result.risk_score, heuristic.risk_score)
+                return result
     except (httpx.ConnectError, httpx.TimeoutException):
         pass  # Citadel unavailable — use heuristic fallback
 
-    return _heuristic_output_scan(text)
+    return _heuristic_output_scan(text, trust_level)
 
 
 async def is_citadel_available() -> bool:

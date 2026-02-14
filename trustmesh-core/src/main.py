@@ -41,7 +41,9 @@ async def _load_vault_keys():
     Non-demo users get their vault keys loaded on login via their real password.
     """
     async with async_session() as db:
-        result = await db.execute(select(User).where(User.is_demo == True))  # noqa: E712
+        result = await db.execute(
+            select(User).where(User.is_demo == True, User.is_remote == False)  # noqa: E712
+        )
         for user in result.scalars().all():
             if user.vault_key_salt and user.encrypted_vault_key:
                 try:
@@ -223,9 +225,12 @@ async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
             peer_ids.add(c.from_user_id)
             peer_ids.add(c.to_user_id)
 
-        # Nodes: only peers
+        # Nodes: only local peers (exclude ghost users from graph)
         user_result = await db.execute(
-            select(User).where(User.id.in_(peer_ids)).order_by(User.display_name)
+            select(User).where(
+                User.id.in_(peer_ids),
+                User.is_remote == False,  # noqa: E712
+            ).order_by(User.display_name)
         )
         visible_users = user_result.scalars().all()
 
@@ -240,8 +245,10 @@ async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
         )
         my_network_ids = set(mem_result.scalars().all())
     else:
-        # Full graph: all users, connections, networks
-        user_result = await db.execute(select(User).order_by(User.display_name))
+        # Full graph: all local users (exclude ghost/remote users)
+        user_result = await db.execute(
+            select(User).where(User.is_remote == False).order_by(User.display_name)  # noqa: E712
+        )
         visible_users = user_result.scalars().all()
 
         conn_result = await db.execute(

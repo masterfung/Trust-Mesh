@@ -43,6 +43,9 @@ class User(Base):
     profile_data: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON structured profile
     is_discoverable: Mapped[bool] = mapped_column(Boolean, default=True)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_remote: Mapped[bool] = mapped_column(Boolean, default=False)
+    remote_pod_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    remote_did: Mapped[str | None] = mapped_column(String(100), nullable=True)
     vault_key_salt: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     encrypted_vault_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     pin_hash: Mapped[str | None] = mapped_column(String(200), nullable=True)  # Argon2id hashed PIN
@@ -314,3 +317,16 @@ class NetworkInvite(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | accepted | expired
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PoolInviteToken(Base):
+    """One-time tokens for cross-pod pool invitations."""
+    __tablename__ = "pool_invite_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    network_id: Mapped[str] = mapped_column(ForeignKey("networks.id"), nullable=False)
+    token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    target_pod_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | consumed | expired
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

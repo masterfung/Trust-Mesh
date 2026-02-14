@@ -239,6 +239,18 @@ export interface NetworkInviteListItem {
   created_at: string | null;
 }
 
+export interface RegistryAgent {
+  did: string;
+  username: string;
+  display_name: string;
+  bio: string;
+  user_type: string;
+  profile_data?: ProfileData | null;
+  skills: { name: string; category: string }[];
+  pools: string[];
+  is_discoverable?: boolean;
+}
+
 export interface GraphData {
   nodes: { id: string; username: string; display_name: string; bio: string; user_type?: string; profile_data?: ProfileData | null }[];
   edges: { source: string; target: string; type: string }[];
@@ -503,6 +515,24 @@ export const api = {
   // FHIR
   getEmergencyFhirBundle: (auditId: string) =>
     apiFetch<FhirBundle>(`/api/emergency/${auditId}/fhir`),
+
+  // Registry / Discovery
+  registryAgents: (params?: { user_type?: string }) => {
+    const qs = params?.user_type ? `?user_type=${params.user_type}` : "";
+    return apiFetch<{ agents: RegistryAgent[]; count: number }>(`/api/registry/agents${qs}`);
+  },
+  registrySearch: (q: string, params?: { capability?: string; user_type?: string }) => {
+    const sp = new URLSearchParams({ q });
+    if (params?.capability) sp.set("capability", params.capability);
+    if (params?.user_type) sp.set("user_type", params.user_type);
+    return apiFetch<{ query: string; results: RegistryAgent[]; count: number }>(`/api/registry/search?${sp}`);
+  },
+  registryLookup: (did: string) =>
+    apiFetch<RegistryAgent & { pod?: { name: string; url: string } }>(`/api/registry/lookup/${encodeURIComponent(did)}`),
+
+  // Pod info
+  getPodInfo: () =>
+    apiFetch<{ pod_name: string; pod_url: string; protocol: string; agent_count: number; agents: { owner_username: string; did: string }[] }>("/api/pod"),
 
   // Demo
   demoWarmup: () =>

@@ -1,21 +1,26 @@
 """Pod federation routes — discovery, peering, cross-pod queries, and A2A messaging."""
 
 import logging
-from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException
+import secrets
+from datetime import datetime, timedelta, timezone
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from src.auth import get_current_user_id
 from src.database import async_session
 from src.federation import (
     POD_NAME,
     POD_URL,
     connect_to_peer,
     discover_remote_agents,
+    get_or_create_ghost_user,
     get_pod_info,
+    lookup_ghost_by_did,
     ping_peer,
+    send_pool_invite,
 )
-from src.models import Agent, PeerPod, User
+from src.models import Agent, Connection, Network, NetworkMembership, PeerPod, PoolInviteToken, User
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,7 @@ class A2AMessage(BaseModel):
 
 class A2AMetadata(BaseModel):
     from_did: str | None = None
+    from_pod: str | None = None
     trust_context: str = "public"
     to_username: str | None = None
 
@@ -62,6 +68,28 @@ class A2ARequest(BaseModel):
     method: str = "message/send"
     id: str | int | None = None
     params: A2AParams
+
+
+class PoolInviteRequest(BaseModel):
+    """Inbound pool invite from a remote pod."""
+    network_id: str
+    invite_token: str
+    from_pod: str
+    username: str
+    display_name: str
+    did: str
+
+
+class PoolInviteSendRequest(BaseModel):
+    """Outbound pool invite to a remote pod."""
+    network_id: str
+    target_pod_url: str
+    target_username: str
+    target_display_name: str
+    target_did: str
+
+
+GHOST_CAP_PER_NETWORK = 20
 
 
 # ── This Pod ──
@@ -211,14 +239,31 @@ async def receive_remote_query(req: RemoteQueryRequest):
             # Agent exists locally (maybe they have an account here too) — use normal gossip
             from src.gossip import query_agent
             from src.main import vault_keys
-            response = await query_agent(db, requesting_agent.owner_id, target_user.id, "What do you know?", vault_keys)
+            response = await query_agent(db, requesting_agent.owner_id, target_user.id, req.question, vault_keys)
             return response
-        else:
-            # Remote agent — run gossip with public trust level
-            from src.gossip import query_agent_public
-            from src.main import vault_keys
-            response = await query_agent_public(db, target_user.id, req.question, req.from_did, req.from_pod, vault_keys)
-            return response
+
+        # Check for ghost user with this DID — enables elevated trust for pool members
+        ghost = await lookup_ghost_by_did(db, req.from_did)
+        if ghost:
+            # SECURITY: Verify requesting pod matches ghost's stored pod URL
+            # Prevents Pod C from spoofing Pod B's DID to get Pod B's trust level
+            if ghost.remote_pod_url and req.from_pod.rstrip("/") != ghost.remote_pod_url.rstrip("/"):
+                logger.warning(
+                    f"DID spoofing attempt: {req.from_did} claims pod {req.from_pod} "
+                    f"but ghost registered from {ghost.remote_pod_url}"
+                )
+            else:
+                # Ghost found + pod verified! Use full query_agent with ghost's user ID
+                from src.gossip import query_agent
+                from src.main import vault_keys
+                response = await query_agent(db, ghost.id, target_user.id, req.question, vault_keys)
+                return response
+
+        # Remote agent with no ghost — public trust only
+        from src.gossip import query_agent_public
+        from src.main import vault_keys
+        response = await query_agent_public(db, target_user.id, req.question, req.from_did, req.from_pod, vault_keys)
+        return response
 
 
 # ── A2A Protocol Endpoint ──
@@ -284,9 +329,16 @@ async def a2a_message(req: A2ARequest):
             from src.main import vault_keys
             response = await query_agent(db, requesting_agent.owner_id, target_user.id, question, vault_keys)
         else:
-            from src.gossip import query_agent_public
-            from src.main import vault_keys
-            response = await query_agent_public(db, target_user.id, question, from_did, "a2a", vault_keys)
+            # Check for ghost user (elevated trust via pool membership)
+            ghost = await lookup_ghost_by_did(db, from_did)
+            if ghost:
+                from src.gossip import query_agent
+                from src.main import vault_keys
+                response = await query_agent(db, ghost.id, target_user.id, question, vault_keys)
+            else:
+                from src.gossip import query_agent_public
+                from src.main import vault_keys
+                response = await query_agent_public(db, target_user.id, question, from_did, "a2a", vault_keys)
 
     # Format as A2A Task response
     return {
@@ -310,3 +362,216 @@ async def a2a_message(req: A2ARequest):
             },
         },
     }
+
+
+# ── Cross-Pod Pool Invitations ──
+
+async def _create_ghost_connections(db, ghost_user_id: str, network_id: str):
+    """Create auto-accepted connections between a ghost user and all local members of a network.
+
+    This is what makes resolve_trust_level() return "network" trust for the ghost.
+    """
+    # Get all local (non-ghost) members of this network
+    result = await db.execute(
+        select(NetworkMembership.user_id).where(NetworkMembership.network_id == network_id)
+    )
+    member_ids = set(result.scalars().all())
+    member_ids.discard(ghost_user_id)  # Don't connect to self
+
+    now = datetime.now(timezone.utc)
+    for member_id in member_ids:
+        # Check if connection already exists
+        existing = await db.execute(
+            select(Connection).where(
+                ((Connection.from_user_id == ghost_user_id) & (Connection.to_user_id == member_id))
+                | ((Connection.from_user_id == member_id) & (Connection.to_user_id == ghost_user_id))
+            )
+        )
+        if existing.scalar_one_or_none():
+            continue
+        conn = Connection(
+            from_user_id=ghost_user_id,
+            to_user_id=member_id,
+            context="both",
+            status="accepted",
+            accepted_at=now,
+        )
+        db.add(conn)
+
+
+@router.post("/pool-invite")
+async def receive_pool_invite(req: PoolInviteRequest):
+    """Receive a pool invitation from a remote pod.
+
+    Creates a ghost user for the remote sender and adds them to the specified
+    network with auto-accepted connections to all local members.
+    """
+    async with async_session() as db:
+        # Verify invite token exists and is valid
+        token_result = await db.execute(
+            select(PoolInviteToken).where(
+                PoolInviteToken.token == req.invite_token,
+                PoolInviteToken.status == "pending",
+            )
+        )
+        invite_token = token_result.scalar_one_or_none()
+        if not invite_token:
+            raise HTTPException(403, "Invalid or expired invite token")
+
+        # Check expiry (handle both tz-aware and naive datetimes from SQLite)
+        expires = invite_token.expires_at
+        now = datetime.now(timezone.utc)
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires < now:
+            invite_token.status = "expired"
+            await db.commit()
+            raise HTTPException(403, "Invite token has expired")
+
+        # Verify the network exists locally
+        net_result = await db.execute(
+            select(Network).where(Network.id == invite_token.network_id)
+        )
+        network = net_result.scalar_one_or_none()
+        if not network:
+            raise HTTPException(404, "Network not found")
+
+        # Check ghost cap
+        ghost_count = await db.execute(
+            select(func.count()).select_from(NetworkMembership).join(
+                User, NetworkMembership.user_id == User.id
+            ).where(
+                NetworkMembership.network_id == network.id,
+                User.is_remote == True,  # noqa: E712
+            )
+        )
+        if ghost_count.scalar() >= GHOST_CAP_PER_NETWORK:
+            raise HTTPException(429, f"Network has reached the maximum of {GHOST_CAP_PER_NETWORK} remote members")
+
+        # Create or get ghost user
+        ghost = await get_or_create_ghost_user(
+            db, req.username, req.display_name, req.did, req.from_pod
+        )
+
+        # Add ghost to network if not already a member
+        existing_mem = await db.execute(
+            select(NetworkMembership).where(
+                NetworkMembership.network_id == network.id,
+                NetworkMembership.user_id == ghost.id,
+            )
+        )
+        if not existing_mem.scalar_one_or_none():
+            membership = NetworkMembership(
+                network_id=network.id,
+                user_id=ghost.id,
+                role="remote_member",
+            )
+            db.add(membership)
+            await db.flush()
+
+        # Create auto-accepted connections with all local members
+        await _create_ghost_connections(db, ghost.id, network.id)
+
+        # Consume the invite token
+        invite_token.status = "consumed"
+
+        await db.commit()
+
+        return {
+            "status": "accepted",
+            "ghost_user_id": ghost.id,
+            "network_name": network.name,
+        }
+
+
+@router.post("/pool-invite/send")
+async def send_pool_invite_endpoint(
+    req: PoolInviteSendRequest,
+    auth_user_id: str = Depends(get_current_user_id),
+):
+    """Send a pool invitation to a remote user on another pod.
+
+    1. Verifies auth user is a member of the network
+    2. Generates a one-time invite token for the remote pod
+    3. Creates a ghost user locally for the remote user
+    4. Sends the invite to the remote pod (they create a ghost for us)
+    """
+    async with async_session() as db:
+        # Verify the user is a member of the network
+        mem_result = await db.execute(
+            select(NetworkMembership).where(
+                NetworkMembership.network_id == req.network_id,
+                NetworkMembership.user_id == auth_user_id,
+            )
+        )
+        if not mem_result.scalar_one_or_none():
+            raise HTTPException(403, "You are not a member of this network")
+
+        # Get network info
+        net_result = await db.execute(
+            select(Network).where(Network.id == req.network_id)
+        )
+        network = net_result.scalar_one_or_none()
+        if not network:
+            raise HTTPException(404, "Network not found")
+
+        # Generate one-time invite token for the remote pod to call us back
+        token_str = secrets.token_hex(32)
+        invite_token = PoolInviteToken(
+            network_id=req.network_id,
+            token=token_str,
+            target_pod_url=req.target_pod_url.rstrip("/"),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        )
+        db.add(invite_token)
+
+        # Create ghost user locally for the remote user
+        ghost = await get_or_create_ghost_user(
+            db, req.target_username, req.target_display_name,
+            req.target_did, req.target_pod_url,
+        )
+
+        # Add ghost to network if not already a member
+        existing_mem = await db.execute(
+            select(NetworkMembership).where(
+                NetworkMembership.network_id == req.network_id,
+                NetworkMembership.user_id == ghost.id,
+            )
+        )
+        if not existing_mem.scalar_one_or_none():
+            membership = NetworkMembership(
+                network_id=req.network_id,
+                user_id=ghost.id,
+                role="remote_member",
+            )
+            db.add(membership)
+            await db.flush()
+
+        # Create auto-accepted connections with local members
+        await _create_ghost_connections(db, ghost.id, req.network_id)
+
+        await db.commit()
+
+        # Get local user info to send to the remote pod
+        user_result = await db.execute(select(User).where(User.id == auth_user_id))
+        local_user = user_result.scalar_one()
+        agent_result = await db.execute(select(Agent).where(Agent.owner_id == auth_user_id))
+        local_agent = agent_result.scalar_one_or_none()
+
+        # Send invite to remote pod (they'll create a ghost for us)
+        remote_result = await send_pool_invite(
+            req.target_pod_url,
+            req.network_id,
+            token_str,
+            local_user.username,
+            local_user.display_name,
+            local_agent.did if local_agent else "",
+        )
+
+        return {
+            "status": "sent",
+            "ghost_user_id": ghost.id,
+            "network_name": network.name,
+            "remote_acknowledged": remote_result is not None,
+            "invite_token": token_str,
+        }

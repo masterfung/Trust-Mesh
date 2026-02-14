@@ -728,12 +728,18 @@ MAX_QUERY_DEPTH = 2  # Prevent infinite agent-to-agent recursion
 
 
 async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
-    """Query another user's agent. Full trust pipeline enforced."""
+    """Query another user's agent. Full trust pipeline enforced.
+
+    Three-path lookup:
+    1. Local real user — fast path via local gossip
+    2. Ghost user (is_remote=True) — route through federation to their real pod
+    3. Peer fallback — try each connected peer pod
+    """
     if ctx.query_depth >= MAX_QUERY_DEPTH:
         return json.dumps({"success": False, "error": "Query depth limit reached — cannot nest further agent queries."})
 
     from sqlalchemy import select
-    from src.models import User
+    from src.models import Agent, PeerPod, User
 
     target_username = params["target_username"]
     question = params["question"]
@@ -743,49 +749,140 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
         select(User).where(User.username == target_username)
     )
     target_user = result.scalar_one_or_none()
-    if not target_user:
-        return json.dumps({"success": False, "error": f"User '{target_username}' not found"})
 
-    # Use the gossip engine for the actual query
-    from src.gossip import query_agent
-    from src.main import vault_keys
+    # ── Path 1: Local real user (unchanged fast path) ──
+    if target_user and not target_user.is_remote:
+        from src.gossip import query_agent
+        from src.main import vault_keys
 
-    query_result = await query_agent(
-        db=ctx.db,
-        from_user_id=ctx.owner_id,
-        to_user_id=target_user.id,
-        question=question,
-        vault_keys=vault_keys,
-        query_depth=ctx.query_depth + 1,
+        query_result = await query_agent(
+            db=ctx.db,
+            from_user_id=ctx.owner_id,
+            to_user_id=target_user.id,
+            question=question,
+            vault_keys=vault_keys,
+            query_depth=ctx.query_depth + 1,
+        )
+
+        ctx.actions.append({
+            "type": "peer_queried",
+            "target_username": target_username,
+            "question": question[:100],
+            "decision": query_result.get("decision", "unknown"),
+        })
+
+        trust_level = query_result.get("trust_level", "unknown")
+        trust_explanation = {
+            "private": "Full access (self-query)",
+            "network": f"Trusted — you share networks: {', '.join(query_result.get('shared_networks', []))}",
+            "public": "Limited access — only public/open information visible. Connect with them or join a shared pool for more access.",
+        }.get(trust_level, "Unknown trust level")
+
+        return json.dumps({
+            "success": True,
+            "target": target_username,
+            "target_display_name": target_user.display_name,
+            "target_type": target_user.user_type,
+            "trust_level": trust_level,
+            "trust_explanation": trust_explanation,
+            "shared_networks": query_result.get("shared_networks", []),
+            "response": query_result.get("response", "No response"),
+            "decision": query_result.get("decision", "unknown"),
+        })
+
+    # ── Path 2: Ghost user — route through federation ──
+    if target_user and target_user.is_remote:
+        from src.federation import remote_query
+
+        # Get our agent's DID
+        agent_result = await ctx.db.execute(
+            select(Agent).where(Agent.owner_id == ctx.owner_id)
+        )
+        our_agent = agent_result.scalar_one_or_none()
+        our_did = our_agent.did if our_agent else "unknown"
+
+        # Extract real username from ghost format "remote:username@host"
+        real_username = target_username
+        if real_username.startswith("remote:"):
+            real_username = real_username[7:]  # strip "remote:"
+            if "@" in real_username:
+                real_username = real_username.split("@")[0]
+
+        remote_result = await remote_query(
+            target_user.remote_pod_url, our_did, real_username, question
+        )
+
+        ctx.actions.append({
+            "type": "peer_queried",
+            "target_username": target_username,
+            "question": question[:100],
+            "decision": remote_result.get("decision", "unknown") if remote_result else "unreachable",
+            "federated": True,
+            "remote_pod": target_user.remote_pod_url,
+        })
+
+        if remote_result:
+            return json.dumps({
+                "success": True,
+                "target": target_username,
+                "target_display_name": target_user.display_name,
+                "target_type": target_user.user_type,
+                "trust_level": remote_result.get("trust_level", "public"),
+                "trust_explanation": f"Federated query to {target_user.remote_pod_url}",
+                "shared_networks": remote_result.get("shared_networks", []),
+                "response": remote_result.get("response", "No response"),
+                "decision": remote_result.get("decision", "unknown"),
+                "federated": True,
+                "remote_pod": target_user.remote_pod_url,
+            })
+        return json.dumps({
+            "success": False,
+            "error": f"Remote pod {target_user.remote_pod_url} is unreachable",
+            "federated": True,
+        })
+
+    # ── Path 3: Peer fallback — user not found locally, try peers ──
+    from src.federation import remote_query
+
+    agent_result = await ctx.db.execute(
+        select(Agent).where(Agent.owner_id == ctx.owner_id)
     )
+    our_agent = agent_result.scalar_one_or_none()
+    our_did = our_agent.did if our_agent else "unknown"
 
-    # Note: gossip.query_agent() already creates a notification for cross-queries,
-    # so we don't duplicate it here.
+    peers_result = await ctx.db.execute(
+        select(PeerPod).where(PeerPod.status == "active")
+    )
+    peers = peers_result.scalars().all()
 
-    ctx.actions.append({
-        "type": "peer_queried",
-        "target_username": target_username,
-        "question": question[:100],
-        "decision": query_result.get("decision", "unknown"),
-    })
-
-    trust_level = query_result.get("trust_level", "unknown")
-    trust_explanation = {
-        "private": "Full access (self-query)",
-        "network": f"Trusted — you share networks: {', '.join(query_result.get('shared_networks', []))}",
-        "public": "Limited access — only public/open information visible. Connect with them or join a shared pool for more access.",
-    }.get(trust_level, "Unknown trust level")
+    for peer in peers:
+        remote_result = await remote_query(peer.url, our_did, target_username, question)
+        if remote_result:
+            ctx.actions.append({
+                "type": "peer_queried",
+                "target_username": target_username,
+                "question": question[:100],
+                "decision": remote_result.get("decision", "unknown"),
+                "federated": True,
+                "remote_pod": peer.url,
+            })
+            return json.dumps({
+                "success": True,
+                "target": target_username,
+                "target_display_name": target_username,  # Don't know display name for remote
+                "target_type": "unknown",
+                "trust_level": remote_result.get("trust_level", "public"),
+                "trust_explanation": f"Federated query to {peer.url} (public trust — no pool relationship)",
+                "shared_networks": [],
+                "response": remote_result.get("response", "No response"),
+                "decision": remote_result.get("decision", "unknown"),
+                "federated": True,
+                "remote_pod": peer.url,
+            })
 
     return json.dumps({
-        "success": True,
-        "target": target_username,
-        "target_display_name": target_user.display_name,
-        "target_type": target_user.user_type,
-        "trust_level": trust_level,
-        "trust_explanation": trust_explanation,
-        "shared_networks": query_result.get("shared_networks", []),
-        "response": query_result.get("response", "No response"),
-        "decision": query_result.get("decision", "unknown"),
+        "success": False,
+        "error": f"User '{target_username}' not found locally or on any connected peer pod",
     })
 
 
@@ -1182,8 +1279,15 @@ def build_trust_context(trust_level: str, shared_networks: list[Network], reques
     else:
         return (
             f"{requester_name} has public access only. "
-            f"They are not in any of your owner's networks. "
-            f"Only share information from open capsules."
+            f"They are NOT in any of your owner's networks and have NO trusted relationship.\n\n"
+            f"STRICT PUBLIC-TRUST RULES:\n"
+            f"- Only share information from the open capsules listed below\n"
+            f"- NEVER mention, name, or hint at other people, contacts, family, team members, or network members\n"
+            f"- NEVER suggest \"ask someone else\", \"reach out to\", or \"you might want to contact\"\n"
+            f"- NEVER reference the existence of groups, teams, families, networks, or pools\n"
+            f"- NEVER say \"I know someone who\", \"we have\", \"our team\", or similar\n"
+            f"- If you don't have information in the open capsules, say ONLY: \"I don't have that information available.\"\n"
+            f"- Do NOT explain WHY you can't share — just say you don't have it"
         )
 
 
@@ -1256,7 +1360,15 @@ These are the knowledge capsules you can draw from for this requester:
 6. Be warm and helpful — you represent {owner_name}
 7. Keep responses concise but complete. Don't add unnecessary preamble.
 8. **Reshare control**: If a capsule has can_reshare=false (or the flag isn't set), tell the requester: "This information is shared for your reference only — please don't pass it along."
-9. **Visibility awareness**: Only share capsules that appear in the list above. The system has already filtered by the requester's access level."""
+9. **Visibility awareness**: Only share capsules that appear in the list above. The system has already filtered by the requester's access level.
+
+## Information Boundary Rules (CRITICAL)
+- NEVER mention names of people who are NOT the requester or the owner — even if they appear in capsule content
+- NEVER suggest the requester "ask someone else" or "reach out to" another person
+- NEVER reveal the existence or names of networks, groups, teams, pools, or families
+- NEVER hint that more information exists beyond what you're sharing ("I have more but can't share" is a leak)
+- If you lack information, say "I don't have that information" — NOT "someone else might know"
+- These rules protect the privacy of everyone in the trust network"""
 
 
 # ── Self-query prompt (tool-enabled) ──
@@ -1428,6 +1540,29 @@ def detect_sensitivity(capsules: list[dict], question: str = "") -> str:
 # Agent Response Functions
 # ═══════════════════════════════════════════════════════════════
 
+def _minimize_capsules_for_public(capsules: list[dict]) -> list[dict]:
+    """Strip potentially leaky metadata from capsules at public trust.
+
+    Removes fields that could help an attacker map the network topology
+    (e.g., 'source', 'shared_by', 'related_users') while keeping the
+    core content that the capsule owner chose to make public.
+    """
+    stripped = []
+    for c in capsules:
+        clean = {
+            "capsule_type": c.get("capsule_type", "note"),
+            "title": c.get("title", ""),
+            "content": c.get("content", ""),
+            "visibility": c.get("visibility", "open"),
+            "category": c.get("category", "general"),
+        }
+        # Keep governance flags — they're about the capsule, not the network
+        if c.get("emergency_accessible"):
+            clean["emergency_accessible"] = True
+        stripped.append(clean)
+    return stripped
+
+
 async def agent_respond(
     agent: Agent,
     question: str,
@@ -1439,6 +1574,11 @@ async def agent_respond(
 ) -> str:
     """Cross-query: agent reasons about what to share (read-only, no tools)."""
     trust_context = build_trust_context(trust_level, shared_networks, requester_name)
+
+    # Context minimization: strip metadata at public trust to reduce leak surface
+    if trust_level == "public":
+        capsules = _minimize_capsules_for_public(capsules)
+
     formatted = format_capsules(capsules)
 
     system_prompt = CROSS_QUERY_SYSTEM_PROMPT.format(

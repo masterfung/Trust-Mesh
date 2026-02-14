@@ -1693,6 +1693,43 @@ async def seed():
                 capsule_count += 1
                 print(f"  \u2713 [{cap_visibility}] {cap['title']} ({sp['username']})")
 
+        # ── Step 5b: Create Ghost User for Cross-Pod Demo ──
+        print("\nStep 5b: Creating ghost user for cross-pod demo...")
+        ghost = User(
+            username="remote:alex@partner-pod.local",
+            display_name="Alex Chen (PartnerCo)",
+            bio="Remote engineer on the PartnerCo pod",
+            is_discoverable=False,
+            is_demo=False,
+            is_remote=True,
+            remote_pod_url="http://localhost:8001",
+            remote_did="did:key:z6MkPartnerAlex",
+        )
+        db.add(ghost)
+        await db.flush()
+        user_map["remote:alex@partner-pod.local"] = ghost
+
+        # Add ghost to TechCorp PM Team (simulating cross-pod pool membership)
+        techcorp_network = network_map["TechCorp PM Team"]
+        ghost_membership = NetworkMembership(
+            network_id=techcorp_network.id,
+            user_id=ghost.id,
+            role="remote_member",
+        )
+        db.add(ghost_membership)
+
+        # Create auto-accepted connections between ghost and local pool members
+        for member_name in ["molly", "kyle"]:
+            conn = Connection(
+                from_user_id=ghost.id,
+                to_user_id=user_map[member_name].id,
+                context="both",
+                status="accepted",
+                accepted_at=datetime.now(timezone.utc),
+            )
+            db.add(conn)
+        print(f"  \u2713 Ghost: {ghost.username} \u2014 DID: {ghost.remote_did}, pool: TechCorp PM Team")
+
         # ── Step 6: Create Sharing Delegates ──
         print("\nStep 6/7: Seeding sharing delegates...")
         delegates = [

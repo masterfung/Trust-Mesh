@@ -119,6 +119,9 @@ async def login(data: LoginRequest, request: Request, db: AsyncSession = Depends
     if not user:
         raise HTTPException(401, "Invalid username or password")
 
+    if user.is_remote:
+        raise HTTPException(403, "Remote ghost users cannot log in")
+
     if not user.vault_key_salt or not user.encrypted_vault_key:
         raise HTTPException(401, "Account not set up properly")
 

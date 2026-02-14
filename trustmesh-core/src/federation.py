@@ -12,7 +12,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import PeerPod
+from src.models import PeerPod, User
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,9 @@ async def get_pod_info() -> dict:
 
     async with async_session() as db:
         result = await db.execute(
-            select(Agent, User).join(User, Agent.owner_id == User.id).order_by(User.display_name)
+            select(Agent, User).join(User, Agent.owner_id == User.id)
+            .where(User.is_remote == False)  # noqa: E712
+            .order_by(User.display_name)
         )
         agents = []
         for agent, user in result.all():
@@ -198,6 +200,87 @@ async def remote_query(peer_url: str, from_did: str, to_username: str, question:
                     "from_pod": POD_URL,
                     "to_username": to_username,
                     "question": question,
+                },
+            )
+            if r.status_code == 200:
+                return r.json()
+    except (httpx.RequestError, httpx.HTTPStatusError):
+        pass
+    return None
+
+
+async def get_or_create_ghost_user(
+    db: AsyncSession,
+    remote_username: str,
+    remote_display_name: str,
+    remote_did: str,
+    remote_pod_url: str,
+) -> User:
+    """Get or create a ghost user for a remote user joining a local pool.
+
+    Ghost users are lightweight User records that allow remote users to
+    participate in local pools via normal NetworkMembership. Idempotent —
+    returns existing ghost if one exists for the given DID.
+    """
+    # Lookup by remote_did first (idempotent)
+    existing = await db.execute(
+        select(User).where(User.remote_did == remote_did, User.is_remote == True)  # noqa: E712
+    )
+    ghost = existing.scalar_one_or_none()
+    if ghost:
+        return ghost
+
+    # Extract hostname from pod URL for username
+    from urllib.parse import urlparse
+    hostname = urlparse(remote_pod_url).hostname or "unknown"
+
+    ghost = User(
+        username=f"remote:{remote_username}@{hostname}",
+        display_name=remote_display_name,
+        bio=f"Remote user on {hostname}",
+        is_discoverable=False,
+        is_demo=False,
+        is_remote=True,
+        remote_pod_url=remote_pod_url.rstrip("/"),
+        remote_did=remote_did,
+    )
+    db.add(ghost)
+    await db.flush()
+    return ghost
+
+
+async def lookup_ghost_by_did(db: AsyncSession, remote_did: str) -> User | None:
+    """Look up a ghost user by their remote DID."""
+    result = await db.execute(
+        select(User).where(User.remote_did == remote_did, User.is_remote == True)  # noqa: E712
+    )
+    return result.scalar_one_or_none()
+
+
+async def send_pool_invite(
+    peer_url: str,
+    network_id: str,
+    invite_token: str,
+    local_username: str,
+    local_display_name: str,
+    local_did: str,
+) -> dict | None:
+    """Send a pool invitation to a remote pod.
+
+    The remote pod will create a ghost user for us and add it to their copy
+    of the pool (if they have one), or just acknowledge.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=FEDERATION_TIMEOUT) as client:
+            r = await client.post(
+                f"{peer_url.rstrip('/')}/api/pod/pool-invite",
+                json={
+                    "network_id": network_id,
+                    "invite_token": invite_token,
+                    "from_pod": POD_URL,
+                    "username": local_username,
+                    "display_name": local_display_name,
+                    "did": local_did,
                 },
             )
             if r.status_code == 200:
