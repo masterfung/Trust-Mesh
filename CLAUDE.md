@@ -38,11 +38,20 @@ bun install
 bun dev --port 3050
 ```
 
+### Multi-Pod Federation
+```bash
+# Requires: Bash 4.0+ (macOS ships 3.2 — brew install bash)
+./multi-pod.sh demo       # Full setup: seed + start 16 pods + orchestrate
+./multi-pod.sh status     # Show all pod health
+./multi-pod.sh stop       # Stop everything
+```
+
 ### Tests
 ```bash
 cd trustmesh-core
 uv run pytest tests/ -v                    # All tests
 uv run pytest tests/test_ucan.py -v        # Specific file
+uv run pytest tests/test_multi_pod.py -v   # Multi-pod (requires running pods)
 ```
 
 ### Environment Variables

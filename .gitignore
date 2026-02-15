@@ -4,6 +4,8 @@ __pycache__/
 *.egg-info/
 .venv/
 *.db
+*.db-shm
+*.db-wal
 
 # Node
 node_modules/
@@ -37,7 +39,14 @@ screenshots/
 # Dev script artifacts
 .backend.log
 .backend.pid
+.frontend.log
+.frontend.pid
 trustmesh-core/trustmesh.db.snapshot
+
+# Multi-pod artifacts
+.multipod-logs/
+.multipod-secret
+trustmesh-core/data/
 
 # Playwright MCP
 .playwright-mcp/
