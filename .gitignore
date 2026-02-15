@@ -45,6 +45,7 @@ trustmesh-core/trustmesh.db.snapshot
 
 # Multi-pod artifacts
 .multipod-logs/
+.multipod-pids/
 .multipod-secret
 trustmesh-core/data/
 
