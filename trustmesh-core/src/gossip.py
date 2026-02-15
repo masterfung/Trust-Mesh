@@ -70,8 +70,27 @@ async def get_accessible_capsule_ids(
     # Level 2: internal — accessible via shared networks
     if trust_level == "network" and shared_networks:
         network_ids = [n.id for n in shared_networks]
+
+        # Category scoping: if ALL shared pools are category_scoped, restrict to allowed categories
+        # If ANY pool is "standard", no category restriction (standard lifts all restrictions)
+        allowed_categories = None
+        has_standard = any(
+            getattr(n, "pool_type", "standard") == "standard"
+            for n in shared_networks
+        )
+        if not has_standard:
+            cats = set()
+            for n in shared_networks:
+                raw = getattr(n, "shared_categories", None)
+                if raw:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(parsed, list):
+                        cats.update(parsed)
+            if cats:
+                allowed_categories = list(cats)
+
         # Internal capsules shared to these networks
-        network_result = await db.execute(
+        network_query = (
             select(CapsuleNetworkAccess.capsule_id)
             .join(KnowledgeCapsule, KnowledgeCapsule.id == CapsuleNetworkAccess.capsule_id)
             .where(
@@ -81,6 +100,13 @@ async def get_accessible_capsule_ids(
                 KnowledgeCapsule.is_archived == False,  # noqa: E712
             )
         )
+        # Apply category filter only if all pools are category_scoped
+        if allowed_categories is not None:
+            network_query = network_query.where(
+                KnowledgeCapsule.category.in_(allowed_categories)
+            )
+
+        network_result = await db.execute(network_query)
         ids.extend(network_result.scalars().all())
 
     # Level 3: shareable — explicit grants to the requester (with expiry check)
@@ -121,7 +147,7 @@ async def get_accessible_capsule_ids(
 async def load_capsules_decrypted(
     db: AsyncSession, capsule_ids: list[str], vault_key: bytes
 ) -> list[dict]:
-    """Load and decrypt capsules by ID."""
+    """Load and decrypt capsules by ID. Marks superseded capsules."""
     if not capsule_ids:
         return []
     result = await db.execute(
@@ -146,7 +172,15 @@ async def load_capsules_decrypted(
             "category": c.category,
             "freshness": c.freshness,
             "expires_at": str(c.expires_at) if c.expires_at else None,
+            "supersedes_id": c.supersedes_id,
+            "authority_weight": c.authority_weight,
         })
+
+    # Mark capsules that have been superseded by another capsule in the result set
+    superseded_ids = {d["supersedes_id"] for d in decrypted if d.get("supersedes_id")}
+    for d in decrypted:
+        d["is_superseded"] = d["id"] in superseded_ids
+
     return decrypted
 
 
@@ -245,7 +279,7 @@ async def query_agent_public(
         db, target_user_id, "public", shared_networks=[],
     )
 
-    # Semantic retrieval
+    # Semantic retrieval (no category scoping for public — search all)
     relevant_ids = embeddings.search_capsules(question, accessible_ids, top_k=5)
     if not relevant_ids:
         relevant_ids = accessible_ids[:5]
@@ -432,8 +466,23 @@ async def query_agent(
         context_filter=ctx_filter,
     )
 
-    # 4. Semantic retrieval
-    relevant_ids = embeddings.search_capsules(question, accessible_ids, top_k=5)
+    # 4. Semantic retrieval (category-scoped when possible)
+    search_categories = None
+    if shared_networks and not is_self_query:
+        # Extract allowed categories from shared networks for scoped search
+        has_standard = any(getattr(n, "pool_type", "standard") == "standard" for n in shared_networks)
+        if not has_standard:
+            cats = set()
+            for n in shared_networks:
+                raw = getattr(n, "shared_categories", None)
+                if raw:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(parsed, list):
+                        cats.update(parsed)
+            if cats:
+                search_categories = list(cats)
+
+    relevant_ids = embeddings.search_capsules(question, accessible_ids, top_k=5, categories=search_categories)
     if not relevant_ids:
         relevant_ids = accessible_ids[:5]  # Fallback: use first 5
 

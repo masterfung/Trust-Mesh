@@ -8,9 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth import get_current_user_id
 from src.database import get_db
-from src.models import Connection, ConnectionRequest, User
+from src.models import Connection, ConnectionRequest, NetworkMembership, User
 from src.rate_limit import check_connection_rate, record_connection_request
 from src.schemas import (
+    ConnectionLabelUpdate,
     ConnectionRequestCreate,
     ConnectionRequestResponse,
     ConnectionRequestUpdate,
@@ -72,6 +73,8 @@ async def send_connection_request(
         from_user_id=data.from_user_id,
         to_user_id=data.to_user_id,
         message=data.message,
+        relationship_type=data.relationship_type,
+        from_label=data.from_label,
     )
     db.add(req)
     await db.commit()
@@ -83,6 +86,8 @@ async def send_connection_request(
         to_user_id=req.to_user_id,
         message=req.message,
         status=req.status,
+        relationship_type=req.relationship_type,
+        from_label=req.from_label,
         created_at=req.created_at,
         from_user=UserPublic.model_validate(from_user),
         to_user=UserPublic.model_validate(to_user),
@@ -120,13 +125,21 @@ async def list_connections(user_id: str, context: str | None = None,
 
     response = []
     for conn in filtered:
-        peer_id = conn.to_user_id if conn.from_user_id == user_id else conn.from_user_id
+        is_from = conn.from_user_id == user_id
+        peer_id = conn.to_user_id if is_from else conn.from_user_id
         peer = await db.get(User, peer_id)
+        # Resolve labels from the current user's perspective
+        my_label = conn.from_label if is_from else conn.to_label
+        peer_label = conn.to_label if is_from else conn.from_label
         response.append(ConnectionResponse(
             id=conn.id,
             from_user_id=conn.from_user_id,
             to_user_id=conn.to_user_id,
             status=conn.status,
+            context=conn.context,
+            relationship_type=conn.relationship_type,
+            my_label=my_label,
+            peer_label=peer_label,
             created_at=conn.created_at,
             accepted_at=conn.accepted_at,
             peer=UserPublic.model_validate(peer) if peer else None,
@@ -147,15 +160,56 @@ async def list_connection_requests(user_id: str, db: AsyncSession = Depends(get_
         )
     )
     requests = result.scalars().all()
+
+    # Precompute current user's connections and network memberships for mutual counts
+    my_conn_result = await db.execute(
+        select(Connection).where(
+            Connection.status == "accepted",
+            or_(Connection.from_user_id == user_id, Connection.to_user_id == user_id),
+        )
+    )
+    my_connected_ids = set()
+    for c in my_conn_result.scalars().all():
+        my_connected_ids.add(c.to_user_id if c.from_user_id == user_id else c.from_user_id)
+
+    my_net_result = await db.execute(
+        select(NetworkMembership.network_id).where(NetworkMembership.user_id == user_id)
+    )
+    my_network_ids = set(my_net_result.scalars().all())
+
     response = []
     for req in requests:
         from_user = await db.get(User, req.from_user_id)
+
+        # Count mutual connections
+        requester_conn_result = await db.execute(
+            select(Connection).where(
+                Connection.status == "accepted",
+                or_(Connection.from_user_id == req.from_user_id, Connection.to_user_id == req.from_user_id),
+            )
+        )
+        requester_connected_ids = set()
+        for c in requester_conn_result.scalars().all():
+            requester_connected_ids.add(c.to_user_id if c.from_user_id == req.from_user_id else c.from_user_id)
+        mutual_connections = len(my_connected_ids & requester_connected_ids)
+
+        # Count mutual networks
+        requester_net_result = await db.execute(
+            select(NetworkMembership.network_id).where(NetworkMembership.user_id == req.from_user_id)
+        )
+        requester_network_ids = set(requester_net_result.scalars().all())
+        mutual_networks = len(my_network_ids & requester_network_ids)
+
         response.append(ConnectionRequestResponse(
             id=req.id,
             from_user_id=req.from_user_id,
             to_user_id=req.to_user_id,
             message=req.message,
             status=req.status,
+            relationship_type=req.relationship_type,
+            from_label=req.from_label,
+            mutual_connections=mutual_connections,
+            mutual_networks=mutual_networks,
             created_at=req.created_at,
             from_user=UserPublic.model_validate(from_user) if from_user else None,
         ))
@@ -184,6 +238,9 @@ async def update_connection_request(
             from_user_id=req.from_user_id,
             to_user_id=req.to_user_id,
             status="accepted",
+            relationship_type=req.relationship_type,
+            from_label=req.from_label,
+            to_label=data.to_label,
             accepted_at=datetime.now(timezone.utc),
         )
         db.add(connection)
@@ -196,6 +253,68 @@ async def update_connection_request(
         to_user_id=req.to_user_id,
         message=req.message,
         status=req.status,
+        relationship_type=req.relationship_type,
+        from_label=req.from_label,
         created_at=req.created_at,
         reviewed_at=req.reviewed_at,
+    )
+
+
+@router.delete("/connections/{connection_id}")
+async def delete_connection(
+    connection_id: str, db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
+    """Remove a connection (disconnect from someone)."""
+    conn = await db.get(Connection, connection_id)
+    if not conn:
+        raise HTTPException(404, "Connection not found")
+    # Only allow parties in the connection to delete it
+    if conn.from_user_id != auth_user_id and conn.to_user_id != auth_user_id:
+        raise HTTPException(403, "Access denied")
+    await db.delete(conn)
+    await db.commit()
+    return {"status": "disconnected"}
+
+
+@router.patch("/connections/{connection_id}/label", response_model=ConnectionResponse)
+async def update_connection_label(
+    connection_id: str, data: ConnectionLabelUpdate, db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
+    """Update your label or the relationship type on a connection."""
+    conn = await db.get(Connection, connection_id)
+    if not conn:
+        raise HTTPException(404, "Connection not found")
+    if conn.from_user_id != auth_user_id and conn.to_user_id != auth_user_id:
+        raise HTTPException(403, "Access denied")
+
+    is_from = conn.from_user_id == auth_user_id
+    if data.my_label is not None:
+        if is_from:
+            conn.from_label = data.my_label
+        else:
+            conn.to_label = data.my_label
+    if data.relationship_type is not None:
+        conn.relationship_type = data.relationship_type
+
+    await db.commit()
+    await db.refresh(conn)
+
+    peer_id = conn.to_user_id if is_from else conn.from_user_id
+    peer = await db.get(User, peer_id)
+    my_label = conn.from_label if is_from else conn.to_label
+    peer_label = conn.to_label if is_from else conn.from_label
+    return ConnectionResponse(
+        id=conn.id,
+        from_user_id=conn.from_user_id,
+        to_user_id=conn.to_user_id,
+        status=conn.status,
+        context=conn.context,
+        relationship_type=conn.relationship_type,
+        my_label=my_label,
+        peer_label=peer_label,
+        created_at=conn.created_at,
+        accepted_at=conn.accepted_at,
+        peer=UserPublic.model_validate(peer) if peer else None,
     )

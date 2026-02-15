@@ -150,6 +150,33 @@ def _base58btc_encode(data: bytes) -> str:
     return b"".join(reversed(result)).decode("ascii")
 
 
+def _base58btc_decode(s: str) -> bytes:
+    """Decode a base58btc string back to bytes.
+
+    This is the inverse of _base58btc_encode(). Used for did:key parsing.
+    """
+    if not s:
+        return b""
+    num = 0
+    for ch in s.encode("ascii"):
+        idx = _B58_ALPHABET.find(bytes([ch]))
+        if idx == -1:
+            raise ValueError("Invalid base58btc character")
+        num = num * 58 + idx
+
+    # Convert int to bytes (big endian)
+    full = num.to_bytes((num.bit_length() + 7) // 8, "big") if num else b""
+
+    # Restore leading zero bytes encoded as leading '1's.
+    pad = 0
+    for ch in s:
+        if ch == "1":
+            pad += 1
+        else:
+            break
+    return (b"\x00" * pad) + full
+
+
 def generate_ed25519_keypair() -> tuple[bytes, bytes]:
     """Generate an ed25519 keypair.
 
@@ -196,3 +223,22 @@ def public_key_to_b64(public_key_bytes: bytes) -> str:
 def b64_to_public_key(b64_str: str) -> bytes:
     """Decode URL-safe base64 to public key bytes."""
     return base64.urlsafe_b64decode(b64_str)
+
+
+def did_key_to_public_key(did: str) -> bytes:
+    """Extract raw ed25519 public key bytes from a did:key identifier.
+
+    Supports the did:key:z... form produced by public_key_to_did() (ed25519 only).
+    """
+    prefix = "did:key:z"
+    if not did or not did.startswith(prefix):
+        raise ValueError("Unsupported DID format (expected did:key:z...)")
+
+    multicodec = _base58btc_decode(did[len(prefix):])
+    if not multicodec.startswith(_ED25519_MULTICODEC_PREFIX):
+        raise ValueError("Unsupported did:key multicodec (expected ed25519-pub)")
+
+    pub = multicodec[len(_ED25519_MULTICODEC_PREFIX):]
+    if len(pub) != 32:
+        raise ValueError("Invalid ed25519 public key length in DID")
+    return pub

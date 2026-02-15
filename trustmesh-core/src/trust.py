@@ -1,9 +1,36 @@
 """Trust resolution between users based on connections and shared networks."""
 
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import Connection, Network, NetworkMembership
+from src.models import Connection, Network, NetworkMembership, PeerPod, User
+
+GHOST_STALE_HOURS = 24
+
+
+async def _is_ghost_stale(db: AsyncSession, user_id: str) -> bool:
+    """Check if a ghost user's home pod is stale (unreachable or not seen recently)."""
+    user = await db.get(User, user_id)
+    if not user or not user.is_remote or not user.remote_pod_url:
+        return False
+    result = await db.execute(
+        select(PeerPod).where(PeerPod.url == user.remote_pod_url.rstrip("/"))
+    )
+    peer = result.scalar_one_or_none()
+    if not peer:
+        return True  # No PeerPod record = stale
+    if peer.status != "active":
+        return True
+    if peer.last_seen_at:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=GHOST_STALE_HOURS)
+        # Handle tz-naive datetimes from SQLite
+        naive_last_seen = peer.last_seen_at.replace(tzinfo=None) if peer.last_seen_at.tzinfo else peer.last_seen_at
+        naive_cutoff = cutoff.replace(tzinfo=None)
+        if naive_last_seen < naive_cutoff:
+            return True
+    return False
 
 
 async def get_accepted_connection(
@@ -49,18 +76,24 @@ async def resolve_trust_level(
 
     Returns:
         ("private", []) if same user
-        ("network", [shared_networks]) if connected + share networks
-        ("public", []) if connected but no shared networks, or not connected
+        ("network", [shared_networks]) if users share pools (connection optional)
+        ("connected", []) if connected but no shared pools
+        ("public", []) if not connected at all
     """
     if from_user_id == to_user_id:
         return ("private", [])
 
-    connection = await get_accepted_connection(db, from_user_id, to_user_id)
-    if not connection:
-        return ("public", [])
-
+    # Pool membership alone grants "network" trust (no connection required)
     shared = await get_shared_networks(db, from_user_id, to_user_id)
     if shared:
+        # Ghost staleness: if the requester's home pod is unreachable, downgrade to public
+        if await _is_ghost_stale(db, from_user_id):
+            return ("public", [])
         return ("network", shared)
+
+    # Connected but no shared pools = connected trust (better than public, less than network)
+    connection = await get_accepted_connection(db, from_user_id, to_user_id)
+    if connection:
+        return ("connected", [])
 
     return ("public", [])

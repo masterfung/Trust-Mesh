@@ -1,24 +1,28 @@
 """TrustMesh MCP Server — expose TrustMesh tools via Model Context Protocol.
 
-Run standalone (stdio transport, for Claude Code / MCP clients):
+Session-authenticated: reads ~/.trustmesh/session (created by `trustmesh login`).
+Falls back to unauthenticated mode using TRUSTMESH_API_URL if no session exists.
+
+Run standalone (stdio transport, for Claude Desktop / Cursor / Claude Code):
     cd trustmesh-core && uv run python -m src.mcp_server
 
-Add to Claude Code config (~/.claude.json or project .mcp.json):
+Via CLI:
+    trustmesh mcp serve
+
+Add to Claude Desktop config:
     {
       "mcpServers": {
         "trustmesh": {
           "command": "uv",
-          "args": ["run", "python", "-m", "src.mcp_server"],
-          "cwd": "/path/to/trustmesh-core"
+          "args": ["--directory", "/path/to/trustmesh-core", "run", "trustmesh", "mcp", "serve"]
         }
       }
     }
-
-Requires TrustMesh backend running on TRUSTMESH_API_URL (default: http://localhost:8000).
 """
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,254 +34,420 @@ if _env_file.exists():
 else:
     load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP(
-    name="TrustMesh",
-    instructions="TrustMesh personal AI agent tools — search agents, query knowledge, manage capsules, and discover services on the pod.",
-)
 
-API_BASE = os.getenv("TRUSTMESH_API_URL", "http://localhost:8000")
+# ── Session management ──
+
+SESSION_FILE = Path.home() / ".trustmesh" / "session"
 
 
-async def _api_get(path: str) -> dict:
-    """Make a GET request to the TrustMesh API."""
-    import httpx
-    async with httpx.AsyncClient(base_url=API_BASE, timeout=30) as client:
-        resp = await client.get(path)
-        resp.raise_for_status()
-        return resp.json()
+def _load_session() -> dict | None:
+    """Load CLI session from ~/.trustmesh/session."""
+    if not SESSION_FILE.exists():
+        return None
+    try:
+        data = json.loads(SESSION_FILE.read_text())
+        if "pod_url" in data and "token" in data:
+            return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
 
 
-async def _api_post(path: str, data: dict) -> dict:
-    """Make a POST request to the TrustMesh API."""
-    import httpx
-    async with httpx.AsyncClient(base_url=API_BASE, timeout=60) as client:
-        resp = await client.post(path, json=data)
-        resp.raise_for_status()
-        return resp.json()
+def _make_client(session: dict | None) -> httpx.Client:
+    """Create httpx client, with session cookie if available."""
+    if session:
+        return httpx.Client(
+            base_url=session["pod_url"],
+            cookies={"trustmesh_session": session["token"]},
+            timeout=60.0,
+        )
+    # Fallback: no auth, use env var
+    base = os.getenv("TRUSTMESH_API_URL", "http://localhost:8000")
+    return httpx.Client(base_url=base, timeout=60.0)
 
 
-# ── Tools ──
+def _api(session: dict | None, method: str, path: str, **kwargs) -> dict | list:
+    """Make an API call, return parsed JSON."""
+    with _make_client(session) as client:
+        resp = client.request(method, path, **kwargs)
+    if resp.status_code == 401:
+        raise RuntimeError("Session expired. Run `trustmesh login` to re-authenticate.")
+    resp.raise_for_status()
+    return resp.json()
 
 
-@mcp.tool()
-async def discover_agents(
-    query: str = "",
-    capability: str = "",
-    user_type: str = "",
-) -> str:
-    """Search for agents on the TrustMesh pod by name, capability, or type.
+def _get_me(session: dict | None) -> dict:
+    """Get current user info. Requires session."""
+    if not session:
+        raise RuntimeError("Not logged in. Run `trustmesh login` first.")
+    return _api(session, "GET", "/api/auth/me")
 
-    Returns a list of discoverable agents with their skills, pools, and DID.
-    Use this to find people, organizations, or government agents you can interact with.
+
+# ── Server factory ──
+
+def create_mcp_server(session: dict | None = None) -> FastMCP:
+    """Create a FastMCP server, optionally bound to a TrustMesh session.
+
+    If session is None, attempts to load from ~/.trustmesh/session.
+    Unauthenticated tools (pod info, health, registry) work without a session.
+    Authenticated tools (vault, agent, connections) require a session.
     """
-    params = {}
-    if query:
-        params["q"] = query
-    if capability:
-        params["capability"] = capability
-    if user_type:
-        params["user_type"] = user_type
+    if session is None:
+        session = _load_session()
 
-    qs = "&".join(f"{k}={v}" for k, v in params.items())
-    path = f"/api/registry/search?{qs}" if qs else "/api/registry/agents"
-    result = await _api_get(path)
+    mcp = FastMCP(
+        "TrustMesh",
+        instructions=(
+            "TrustMesh is a trust-aware knowledge sharing platform for personal AI agents. "
+            "Use these tools to search your vault, save knowledge, query agents, "
+            "and explore your trust network. All operations respect trust boundaries. "
+            "Vault and agent tools require authentication via `trustmesh login`."
+        ),
+    )
 
-    agents = result.get("results", result.get("agents", []))
-    if not agents:
-        return "No agents found matching your criteria."
+    # ── Authenticated Tools (require session) ──
 
-    lines = [f"Found {len(agents)} agent(s):\n"]
-    for a in agents:
-        skills = ", ".join(s.get("name", "") for s in a.get("skills", []))
-        pools = ", ".join(a.get("pools", []))
-        lines.append(f"- **{a['display_name']}** (@{a['username']}, {a['user_type']})")
-        if a.get("bio"):
-            lines.append(f"  {a['bio']}")
-        if skills:
-            lines.append(f"  Skills: {skills}")
-        if pools:
-            lines.append(f"  Networks: {pools}")
-        lines.append(f"  DID: `{a['did']}`")
-        lines.append("")
+    @mcp.tool()
+    def search_vault(query: str) -> str:
+        """Search your knowledge vault for capsules matching a query.
 
-    return "\n".join(lines)
+        Uses semantic search + AI agent to find and summarize relevant knowledge
+        from your encrypted vault. Self-query with full private access.
+        """
+        me = _get_me(session)
+        result = _api(session, "POST", "/api/query", json={
+            "from_user_id": me["id"],
+            "to_user_id": me["id"],
+            "question": query,
+        })
+        response_text = result.get("response", "No results found.")
+        actions = result.get("agent_actions", [])
+        parts = [response_text]
+        if actions:
+            parts.append(f"\nAgent actions: {json.dumps(actions)}")
+        return "\n".join(parts)
 
+    @mcp.tool()
+    def save_to_vault(
+        title: str,
+        content: str,
+        capsule_type: str = "memory",
+        visibility: str = "private",
+        category: str | None = None,
+    ) -> str:
+        """Save new knowledge to your vault as an encrypted capsule.
 
-@mcp.tool()
-async def query_agent(
-    question: str,
-    target_username: str,
-    from_user_id: str = "",
-    to_user_id: str = "",
-) -> str:
-    """Ask a question to a specific agent on the TrustMesh pod.
+        Args:
+            title: Title for the knowledge capsule
+            content: The knowledge content to save
+            capsule_type: Type (memory, note, document, preference, health, financial, legal)
+            visibility: private (only you), internal (trusted connections), open (anyone)
+            category: Optional tag (health, work, personal, finance, etc.)
+        """
+        me = _get_me(session)
+        payload = {
+            "capsule_type": capsule_type,
+            "title": title,
+            "content": content,
+            "visibility": visibility,
+        }
+        if category:
+            payload["category"] = category
+        result = _api(session, "POST", f"/api/users/{me['id']}/capsules", json=payload)
+        return f"Saved: {result['title']} (ID: {result['id'][:8]}, visibility: {result['visibility']})"
 
-    The response is filtered by trust level — you'll only see information
-    the target has made accessible to you based on your trust relationship.
+    @mcp.tool()
+    def list_capsules(capsule_type: str | None = None, visibility: str | None = None) -> str:
+        """List knowledge capsules in your vault.
 
-    Args:
-        question: The question to ask
-        target_username: Username of the agent to query (e.g., "peter", "molly")
-        from_user_id: Your user ID (if known)
-        to_user_id: Target user ID (if known, otherwise target_username is used)
-    """
-    # If we have user IDs, use the direct query API
-    if from_user_id and to_user_id:
-        result = await _api_post("/api/query", {
-            "from_user_id": from_user_id,
+        Args:
+            capsule_type: Filter by type (memory, note, document, preference, health, etc.)
+            visibility: Filter by visibility (private, internal, open)
+        """
+        me = _get_me(session)
+        capsules = _api(session, "GET", f"/api/users/{me['id']}/capsules")
+        if capsule_type:
+            capsules = [c for c in capsules if c.get("capsule_type") == capsule_type]
+        if visibility:
+            capsules = [c for c in capsules if c.get("visibility") == visibility]
+
+        if not capsules:
+            return "No capsules found."
+
+        lines = [f"Found {len(capsules)} capsules:\n"]
+        for c in capsules:
+            archived = " [ARCHIVED]" if c.get("is_archived") else ""
+            lines.append(
+                f"- {c['title']} ({c.get('capsule_type', '?')}, {c.get('visibility', '?')}){archived}"
+                f"\n  ID: {c['id'][:8]}  Category: {c.get('category', 'none')}"
+            )
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def ask_agent(question: str, target_user: str | None = None) -> str:
+        """Ask your AI agent a question, or cross-query another user's agent.
+
+        Self-queries have full vault access. Cross-queries are trust-filtered:
+        only knowledge matching your trust level is accessible.
+
+        Args:
+            question: The question to ask
+            target_user: Username to cross-query (omit for self-query)
+        """
+        me = _get_me(session)
+
+        if target_user:
+            users = _api(session, "GET", "/api/users")
+            target = next((u for u in users if u["username"] == target_user), None)
+            if not target:
+                return f"User '{target_user}' not found."
+            to_user_id = target["id"]
+        else:
+            to_user_id = me["id"]
+
+        result = _api(session, "POST", "/api/query", json={
+            "from_user_id": me["id"],
             "to_user_id": to_user_id,
             "question": question,
         })
-        response = result.get("response", "No response received.")
-        trust = result.get("trust_level", "unknown")
-        decision = result.get("decision", "unknown")
-        return f"**Trust Level**: {trust} | **Decision**: {decision}\n\n{response}"
 
-    # Otherwise use A2A endpoint
-    result = await _api_post("/api/pod/a2a", {
-        "jsonrpc": "2.0",
-        "method": "message/send",
-        "id": "mcp-query",
-        "params": {
-            "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": question}],
-            },
-            "metadata": {"to_username": target_username},
-        },
-    })
+        parts = []
+        if target_user:
+            parts.append(f"Trust level: {result.get('trust_level', '?')}")
+            networks = result.get("shared_networks", [])
+            if networks:
+                parts.append(f"Shared networks: {', '.join(networks)}")
 
-    if "error" in result:
-        return f"Error: {result['error'].get('message', 'Unknown error')}"
+        parts.append(result.get("response", "No response"))
 
-    task = result.get("result", {})
-    status = task.get("status", {}).get("state", "unknown")
-    trust_level = task.get("metadata", {}).get("trust_level", "unknown")
+        if result.get("decision") == "redacted":
+            parts.append("\n[REDACTED by Citadel security scan]")
 
-    # Extract response text from artifacts
-    artifacts = task.get("artifacts", [])
-    text = ""
-    for artifact in artifacts:
-        for part in artifact.get("parts", []):
-            if part.get("type") == "text":
-                text += part.get("text", "")
+        return "\n".join(parts)
 
-    if not text:
-        text = f"Query {status}. No response text available."
+    @mcp.tool()
+    def list_connections() -> str:
+        """List your trust connections with their status and user types."""
+        me = _get_me(session)
+        connections = _api(session, "GET", f"/api/users/{me['id']}/connections")
 
-    return f"**Trust Level**: {trust_level} | **Status**: {status}\n\n{text}"
+        if not connections:
+            return "No connections."
+
+        lines = [f"You have {len(connections)} connections:\n"]
+        for c in connections:
+            peer = c.get("peer", {})
+            since = c.get("accepted_at", "")[:10] if c.get("accepted_at") else "?"
+            lines.append(
+                f"- {peer.get('display_name', '?')} (@{peer.get('username', '?')}) "
+                f"[{peer.get('user_type', 'person')}] since {since}"
+            )
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def list_networks() -> str:
+        """List your trust networks/pools with member counts."""
+        me = _get_me(session)
+        networks = _api(session, "GET", f"/api/users/{me['id']}/networks")
+
+        if not networks:
+            return "No networks."
+
+        lines = [f"You belong to {len(networks)} networks:\n"]
+        for n in networks:
+            members = n.get("members", [])
+            member_names = [m.get("display_name", "?") for m in members]
+            lines.append(
+                f"- {n['name']} ({n.get('pool_type', 'standard')}, {len(members)} members)"
+                f"\n  Members: {', '.join(member_names)}"
+            )
+        return "\n".join(lines)
+
+    # ── Public Tools (work without session) ──
+
+    @mcp.tool()
+    def pod_status() -> str:
+        """Get current pod health, providers, agents, and peer information."""
+        health = _api(session, "GET", "/health/full")
+        pod_info = _api(session, "GET", "/api/pod")
+        peers_data = _api(session, "GET", "/api/pod/peers")
+
+        parts = [
+            f"Pod: {pod_info.get('pod_name', '?')} ({pod_info.get('pod_url', '')})",
+            f"Health: {health.get('status', 'unknown')}",
+            f"Agents: {pod_info.get('agent_count', 0)}",
+        ]
+
+        providers = health.get("providers", {})
+        if providers:
+            prov_lines = []
+            for name, val in providers.items():
+                if isinstance(val, bool):
+                    prov_lines.append(f"  {name}: {'ON' if val else 'off'}")
+                elif isinstance(val, dict):
+                    active = val.get("reachable") or val.get("enabled") or val.get("active")
+                    prov_lines.append(f"  {name}: {'ON' if active else 'off'}")
+            parts.append("Providers:\n" + "\n".join(prov_lines))
+
+        peers = peers_data.get("peers", [])
+        if peers:
+            peer_lines = [
+                f"  {p.get('name', '?')} ({p.get('url', '')}) [{p.get('status', '?')}]"
+                for p in peers
+            ]
+            parts.append(f"Peers ({len(peers)}):\n" + "\n".join(peer_lines))
+        else:
+            parts.append("Peers: none")
+
+        return "\n".join(parts)
+
+    @mcp.tool()
+    def discover_agents(query: str = "", capability: str = "", user_type: str = "") -> str:
+        """Discover agents on the pod or search the public registry.
+
+        Args:
+            query: Search by name or keyword
+            capability: Filter by capability/skill
+            user_type: Filter by type (person, organization, government)
+        """
+        # Try local registry first
+        params = {}
+        if query:
+            params["q"] = query
+        if capability:
+            params["capability"] = capability
+        if user_type:
+            params["user_type"] = user_type
+
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        path = f"/api/registry/search?{qs}" if qs else "/api/registry/agents"
+
+        try:
+            result = _api(session, "GET", path)
+        except Exception:
+            # Fallback to external registry
+            registry_url = os.environ.get("TRUSTMESH_REGISTRY_URL", "http://localhost:8100")
+            try:
+                resp = httpx.get(f"{registry_url}/api/search", params={"q": query or ""}, timeout=10)
+                result = resp.json()
+            except Exception:
+                return f"Cannot reach registry."
+
+        agents = result.get("results", result.get("agents", result if isinstance(result, list) else []))
+        if not agents:
+            return "No agents found."
+
+        lines = [f"Found {len(agents)} agent(s):\n"]
+        for a in agents:
+            skills = ", ".join(s.get("name", "") for s in a.get("skills", []))
+            pools = ", ".join(a.get("pools", []))
+            lines.append(f"- {a.get('display_name', '?')} (@{a.get('username', '?')}, {a.get('user_type', '?')})")
+            if a.get("bio"):
+                lines.append(f"  {a['bio']}")
+            if skills:
+                lines.append(f"  Skills: {skills}")
+            if pools:
+                lines.append(f"  Networks: {pools}")
+            if a.get("did"):
+                lines.append(f"  DID: {a['did']}")
+            lines.append("")
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def health_check() -> str:
+        """Check the health status of the TrustMesh pod and its providers."""
+        result = _api(session, "GET", "/health/full")
+        providers = result.get("providers", {})
+
+        lines = [f"Status: {result.get('status', 'unknown')}\n"]
+        for name, info in providers.items():
+            if isinstance(info, bool):
+                lines.append(f"- {name}: {'active' if info else 'inactive'}")
+            elif isinstance(info, dict):
+                active = info.get("enabled", info.get("reachable", info.get("active", False)))
+                detail = info.get("provider", "")
+                status = "active" if active else "inactive"
+                if detail:
+                    status += f" ({detail})"
+                lines.append(f"- {name}: {status}")
+        return "\n".join(lines)
+
+    # ── Resources ──
+
+    @mcp.resource("trustmesh://profile")
+    def get_profile() -> str:
+        """Your TrustMesh profile: name, type, networks, and connection summary."""
+        if not session:
+            return "Not logged in. Run `trustmesh login` first."
+        me = _get_me(session)
+        connections = _api(session, "GET", f"/api/users/{me['id']}/connections")
+        networks = _api(session, "GET", f"/api/users/{me['id']}/networks")
+
+        parts = [
+            f"User: {me['display_name']} (@{me['username']})",
+            f"Type: {me.get('user_type', 'person')}",
+            f"Pod: {session['pod_url']}",
+            f"Connections: {len(connections)}",
+            f"Networks: {len(networks)}",
+        ]
+        if networks:
+            parts.append("\nNetworks:")
+            for n in networks:
+                parts.append(f"  - {n['name']} ({len(n.get('members', []))} members)")
+        if me.get("bio"):
+            parts.append(f"\nBio: {me['bio']}")
+        return "\n".join(parts)
+
+    @mcp.resource("trustmesh://vault/summary")
+    def get_vault_summary() -> str:
+        """Summary of your knowledge vault: capsule counts by type and visibility."""
+        if not session:
+            return "Not logged in. Run `trustmesh login` first."
+        me = _get_me(session)
+        capsules = _api(session, "GET", f"/api/users/{me['id']}/capsules")
+
+        by_type: dict[str, int] = {}
+        by_vis: dict[str, int] = {}
+        archived = 0
+        for c in capsules:
+            t = c.get("capsule_type", "unknown")
+            v = c.get("visibility", "unknown")
+            by_type[t] = by_type.get(t, 0) + 1
+            by_vis[v] = by_vis.get(v, 0) + 1
+            if c.get("is_archived"):
+                archived += 1
+
+        parts = [f"Vault: {len(capsules)} capsules ({archived} archived)\n"]
+        if by_type:
+            parts.append("By type:")
+            for t, count in sorted(by_type.items()):
+                parts.append(f"  {t}: {count}")
+        if by_vis:
+            parts.append("By visibility:")
+            for v, count in sorted(by_vis.items()):
+                parts.append(f"  {v}: {count}")
+        return "\n".join(parts)
+
+    @mcp.resource("trustmesh://pod/info")
+    def pod_info_resource() -> str:
+        """Current pod identity, agents, and configuration."""
+        return json.dumps(_api(session, "GET", "/api/pod"), indent=2)
+
+    return mcp
 
 
-@mcp.tool()
-async def get_pod_info() -> str:
-    """Get information about this TrustMesh pod — name, URL, protocol, and registered agents."""
-    result = await _api_get("/api/pod")
-    agents = result.get("agents", [])
-    agent_list = ", ".join(a.get("owner_username", "?") for a in agents) if agents else "none"
+# ── Entry Points ──
 
-    return (
-        f"**Pod**: {result.get('pod_name', 'Unknown')}\n"
-        f"**URL**: {result.get('pod_url', 'Unknown')}\n"
-        f"**Protocol**: {result.get('protocol', 'Unknown')}\n"
-        f"**Agents**: {result.get('agent_count', 0)} ({agent_list})"
-    )
-
-
-@mcp.tool()
-async def lookup_agent(did: str) -> str:
-    """Look up a specific agent by their DID (Decentralized Identifier).
-
-    Returns detailed info about the agent including skills, pools, and pod location.
-    """
-    result = await _api_get(f"/api/registry/lookup/{did}")
-
-    skills = ", ".join(s.get("name", "") for s in result.get("skills", []))
-    pools = ", ".join(result.get("pools", []))
-    pod = result.get("pod", {})
-
-    lines = [
-        f"**{result['display_name']}** (@{result['username']})",
-        f"**Type**: {result['user_type']}",
-        f"**DID**: `{result['did']}`",
-    ]
-    if result.get("bio"):
-        lines.append(f"**Bio**: {result['bio']}")
-    if skills:
-        lines.append(f"**Skills**: {skills}")
-    if pools:
-        lines.append(f"**Networks**: {pools}")
-    if pod:
-        lines.append(f"**Pod**: {pod.get('name', '?')} ({pod.get('url', '?')})")
-
-    return "\n".join(lines)
-
-
-@mcp.tool()
-async def list_services() -> str:
-    """List available service providers (organizations, hospitals, etc.) on the pod."""
-    result = await _api_get("/api/services")
-
-    if not result:
-        return "No service providers available."
-
-    lines = [f"Found {len(result)} service provider(s):\n"]
-    for sp in result:
-        lines.append(f"- **{sp['display_name']}** ({sp['user_type']})")
-        if sp.get("bio"):
-            lines.append(f"  {sp['bio']}")
-        card = sp.get("agent_card")
-        if card and card.get("skills"):
-            skill_names = ", ".join(s.get("name", "") for s in card["skills"][:5])
-            lines.append(f"  Services: {skill_names}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-@mcp.tool()
-async def health_check() -> str:
-    """Check the health status of the TrustMesh pod and its providers."""
-    result = await _api_get("/health/full")
-    providers = result.get("providers", {})
-
-    lines = [f"**Status**: {result.get('status', 'unknown')}\n"]
-    for name, info in providers.items():
-        if isinstance(info, bool):
-            status = "active" if info else "inactive"
-            lines.append(f"- **{name}**: {status}")
-        elif isinstance(info, dict):
-            active = info.get("enabled", info.get("reachable", info.get("active", False)))
-            detail = info.get("provider", "")
-            status = "active" if active else "inactive"
-            if detail:
-                status += f" ({detail})"
-            lines.append(f"- **{name}**: {status}")
-
-    return "\n".join(lines)
-
-
-# ── Resources ──
-
-
-@mcp.resource("trustmesh://pod/info")
-async def pod_info_resource() -> str:
-    """Current pod identity and agent list."""
-    return json.dumps(await _api_get("/api/pod"), indent=2)
-
-
-@mcp.resource("trustmesh://registry/agents")
-async def registry_agents_resource() -> str:
-    """All discoverable agents on the pod."""
-    return json.dumps(await _api_get("/api/registry/agents"), indent=2)
-
-
-# ── Entry Point ──
+# Module-level server for `mcp.run()` compatibility
+_session = _load_session()
+mcp = create_mcp_server(_session)
 
 
 def main():
-    """Run the TrustMesh MCP server."""
+    """Run the TrustMesh MCP server (stdio transport)."""
     mcp.run()
 
 

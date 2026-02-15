@@ -2,8 +2,10 @@
 
 from datetime import datetime, timezone
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import delete, select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth import get_current_user_id
@@ -35,6 +37,14 @@ async def _network_response(db: AsyncSession, network: Network) -> NetworkRespon
         user = await db.get(User, m.user_id)
         if user:
             members.append(UserPublic.model_validate(user))
+    # Parse shared_categories from JSON string
+    shared_cats = None
+    if network.shared_categories:
+        try:
+            shared_cats = json.loads(network.shared_categories) if isinstance(network.shared_categories, str) else network.shared_categories
+        except (json.JSONDecodeError, TypeError):
+            shared_cats = None
+
     return NetworkResponse(
         id=network.id,
         owner_id=network.owner_id,
@@ -43,6 +53,8 @@ async def _network_response(db: AsyncSession, network: Network) -> NetworkRespon
         network_type=network.network_type,
         is_public=network.is_public,
         join_policy=network.join_policy,
+        pool_type=network.pool_type,
+        shared_categories=shared_cats,
         created_at=network.created_at,
         members=members,
     )
@@ -74,6 +86,8 @@ async def create_network(data: NetworkCreate, db: AsyncSession = Depends(get_db)
         is_public=data.is_public,
         join_policy=data.join_policy,
         context=data.context,
+        pool_type=data.pool_type,
+        shared_categories=json.dumps(data.shared_categories) if data.shared_categories else None,
         encrypted_network_key=encrypted_key,
     )
     db.add(network)
@@ -138,12 +152,22 @@ async def discover_networks(db: AsyncSession = Depends(get_db)):
         member_count = mem_result.scalar() or 0
         owner = await db.get(User, n.owner_id)
         owner_name = owner.display_name if owner else "Unknown"
+        # Parse shared_categories
+        shared_cats = None
+        if n.shared_categories:
+            try:
+                shared_cats = json.loads(n.shared_categories) if isinstance(n.shared_categories, str) else n.shared_categories
+            except (json.JSONDecodeError, TypeError):
+                shared_cats = None
+
         responses.append(NetworkDiscoveryResponse(
             id=n.id,
             name=n.name,
             description=n.description,
             network_type=n.network_type,
             join_policy=n.join_policy,
+            pool_type=n.pool_type,
+            shared_categories=shared_cats,
             member_count=member_count,
             owner_name=owner_name,
         ))
@@ -242,6 +266,21 @@ async def remove_member(
         raise HTTPException(403, "Access denied")
 
     await db.delete(membership)
+
+    # SECURITY: Clean up ghost users with no remaining memberships
+    user = await db.get(User, user_id)
+    if user and user.is_remote:
+        remaining = await db.execute(
+            select(func.count()).select_from(NetworkMembership)
+            .where(NetworkMembership.user_id == user_id)
+        )
+        if remaining.scalar() == 0:
+            # Ghost has no remaining memberships — full cleanup
+            await db.execute(delete(Connection).where(
+                or_(Connection.from_user_id == user_id, Connection.to_user_id == user_id)
+            ))
+            await db.delete(user)
+
     await db.commit()
     return {"ok": True}
 

@@ -2,17 +2,23 @@
 
 import pytest
 import pytest_asyncio
+from unittest.mock import patch
 from httpx import ASGITransport, AsyncClient
 
 from src.database import init_db, drop_db
+
+# Shared test secret for authenticated peer operations
+_TEST_SECRET = "test-pod-secret"
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def setup_db():
     """Reset DB for each test."""
     from src.auth import sessions, _login_attempts
+    from src.rate_limit import reset_rate_limits
     sessions.clear()
     _login_attempts.clear()
+    reset_rate_limits()
     await drop_db()
     await init_db()
     yield
@@ -132,7 +138,11 @@ async def test_list_peers_empty(client):
 async def test_add_peer_self_rejected(client):
     """POST /api/pod/peers with self URL should be rejected."""
     from src.federation import POD_URL
-    resp = await client.post("/api/pod/peers", json={"url": POD_URL})
+    with patch("src.routes.pod.POOL_SYNC_SECRET", _TEST_SECRET):
+        resp = await client.post(
+            "/api/pod/peers", json={"url": POD_URL},
+            headers={"X-Pool-Sync-Secret": _TEST_SECRET},
+        )
     assert resp.status_code == 400
     assert "yourself" in resp.json()["detail"].lower()
 
@@ -140,21 +150,33 @@ async def test_add_peer_self_rejected(client):
 @pytest.mark.asyncio
 async def test_add_peer_unreachable(client):
     """POST /api/pod/peers with unreachable URL should return 502."""
-    resp = await client.post("/api/pod/peers", json={"url": "http://localhost:59999"})
+    with patch("src.routes.pod.POOL_SYNC_SECRET", _TEST_SECRET):
+        resp = await client.post(
+            "/api/pod/peers", json={"url": "http://localhost:59999"},
+            headers={"X-Pool-Sync-Secret": _TEST_SECRET},
+        )
     assert resp.status_code == 502
 
 
 @pytest.mark.asyncio
 async def test_remove_peer_not_found(client):
     """DELETE /api/pod/peers/{id} with bad ID should return 404."""
-    resp = await client.delete("/api/pod/peers/nonexistent-id")
+    with patch("src.routes.pod.POOL_SYNC_SECRET", _TEST_SECRET):
+        resp = await client.delete(
+            "/api/pod/peers/nonexistent-id",
+            headers={"X-Pool-Sync-Secret": _TEST_SECRET},
+        )
     assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_ping_peer_not_found(client):
     """POST /api/pod/peers/{id}/ping with bad ID should return 404."""
-    resp = await client.post("/api/pod/peers/nonexistent-id/ping")
+    with patch("src.routes.pod.POOL_SYNC_SECRET", _TEST_SECRET):
+        resp = await client.post(
+            "/api/pod/peers/nonexistent-id/ping",
+            headers={"X-Pool-Sync-Secret": _TEST_SECRET},
+        )
     assert resp.status_code == 404
 
 

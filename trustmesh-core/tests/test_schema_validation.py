@@ -482,3 +482,72 @@ class TestCapsuleUpdate:
         """50. Invalid tier must be rejected."""
         with pytest.raises(ValidationError):
             CapsuleUpdate(tier="secret")
+
+
+# ===================================================================
+# Phase 2: Pool type + entity type validation tests
+# ===================================================================
+
+
+class TestUserTypeValidation:
+    """Validation tests for entity type restrictions."""
+
+    def test_user_type_person_accepted(self):
+        """51. user_type 'person' should be accepted."""
+        user = UserCreate(**_make_user(user_type="person"))
+        assert user.user_type == "person"
+
+    def test_user_type_organization_accepted(self):
+        """52. user_type 'organization' should be accepted."""
+        user = UserCreate(**_make_user(user_type="organization"))
+        assert user.user_type == "organization"
+
+    def test_user_type_government_accepted(self):
+        """53. user_type 'government' should be accepted."""
+        user = UserCreate(**_make_user(user_type="government"))
+        assert user.user_type == "government"
+
+    def test_user_type_invalid_rejected(self):
+        """54. user_type 'robot' must be rejected."""
+        with pytest.raises(ValidationError):
+            UserCreate(**_make_user(user_type="robot"))
+
+    def test_user_type_service_rejected(self):
+        """55. user_type 'service' (old name) must be rejected."""
+        with pytest.raises(ValidationError):
+            UserCreate(**_make_user(user_type="service"))
+
+
+class TestNetworkCreatePoolType:
+    """Validation tests for pool_type and shared_categories on NetworkCreate."""
+
+    def test_network_with_pool_type(self):
+        """56. NetworkCreate with pool_type should be accepted."""
+        net = NetworkCreate(
+            name="Health Pool", owner_id="owner-1",
+            pool_type="category_scoped", shared_categories=["health"],
+        )
+        assert net.pool_type == "category_scoped"
+        assert net.shared_categories == ["health"]
+
+    def test_network_default_pool_type(self):
+        """57. NetworkCreate defaults to pool_type 'standard'."""
+        net = NetworkCreate(name="Default Pool", owner_id="owner-1")
+        assert net.pool_type == "standard"
+        assert net.shared_categories is None
+
+    def test_network_multiple_categories(self):
+        """58. NetworkCreate with multiple shared_categories."""
+        net = NetworkCreate(
+            name="Multi Pool", owner_id="owner-1",
+            pool_type="category_scoped", shared_categories=["health", "work", "family"],
+        )
+        assert len(net.shared_categories) == 3
+
+    def test_network_public_registry_type(self):
+        """59. NetworkCreate with public_registry pool_type."""
+        net = NetworkCreate(
+            name="Public Pool", owner_id="owner-1",
+            pool_type="public_registry",
+        )
+        assert net.pool_type == "public_registry"

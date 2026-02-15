@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from src.crypto import derive_vault_key, encrypt, encrypt_text, generate_key, generate_ed25519_keypair, hash_pin, public_key_to_did
 from src.database import drop_db, init_db, async_session
-from src.embeddings import reset_collection, upsert_capsule_embedding
+from src.embeddings import reset_collections, upsert_capsule_embedding
 from src.models import (
     Agent,
     CapsuleNetworkAccess,
@@ -452,6 +452,49 @@ SERVICE_PROVIDERS = [
         ],
     },
     {
+        "username": "riverside_gov",
+        "display_name": "City of Riverside",
+        "bio": "Official city government services. Public records, permits, emergency alerts, and community programs. Serving 330,000 residents.",
+        "user_type": "government",
+        "agent_personality": "Official and transparent. Provides public information, permit status, and emergency alerts. All data is open by default.",
+        "profile_data": {
+            "occupation": {"title": "City Government", "industry": "Government"},
+            "skills": [
+                {"name": "Public Records", "category": "government"},
+                {"name": "Permits & Licensing", "category": "government"},
+                {"name": "Emergency Alerts", "category": "government"},
+                {"name": "Community Programs", "category": "government"},
+            ],
+            "interests": [],
+            "family_status": "unknown",
+            "age_range": None,
+            "location_hints": ["Riverside", "Bay Area"],
+        },
+        "capsules": [
+            {
+                "type": "procedure",
+                "title": "City Emergency Alert System",
+                "content": "Riverside City emergency alerts: sign up at riverside.gov/alerts. Covers earthquakes, fires, flooding, and power outages. Text ALERT to 55511 for SMS alerts. Emergency sirens tested first Wednesday of each month at noon.",
+                "visibility": "open",
+                "category": "general",
+            },
+            {
+                "type": "skill",
+                "title": "Building Permits & Inspections",
+                "content": "Building permits: apply online at riverside.gov/permits. Standard residential permit: $250-500, 2-3 week processing. Emergency repairs: expedited 24-hour permits available. Inspections: schedule at (555) 700-2000. Code compliance: report violations at riverside.gov/code.",
+                "visibility": "open",
+                "category": "general",
+            },
+            {
+                "type": "schedule",
+                "title": "Community Programs Calendar",
+                "content": "Senior center: M-F 8am-5pm, free meals for 65+. Youth sports: spring registration opens March 1. Community garden plots: $50/year, waitlist open. Free tax prep: Feb 1-Apr 15 at community centers. City council meetings: 2nd and 4th Tuesday 7pm, open to public.",
+                "visibility": "open",
+                "category": "general",
+            },
+        ],
+    },
+    {
         "username": "riverside_ambulance",
         "display_name": "Riverside City Ambulance",
         "bio": "City ambulance service covering the Riverside district. 24/7 emergency response. Average response time: 7 minutes.",
@@ -488,40 +531,41 @@ SERVICE_PROVIDERS = [
     },
 ]
 
+# (from_user, to_user, context, relationship_type, from_label, to_label)
 CONNECTIONS = [
     # Johnson family (personal)
-    ("peter", "molly", "personal"),
-    ("peter", "jane", "personal"),
-    ("peter", "bill", "personal"),
-    ("molly", "jane", "personal"),
-    ("molly", "bill", "personal"),
+    ("peter", "molly", "personal", "family", "wife", "husband"),
+    ("peter", "jane", "personal", "family", "daughter", "dad"),
+    ("peter", "bill", "personal", "family", "son", "dad"),
+    ("molly", "jane", "personal", "family", "daughter", "mom"),
+    ("molly", "bill", "personal", "family", "son", "mom"),
     # Grandma Rose <-> family (personal)
-    ("molly", "grandmarose", "personal"),
-    ("peter", "grandmarose", "personal"),
-    ("jane", "grandmarose", "personal"),
-    ("bill", "grandmarose", "personal"),
+    ("molly", "grandmarose", "personal", "family", "grandma", "granddaughter-in-law"),
+    ("peter", "grandmarose", "personal", "family", "mother-in-law", "son-in-law"),
+    ("jane", "grandmarose", "personal", "family", "grandma", "granddaughter"),
+    ("bill", "grandmarose", "personal", "family", "grandma", "grandson"),
     # Work
-    ("molly", "kyle", "work"),
+    ("molly", "kyle", "work", "work", "colleague", "colleague"),
     # Siblings (personal)
-    ("jane", "bill", "personal"),
+    ("jane", "bill", "personal", "family", "brother", "sister"),
     # Neighborhood (personal)
-    ("peter", "linda", "personal"),
-    ("molly", "linda", "personal"),
+    ("peter", "linda", "personal", "neighbor", "neighbor", "neighbor"),
+    ("molly", "linda", "personal", "neighbor", "neighbor", "neighbor"),
     # Kids' friends (personal)
-    ("jane", "amy", "personal"),
-    ("bill", "marcus", "personal"),
+    ("jane", "amy", "personal", "friend", "best friend", "best friend"),
+    ("bill", "marcus", "personal", "friend", "coding buddy", "coding buddy"),
     # Grandma's circle (personal)
-    ("grandmarose", "dorothy", "personal"),
-    ("linda", "dorothy", "personal"),
+    ("grandmarose", "dorothy", "personal", "friend", "bridge partner", "bridge partner"),
+    ("linda", "dorothy", "personal", "friend", "friend", "friend"),
     # Healthcare team (work)
-    ("dr_lee", "nurse_davis", "work"),
-    ("dr_lee", "emt_johnson", "work"),
-    ("nurse_davis", "emt_johnson", "work"),
+    ("dr_lee", "nurse_davis", "work", "work", "nurse", "doctor"),
+    ("dr_lee", "emt_johnson", "work", "work", "paramedic", "doctor"),
+    ("nurse_davis", "emt_johnson", "work", "work", "paramedic", "nurse"),
     # Healthcare practitioners ↔ institutions (work)
-    ("dr_lee", "riverside_hospital", "work"),
-    ("nurse_davis", "riverside_hospital", "work"),
-    ("emt_johnson", "riverside_ambulance", "work"),
-    ("emt_johnson", "riverside_hospital", "work"),
+    ("dr_lee", "riverside_hospital", "work", "work", "hospital", "ER physician"),
+    ("nurse_davis", "riverside_hospital", "work", "work", "hospital", "ER nurse"),
+    ("emt_johnson", "riverside_ambulance", "work", "work", "ambulance service", "paramedic"),
+    ("emt_johnson", "riverside_hospital", "work", "work", "hospital", "field paramedic"),
 ]
 
 NETWORKS = [
@@ -534,6 +578,7 @@ NETWORKS = [
         "is_public": False,
         "join_policy": "invite_only",
         "context": "personal",
+        "pool_type": "standard",
     },
     {
         "name": "TechCorp PM Team",
@@ -544,6 +589,8 @@ NETWORKS = [
         "is_public": True,
         "join_policy": "request_to_join",
         "context": "work",
+        "pool_type": "category_scoped",
+        "shared_categories": ["work"],
     },
     {
         "name": "Rose's Care Circle",
@@ -554,6 +601,8 @@ NETWORKS = [
         "is_public": False,
         "join_policy": "invite_only",
         "context": "personal",
+        "pool_type": "category_scoped",
+        "shared_categories": ["health"],
     },
     {
         "name": "Lincoln High Soccer",
@@ -564,6 +613,7 @@ NETWORKS = [
         "is_public": True,
         "join_policy": "request_to_join",
         "context": "personal",
+        "pool_type": "standard",
     },
     {
         "name": "Roosevelt Coding Club",
@@ -574,6 +624,7 @@ NETWORKS = [
         "is_public": True,
         "join_policy": "open",
         "context": "personal",
+        "pool_type": "standard",
     },
     {
         "name": "Riverside Neighbors",
@@ -584,6 +635,7 @@ NETWORKS = [
         "is_public": True,
         "join_policy": "request_to_join",
         "context": "personal",
+        "pool_type": "standard",
     },
     {
         "name": "Bay Area Music Lovers",
@@ -594,6 +646,7 @@ NETWORKS = [
         "is_public": True,
         "join_policy": "open",
         "context": "personal",
+        "pool_type": "public_registry",
     },
     {
         "name": "Riverside Bridge Club",
@@ -604,6 +657,7 @@ NETWORKS = [
         "is_public": True,
         "join_policy": "open",
         "context": "personal",
+        "pool_type": "standard",
     },
     {
         "name": "Riverside ER Team",
@@ -614,6 +668,8 @@ NETWORKS = [
         "is_public": False,
         "join_policy": "invite_only",
         "context": "work",
+        "pool_type": "category_scoped",
+        "shared_categories": ["health", "work"],
     },
     {
         "name": "Bay Area Salsa Social",
@@ -624,6 +680,7 @@ NETWORKS = [
         "is_public": True,
         "join_policy": "open",
         "context": "personal",
+        "pool_type": "public_registry",
     },
 ]
 
@@ -1477,7 +1534,7 @@ async def seed():
 
     await drop_db()
     await init_db()
-    reset_collection()
+    reset_collections()
 
     # Import vault_keys from main to populate
     from src.main import vault_keys
@@ -1570,16 +1627,20 @@ async def seed():
 
         # ── Step 3: Create Connections ──
         print(f"\nStep 3/7: Establishing {len(CONNECTIONS)} connections...")
-        for from_name, to_name, conn_ctx in CONNECTIONS:
+        for from_name, to_name, conn_ctx, rel_type, from_lbl, to_lbl in CONNECTIONS:
             conn = Connection(
                 from_user_id=user_map[from_name].id,
                 to_user_id=user_map[to_name].id,
                 context=conn_ctx,
                 status="accepted",
+                relationship_type=rel_type,
+                from_label=from_lbl,
+                to_label=to_lbl,
                 accepted_at=datetime.now(timezone.utc),
             )
             db.add(conn)
-            print(f"  \u2713 {from_name} \u2194 {to_name} ({conn_ctx})")
+            label_str = f" [{rel_type}: {from_lbl}/{to_lbl}]" if rel_type else ""
+            print(f"  \u2713 {from_name} \u2194 {to_name} ({conn_ctx}){label_str}")
 
         # ── Step 4: Create Networks with proper key wrapping ──
         print(f"\nStep 4/7: Creating {len(NETWORKS)} networks with key wrapping...")
@@ -1588,6 +1649,7 @@ async def seed():
             owner_vault_key = vault_keys[user_map[n["owner"]].id]
             encrypted_key = encrypt(network_key, owner_vault_key)
 
+            shared_cats = n.get("shared_categories")
             network = Network(
                 owner_id=user_map[n["owner"]].id,
                 name=n["name"],
@@ -1596,6 +1658,8 @@ async def seed():
                 is_public=n.get("is_public", False),
                 join_policy=n.get("join_policy", "invite_only"),
                 context=n.get("context", "personal"),
+                pool_type=n.get("pool_type", "standard"),
+                shared_categories=json.dumps(shared_cats) if shared_cats else None,
                 encrypted_network_key=encrypted_key,
             )
             db.add(network)
@@ -1659,11 +1723,12 @@ async def seed():
                         network_id=network_map[net_name].id,
                     ))
 
-            # Embed for semantic search
+            # Embed for semantic search (category-scoped)
             upsert_capsule_embedding(
                 capsule.id,
                 f"{c['title']}: {c['content']}",
                 {"capsule_id": capsule.id, "owner_id": owner.id, "visibility": visibility},
+                category=c.get("category", "general"),
             )
             capsule_count += 1
             print(f"  \u2713 [{visibility}] {c['title']} ({c['owner']})")
@@ -1689,6 +1754,7 @@ async def seed():
                     capsule.id,
                     f"{cap['title']}: {cap['content']}",
                     {"capsule_id": capsule.id, "owner_id": sp_user.id, "visibility": cap_visibility},
+                    category=cap.get("category", "general"),
                 )
                 capsule_count += 1
                 print(f"  \u2713 [{cap_visibility}] {cap['title']} ({sp['username']})")

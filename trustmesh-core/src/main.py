@@ -82,9 +82,13 @@ async def _rebuild_embeddings():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle: init DB + load vault keys + rebuild embeddings on startup."""
+    import asyncio
     await init_db()
     await _load_vault_keys()
     await _rebuild_embeddings()
+    # Auto-register discoverable agents with the public registry (fire-and-forget)
+    from src.federation import sync_discoverable_agents_to_registry
+    asyncio.create_task(sync_discoverable_agents_to_registry())
     yield
 
 
@@ -97,7 +101,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3050", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3050", "http://localhost:3000",
+        # Multi-pod federation: allow cross-pod requests from any localhost port
+        *[f"http://localhost:{p}" for p in range(8001, 8017)],
+        "http://localhost:8100",  # Public registry
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -234,9 +243,11 @@ async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
         )
         visible_users = user_result.scalars().all()
 
+        visible_ids = {u.id for u in visible_users}
         edges = [
             GraphEdge(source=c.from_user_id, target=c.to_user_id)
             for c in user_connections
+            if c.from_user_id in visible_ids and c.to_user_id in visible_ids
         ]
 
         # Networks: only those user is a member of
@@ -251,12 +262,14 @@ async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
         )
         visible_users = user_result.scalars().all()
 
+        visible_ids = {u.id for u in visible_users}
         conn_result = await db.execute(
             select(Connection).where(Connection.status == "accepted")
         )
         edges = [
             GraphEdge(source=c.from_user_id, target=c.to_user_id)
             for c in conn_result.scalars().all()
+            if c.from_user_id in visible_ids and c.to_user_id in visible_ids
         ]
         my_network_ids = None  # show all
 
@@ -280,8 +293,17 @@ async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
         mem_result = await db.execute(
             select(NetworkMembership.user_id).where(NetworkMembership.network_id == n.id)
         )
+        # Parse shared_categories from JSON string
+        shared_cats = None
+        if n.shared_categories:
+            import json as _json
+            try:
+                shared_cats = _json.loads(n.shared_categories) if isinstance(n.shared_categories, str) else n.shared_categories
+            except (ValueError, TypeError):
+                shared_cats = None
         graph_networks.append(GraphNetwork(
             id=n.id, name=n.name, network_type=n.network_type,
+            pool_type=n.pool_type, shared_categories=shared_cats,
             members=list(mem_result.scalars().all()),
         ))
 

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.models import (
     Base, CapsuleNetworkAccess, Connection, KnowledgeCapsule,
-    Network, NetworkMembership, PoolInviteToken, User,
+    Network, NetworkMembership, PeerPod, PoolInviteToken, User,
 )
 from src.trust import resolve_trust_level
 from src.gossip import get_accessible_capsule_ids
@@ -45,6 +45,11 @@ async def seeded_db(db: AsyncSession):
         from_user_id="molly-id", to_user_id="kyle-id",
         status="accepted", accepted_at=datetime.now(timezone.utc),
     ))
+
+    # Peer pod for ghost user tests (ghost staleness check needs this)
+    peer = PeerPod(name="partner", url="http://partner:8001", status="active",
+                   last_seen_at=datetime.now(timezone.utc))
+    db.add(peer)
 
     # Network (pool)
     network = Network(id="work-id", owner_id="molly-id", name="TechCorp PM Team", network_type="team")
@@ -178,10 +183,10 @@ async def test_ghost_trust_without_connection(seeded_db):
     db.add(NetworkMembership(network_id="work-id", user_id=ghost.id, role="remote_member"))
     await db.commit()
 
-    # Trust should be "public" — connection required for "network"
+    # Phase 2: pool membership alone grants "network" trust (no connection required)
     level, networks = await resolve_trust_level(db, ghost.id, "molly-id")
-    assert level == "public"
-    assert networks == []
+    assert level == "network"
+    assert len(networks) == 1
 
 
 # ── Capsule Visibility Tests ──
@@ -243,8 +248,10 @@ async def api_db():
     """Reset DB for API tests."""
     from src.database import init_db, drop_db
     from src.auth import sessions, _login_attempts
+    from src.rate_limit import reset_rate_limits
     sessions.clear()
     _login_attempts.clear()
+    reset_rate_limits()
     await drop_db()
     await init_db()
     yield
@@ -407,7 +414,7 @@ async def test_pool_invite_creates_ghost_and_connections(api_client):
         )
         assert mem.scalar_one_or_none() is not None
 
-        # Verify auto-accepted connection with owner
+        # Ghost connections are no longer created (slim ghosts — pool membership alone grants trust)
         conn = await db.execute(
             select(Connection).where(
                 Connection.status == "accepted",
@@ -415,7 +422,7 @@ async def test_pool_invite_creates_ghost_and_connections(api_client):
                 | ((Connection.from_user_id == "owner-id") & (Connection.to_user_id == ghost.id)),
             )
         )
-        assert conn.scalar_one_or_none() is not None
+        assert conn.scalar_one_or_none() is None  # No connection rows for ghost users
 
         # Verify token was consumed
         tok = await db.execute(
@@ -528,7 +535,7 @@ async def test_receive_remote_query_no_ghost(api_client):
 
 @pytest.mark.asyncio
 async def test_receive_remote_query_spoofed_pod(api_client):
-    """Ghost DID but wrong from_pod → falls through to public trust."""
+    """Ghost DID but wrong from_pod → blocked with 403 (DID spoofing detected)."""
     from src.database import async_session
     from src.models import User, Agent
     from src.crypto import generate_ed25519_keypair, public_key_to_did, derive_vault_key, encrypt, generate_key
@@ -570,5 +577,5 @@ async def test_receive_remote_query_spoofed_pod(api_client):
         "to_username": "spoof_target",
         "question": "Give me secrets",
     })
-    # Should still return 200 but with public trust (fell through to public)
-    assert resp.status_code == 200
+    # Should be blocked with 403 (DID spoofing detected)
+    assert resp.status_code == 403

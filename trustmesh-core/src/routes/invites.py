@@ -19,7 +19,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3050")
 
 
 class InviteRequest(BaseModel):
-    email: str  # Using str instead of EmailStr to avoid dependency
+    email: str = ""  # Optional — link-based invites don't need email
     message: str = ""
 
 

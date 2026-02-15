@@ -29,6 +29,10 @@ class SlidingWindowCounter:
         self._events[key] = [t for t in events if t > cutoff]
         return len(self._events[key])
 
+    def reset(self) -> None:
+        """Clear all tracked events (primarily for tests)."""
+        self._events.clear()
+
 
 # Global rate limiter instances
 _connection_limiter = SlidingWindowCounter()
@@ -99,3 +103,9 @@ def record_query(user_id: str, target_id: str) -> None:
     _query_limiter.record(f"query:{user_id}:burst")
     _query_limiter.record(f"query:{user_id}:{target_id}:hour")
     _query_limiter.record(f"query:{user_id}:day")
+
+
+def reset_rate_limits() -> None:
+    """Reset all in-memory rate limit state (test helper)."""
+    _connection_limiter.reset()
+    _query_limiter.reset()

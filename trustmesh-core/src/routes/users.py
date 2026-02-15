@@ -66,13 +66,18 @@ async def create_user(data: UserCreate, db: AsyncSession = Depends(get_db)):
     # Extract structured profile from bio
     profile = await extract_profile(data.bio, data.display_name)
 
+    # Entity defaults: org/gov entities are discoverable by default
+    is_discoverable = data.is_discoverable
+    if data.user_type in ("organization", "government"):
+        is_discoverable = True
+
     user = User(
         username=data.username,
         display_name=data.display_name,
         bio=data.bio,
         user_type=data.user_type,
         profile_data=json.dumps(profile) if profile else None,
-        is_discoverable=data.is_discoverable,
+        is_discoverable=is_discoverable,
         vault_key_salt=salt,
         encrypted_vault_key=encrypted_vault_key,
         agent_personality=data.agent_personality,
@@ -174,7 +179,10 @@ async def get_me(
 async def list_users(db: AsyncSession = Depends(get_db)):
     """List discoverable users."""
     result = await db.execute(
-        select(User).where(User.is_discoverable == True).order_by(User.display_name)  # noqa: E712
+        select(User).where(
+            User.is_discoverable == True,  # noqa: E712
+            User.is_remote == False,  # noqa: E712  Exclude ghost/remote users
+        ).order_by(User.display_name)
     )
     users = result.scalars().all()
     return [_user_response(u) for u in users]
@@ -237,6 +245,65 @@ async def get_agent_card(user_id: str, db: AsyncSession = Depends(get_db)):
         + (["quote-request", "availability-check"] if user.user_type in ("service", "organization") else []),
         skills=skills,
     )
+
+
+@router.put("/users/{user_id}")
+async def update_user_profile(user_id: str, request: Request, db: AsyncSession = Depends(get_db),
+                              auth_user_id: str = Depends(get_current_user_id)):
+    """Update user profile fields (is_discoverable, bio, display_name)."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    body = await request.json()
+    if "is_discoverable" in body:
+        user.is_discoverable = bool(body["is_discoverable"])
+    if "bio" in body and isinstance(body["bio"], str):
+        user.bio = body["bio"]
+    if "display_name" in body and isinstance(body["display_name"], str):
+        user.display_name = body["display_name"]
+
+    await db.commit()
+    await db.refresh(user)
+
+    # Fire-and-forget registry sync when discoverability changes
+    if "is_discoverable" in body:
+        import asyncio
+        from src.federation import register_with_registry, deregister_from_registry, POD_URL
+
+        result = await db.execute(select(Agent).where(Agent.owner_id == user_id))
+        agent = result.scalar_one_or_none()
+        if agent:
+            # Try to get private key for signed registration
+            private_key = None
+            from src.main import vault_keys
+            vk = vault_keys.get(user_id)
+            if vk and agent.encrypted_private_key:
+                try:
+                    private_key = decrypt(agent.encrypted_private_key, vk)
+                except Exception:
+                    pass
+
+            if user.is_discoverable:
+                asyncio.create_task(register_with_registry(
+                    agent_did=agent.did,
+                    agent_name=agent.name,
+                    pod_url=POD_URL,
+                    entity_type=user.user_type or "person",
+                    username=user.username,
+                    display_name=user.display_name or "",
+                    bio=user.bio or "",
+                    private_key_bytes=private_key,
+                ))
+            else:
+                asyncio.create_task(deregister_from_registry(
+                    agent_did=agent.did,
+                    private_key_bytes=private_key,
+                ))
+
+    return UserResponse.model_validate(user).model_dump(mode="json")
 
 
 @router.put("/users/{user_id}/context")

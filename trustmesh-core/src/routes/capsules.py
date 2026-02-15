@@ -8,8 +8,8 @@ from src.audit import log_event
 from src.auth import get_current_user_id
 from src.crypto import content_hash, decrypt_text, encrypt_text
 from src.database import get_db
-from src.embeddings import delete_capsule_embedding, upsert_capsule_embedding
-from src.models import CapsuleNetworkAccess, KnowledgeCapsule, NetworkMembership
+from src.embeddings import delete_capsule_embedding, move_capsule_embedding, upsert_capsule_embedding
+from src.models import CapsuleNetworkAccess, KnowledgeCapsule, Network, NetworkMembership, User
 from src.schemas import CapsuleCreate, CapsuleResponse, CapsuleShareRequest, CapsuleUpdate
 
 router = APIRouter(prefix="/api", tags=["capsules"])
@@ -52,10 +52,17 @@ async def _validate_network_ids(
     return unique_ids
 
 
-def _capsule_to_response(capsule: KnowledgeCapsule, content: str, network_ids: list[str]) -> CapsuleResponse:
+def _capsule_to_response(
+    capsule: KnowledgeCapsule,
+    content: str,
+    network_ids: list[str],
+    owner_display_name: str | None = None,
+    network_names: list[str] | None = None,
+) -> CapsuleResponse:
     return CapsuleResponse(
         id=capsule.id,
         owner_id=capsule.owner_id,
+        owner_display_name=owner_display_name,
         capsule_type=capsule.capsule_type,
         title=capsule.title,
         content=content,
@@ -70,9 +77,12 @@ def _capsule_to_response(capsule: KnowledgeCapsule, content: str, network_ids: l
         last_verified_at=capsule.last_verified_at,
         auto_archive_days=capsule.auto_archive_days,
         is_archived=capsule.is_archived,
+        supersedes_id=capsule.supersedes_id,
+        authority_weight=capsule.authority_weight,
         created_at=capsule.created_at,
         updated_at=capsule.updated_at,
         network_ids=network_ids,
+        network_names=network_names or [],
     )
 
 
@@ -88,6 +98,21 @@ async def create_capsule(
 
     network_ids = await _validate_network_ids(db, user_id, data.network_ids)
 
+    # Supersession validation
+    supersedes_id = None
+    authority_weight = 1.0
+    if data.supersedes_id:
+        target = await db.get(KnowledgeCapsule, data.supersedes_id)
+        if not target:
+            raise HTTPException(404, "Superseded capsule not found")
+        if target.owner_id != user_id:
+            raise HTTPException(400, "Can only supersede your own capsules")
+        supersedes_id = data.supersedes_id
+    # Authority weight based on user type
+    user = await db.get(User, user_id)
+    if user:
+        authority_weight = {"person": 1.0, "organization": 2.0, "government": 3.0}.get(user.user_type, 1.0)
+
     capsule = KnowledgeCapsule(
         owner_id=user_id,
         capsule_type=data.capsule_type,
@@ -98,10 +123,13 @@ async def create_capsule(
         emergency_accessible=data.emergency_accessible,
         can_reshare=data.can_reshare,
         category=data.category,
+        embedding_collection=data.category or "general",
         context=data.context,
         freshness=data.freshness,
         expires_at=data.expires_at,
         auto_archive_days=data.auto_archive_days,
+        supersedes_id=supersedes_id,
+        authority_weight=authority_weight,
     )
     db.add(capsule)
     await db.flush()
@@ -113,11 +141,12 @@ async def create_capsule(
     await db.commit()
     await db.refresh(capsule)
 
-    # Embed for semantic search
+    # Embed for semantic search (category-scoped)
     upsert_capsule_embedding(
         capsule.id,
         f"{data.title}: {data.content}",
         {"capsule_id": capsule.id, "owner_id": user_id, "tier": data.tier},
+        category=data.category or "general",
     )
 
     # Audit log
@@ -130,7 +159,14 @@ async def create_capsule(
     )
     await db.commit()
 
-    return _capsule_to_response(capsule, data.content, network_ids)
+    # Resolve network names
+    network_names = []
+    if network_ids:
+        net_result = await db.execute(select(Network).where(Network.id.in_(network_ids)))
+        net_map = {n.id: n.name for n in net_result.scalars().all()}
+        network_names = [net_map.get(nid, nid[:8]) for nid in network_ids]
+
+    return _capsule_to_response(capsule, data.content, network_ids, user.display_name if user else None, network_names)
 
 
 @router.get("/users/{user_id}/capsules", response_model=list[CapsuleResponse])
@@ -152,20 +188,41 @@ async def list_capsules(user_id: str, context: str | None = None,
         .order_by(KnowledgeCapsule.created_at.desc())
     )
     capsules = result.scalars().all()
+
+    # Load owner display name once (all capsules belong to same user)
+    owner = await db.get(User, user_id)
+    owner_display_name = owner.display_name if owner else None
+
+    # Build network name map for resolving network_ids -> names
+    all_network_ids = set()
+    capsule_network_map: dict[str, list[str]] = {}
+    for c in capsules:
+        na_result = await db.execute(
+            select(CapsuleNetworkAccess.network_id).where(
+                CapsuleNetworkAccess.capsule_id == c.id
+            )
+        )
+        nids = list(na_result.scalars().all())
+        capsule_network_map[c.id] = nids
+        all_network_ids.update(nids)
+
+    network_name_map: dict[str, str] = {}
+    if all_network_ids:
+        net_result = await db.execute(
+            select(Network).where(Network.id.in_(all_network_ids))
+        )
+        for net in net_result.scalars().all():
+            network_name_map[net.id] = net.name
+
     responses = []
     for c in capsules:
         try:
             content = decrypt_text(c.content_encrypted, vault_key)
         except Exception:
             content = "Content is securely encrypted. Please log in again to refresh your vault key."
-        # Get network IDs
-        na_result = await db.execute(
-            select(CapsuleNetworkAccess.network_id).where(
-                CapsuleNetworkAccess.capsule_id == c.id
-            )
-        )
-        network_ids = list(na_result.scalars().all())
-        responses.append(_capsule_to_response(c, content, network_ids))
+        network_ids = capsule_network_map.get(c.id, [])
+        network_names = [network_name_map.get(nid, nid[:8]) for nid in network_ids]
+        responses.append(_capsule_to_response(c, content, network_ids, owner_display_name, network_names))
     return responses
 
 
@@ -197,8 +254,10 @@ async def update_capsule(
         capsule.emergency_accessible = data.emergency_accessible
     if data.can_reshare is not None:
         capsule.can_reshare = data.can_reshare
+    old_category = capsule.embedding_collection or capsule.category or "general"
     if data.category is not None:
         capsule.category = data.category
+        capsule.embedding_collection = data.category or "general"
     if data.freshness is not None:
         capsule.freshness = data.freshness
     if data.expires_at is not None:
@@ -220,16 +279,17 @@ async def update_capsule(
     await db.commit()
     await db.refresh(capsule)
 
-    # Re-embed
+    # Re-embed (move between collections if category changed)
     try:
         content = decrypt_text(capsule.content_encrypted, vault_key)
     except Exception:
         content = ""
-    upsert_capsule_embedding(
-        capsule.id,
-        f"{capsule.title}: {content}",
-        {"capsule_id": capsule.id, "owner_id": capsule.owner_id, "tier": capsule.tier, "visibility": capsule.visibility},
-    )
+    new_category = capsule.embedding_collection or capsule.category or "general"
+    embed_meta = {"capsule_id": capsule.id, "owner_id": capsule.owner_id, "tier": capsule.tier, "visibility": capsule.visibility}
+    if old_category != new_category:
+        move_capsule_embedding(capsule.id, f"{capsule.title}: {content}", embed_meta, old_category, new_category)
+    else:
+        upsert_capsule_embedding(capsule.id, f"{capsule.title}: {content}", embed_meta, category=new_category)
 
     # Audit log
     await log_event(
@@ -243,7 +303,16 @@ async def update_capsule(
         select(CapsuleNetworkAccess.network_id).where(CapsuleNetworkAccess.capsule_id == capsule_id)
     )
     network_ids = list(na_result.scalars().all())
-    return _capsule_to_response(capsule, content, network_ids)
+
+    # Resolve owner name and network names
+    owner = await db.get(User, capsule.owner_id)
+    network_names = []
+    if network_ids:
+        net_result = await db.execute(select(Network).where(Network.id.in_(network_ids)))
+        net_map = {n.id: n.name for n in net_result.scalars().all()}
+        network_names = [net_map.get(nid, nid[:8]) for nid in network_ids]
+
+    return _capsule_to_response(capsule, content, network_ids, owner.display_name if owner else None, network_names)
 
 
 @router.delete("/capsules/{capsule_id}")
@@ -264,9 +333,10 @@ async def delete_capsule(capsule_id: str, db: AsyncSession = Depends(get_db),
         await db.delete(na)
 
     title = capsule.title
+    embed_cat = capsule.embedding_collection or capsule.category or "general"
     await db.delete(capsule)
     await db.commit()
-    delete_capsule_embedding(capsule_id)
+    delete_capsule_embedding(capsule_id, category=embed_cat)
 
     # Audit log
     await log_event(
@@ -328,4 +398,12 @@ async def share_capsule(
     )
     await db.commit()
 
-    return _capsule_to_response(capsule, content, network_ids)
+    # Resolve owner name and network names
+    owner = await db.get(User, capsule.owner_id)
+    network_names = []
+    if network_ids:
+        net_result = await db.execute(select(Network).where(Network.id.in_(network_ids)))
+        net_map = {n.id: n.name for n in net_result.scalars().all()}
+        network_names = [net_map.get(nid, nid[:8]) for nid in network_ids]
+
+    return _capsule_to_response(capsule, content, network_ids, owner.display_name if owner else None, network_names)

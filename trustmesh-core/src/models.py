@@ -4,7 +4,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -83,6 +83,8 @@ class Network(Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     join_policy: Mapped[str] = mapped_column(String(20), default="invite_only")  # invite_only | request_to_join | open
     context: Mapped[str] = mapped_column(String(20), default="personal")  # work | personal | both
+    pool_type: Mapped[str] = mapped_column(String(20), default="standard")  # standard | category_scoped | public_registry
+    shared_categories: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of categories
     encrypted_network_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -98,6 +100,9 @@ class Connection(Base):
     to_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     context: Mapped[str] = mapped_column(String(20), default="personal")  # work | personal | both
     status: Mapped[str] = mapped_column(String(20), default="pending")
+    relationship_type: Mapped[str | None] = mapped_column(String(30), nullable=True)  # family|friend|work|healthcare|neighbor|emergency|other
+    from_label: Mapped[str | None] = mapped_column(String(50), nullable=True)  # from_user's label for to_user
+    to_label: Mapped[str | None] = mapped_column(String(50), nullable=True)    # to_user's label for from_user
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -129,12 +134,15 @@ class KnowledgeCapsule(Base):
     emergency_accessible: Mapped[bool] = mapped_column(Boolean, default=False)
     can_reshare: Mapped[bool] = mapped_column(Boolean, default=False)
     category: Mapped[str] = mapped_column(String(50), default="")
+    embedding_collection: Mapped[str] = mapped_column(String(50), default="general")
     context: Mapped[str] = mapped_column(String(20), default="personal")  # work | personal | both
     freshness: Mapped[str] = mapped_column(String(20), default="permanent")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     auto_archive_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    supersedes_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    authority_weight: Mapped[float] = mapped_column(Float, default=1.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -206,6 +214,8 @@ class ConnectionRequest(Base):
     to_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     message: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(20), default="pending")
+    relationship_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    from_label: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

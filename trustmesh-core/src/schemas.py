@@ -17,6 +17,14 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=16, max_length=128)
     agent_personality: str | None = Field(default=None, max_length=1000)
 
+    @field_validator("user_type")
+    @classmethod
+    def validate_user_type(cls, v: str) -> str:
+        allowed = ("person", "organization", "government")
+        if v not in allowed:
+            raise ValueError(f"user_type must be one of {allowed}")
+        return v
+
     @field_validator("password")
     @classmethod
     def password_complexity(cls, v: str) -> str:
@@ -138,11 +146,23 @@ class AgentCard(BaseModel):
 
 # ── Connections ────────────────────────────────────
 
+VALID_RELATIONSHIP_TYPES = {"family", "friend", "work", "healthcare", "neighbor", "emergency", "other"}
+
+
 class ConnectionRequestCreate(BaseModel):
     from_user_id: str
     to_user_id: str
     message: str = Field(default="", max_length=500)
     context: str = "personal"  # work | personal | both
+    relationship_type: str | None = None
+    from_label: str | None = Field(default=None, max_length=50)
+
+    @field_validator("relationship_type")
+    @classmethod
+    def validate_relationship_type(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_RELATIONSHIP_TYPES:
+            raise ValueError(f"relationship_type must be one of {sorted(VALID_RELATIONSHIP_TYPES)}")
+        return v
 
 
 class ConnectionRequestResponse(BaseModel):
@@ -151,6 +171,10 @@ class ConnectionRequestResponse(BaseModel):
     to_user_id: str
     message: str
     status: str
+    relationship_type: str | None = None
+    from_label: str | None = None
+    mutual_connections: int = 0
+    mutual_networks: int = 0
     created_at: datetime
     reviewed_at: datetime | None = None
     from_user: UserPublic | None = None
@@ -161,6 +185,19 @@ class ConnectionRequestResponse(BaseModel):
 
 class ConnectionRequestUpdate(BaseModel):
     status: str = Field(pattern=r"^(accepted|declined)$")
+    to_label: str | None = Field(default=None, max_length=50)
+
+
+class ConnectionLabelUpdate(BaseModel):
+    my_label: str | None = Field(default=None, max_length=50)
+    relationship_type: str | None = None
+
+    @field_validator("relationship_type")
+    @classmethod
+    def validate_relationship_type(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_RELATIONSHIP_TYPES:
+            raise ValueError(f"relationship_type must be one of {sorted(VALID_RELATIONSHIP_TYPES)}")
+        return v
 
 
 class ConnectionResponse(BaseModel):
@@ -169,6 +206,9 @@ class ConnectionResponse(BaseModel):
     to_user_id: str
     status: str
     context: str = "personal"
+    relationship_type: str | None = None
+    my_label: str | None = None
+    peer_label: str | None = None
     created_at: datetime
     accepted_at: datetime | None = None
     peer: UserPublic | None = None
@@ -186,6 +226,8 @@ class NetworkCreate(BaseModel):
     is_public: bool = False
     join_policy: str = "invite_only"
     context: str = "personal"  # work | personal | both
+    pool_type: str = "standard"  # standard | category_scoped | public_registry
+    shared_categories: list[str] | None = None
 
 
 class NetworkResponse(BaseModel):
@@ -197,10 +239,22 @@ class NetworkResponse(BaseModel):
     is_public: bool = False
     join_policy: str = "invite_only"
     context: str = "personal"
+    pool_type: str = "standard"
+    shared_categories: list[str] | None = None
     created_at: datetime
     members: list[UserPublic] = []
 
     model_config = {"from_attributes": True}
+
+    @field_validator("shared_categories", mode="before")
+    @classmethod
+    def parse_shared_categories(cls, v):
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return v
 
 
 class NetworkDiscoveryResponse(BaseModel):
@@ -210,6 +264,8 @@ class NetworkDiscoveryResponse(BaseModel):
     network_type: str
     join_policy: str
     context: str = "personal"
+    pool_type: str = "standard"
+    shared_categories: list[str] | None = None
     member_count: int
     owner_name: str
 
@@ -256,6 +312,7 @@ class CapsuleCreate(BaseModel):
     expires_at: datetime | None = None
     auto_archive_days: int | None = None
     network_ids: list[str] = []
+    supersedes_id: str | None = None
 
     def effective_visibility(self) -> str:
         """Map old tier to new visibility if tier was provided."""
@@ -278,6 +335,7 @@ class CapsuleUpdate(BaseModel):
     expires_at: datetime | None = None
     auto_archive_days: int | None = Field(default=None, ge=1, le=365)
     network_ids: list[str] | None = None
+    supersedes_id: str | None = None
 
     def effective_visibility(self) -> str | None:
         """Map old tier to new visibility if tier was provided."""
@@ -291,6 +349,7 @@ class CapsuleUpdate(BaseModel):
 class CapsuleResponse(BaseModel):
     id: str
     owner_id: str
+    owner_display_name: str | None = None
     capsule_type: str
     title: str
     content: str  # Decrypted for owner view
@@ -305,9 +364,12 @@ class CapsuleResponse(BaseModel):
     last_verified_at: datetime
     auto_archive_days: int | None = None
     is_archived: bool
+    supersedes_id: str | None = None
+    authority_weight: float = 1.0
     created_at: datetime
     updated_at: datetime
     network_ids: list[str] = []
+    network_names: list[str] = []
 
     model_config = {"from_attributes": True}
 
@@ -431,6 +493,8 @@ class GraphNetwork(BaseModel):
     id: str
     name: str
     network_type: str
+    pool_type: str = "standard"
+    shared_categories: list[str] | None = None
     members: list[str]
 
 

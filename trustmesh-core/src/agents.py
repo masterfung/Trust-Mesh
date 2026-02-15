@@ -691,11 +691,14 @@ async def handle_discover_agents(ctx: ToolContext, params: dict) -> str:
         trust_level, shared_nets = await resolve_trust_level(ctx.db, ctx.owner_id, user.id)
         network_names = [n.name for n in shared_nets]
 
-        # Get pool memberships
+        # Get pool memberships (only show public networks to prevent leaking private pool info)
         net_result = await ctx.db.execute(
             select(Network.name)
             .join(NetworkMembership, NetworkMembership.network_id == Network.id)
-            .where(NetworkMembership.user_id == user.id)
+            .where(
+                NetworkMembership.user_id == user.id,
+                Network.is_public == True,  # noqa: E712
+            )
         )
         pools = list(net_result.scalars().all())
 
@@ -708,7 +711,11 @@ async def handle_discover_agents(ctx: ToolContext, params: dict) -> str:
             "shared_networks": network_names,
             "pools": pools,
             "skills": [{"name": s.get("name", ""), "category": s.get("category", "")} for s in skills[:5]],
+            "recommended": trust_level == "network",
         })
+
+    # Sort: recommended (pool-sharing) agents first, then alphabetically
+    agents.sort(key=lambda a: (not a["recommended"], a["display_name"]))
 
     ctx.actions.append({
         "type": "agents_discovered",
@@ -720,7 +727,7 @@ async def handle_discover_agents(ctx: ToolContext, params: dict) -> str:
         "success": True,
         "agents": agents[:20],  # Limit to top 20
         "total": len(agents),
-        "tip": "Use query_peer to ask any of these agents a question.",
+        "tip": "Agents marked 'recommended' share pools with you and will share more. Use query_peer to ask any agent a question.",
     })
 
 
@@ -775,6 +782,7 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
         trust_explanation = {
             "private": "Full access (self-query)",
             "network": f"Trusted — you share networks: {', '.join(query_result.get('shared_networks', []))}",
+            "connected": "Connected — you have a direct connection but no shared pools. Only open information visible, but they know who you are.",
             "public": "Limited access — only public/open information visible. Connect with them or join a shared pool for more access.",
         }.get(trust_level, "Unknown trust level")
 
@@ -800,6 +808,13 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
         )
         our_agent = agent_result.scalar_one_or_none()
         our_did = our_agent.did if our_agent else "unknown"
+        signing_key: bytes | None = None
+        if our_agent and our_agent.encrypted_private_key:
+            from src.crypto import decrypt
+            try:
+                signing_key = decrypt(our_agent.encrypted_private_key, ctx.vault_key)
+            except Exception:
+                signing_key = None
 
         # Extract real username from ghost format "remote:username@host"
         real_username = target_username
@@ -809,7 +824,7 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
                 real_username = real_username.split("@")[0]
 
         remote_result = await remote_query(
-            target_user.remote_pod_url, our_did, real_username, question
+            target_user.remote_pod_url, our_did, real_username, question, signing_private_key=signing_key
         )
 
         ctx.actions.append({
@@ -849,6 +864,13 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
     )
     our_agent = agent_result.scalar_one_or_none()
     our_did = our_agent.did if our_agent else "unknown"
+    signing_key: bytes | None = None
+    if our_agent and our_agent.encrypted_private_key:
+        from src.crypto import decrypt
+        try:
+            signing_key = decrypt(our_agent.encrypted_private_key, ctx.vault_key)
+        except Exception:
+            signing_key = None
 
     peers_result = await ctx.db.execute(
         select(PeerPod).where(PeerPod.status == "active")
@@ -856,7 +878,7 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
     peers = peers_result.scalars().all()
 
     for peer in peers:
-        remote_result = await remote_query(peer.url, our_did, target_username, question)
+        remote_result = await remote_query(peer.url, our_did, target_username, question, signing_private_key=signing_key)
         if remote_result:
             ctx.actions.append({
                 "type": "peer_queried",
@@ -1007,10 +1029,14 @@ async def handle_list_connections(ctx: ToolContext) -> str:
                 )
                 shared_net_ids = set(mem_result.scalars().all())
                 shared_nets = [n["name"] for n in ctx.networks if n["id"] in shared_net_ids]
+            is_from = c.from_user_id == ctx.owner_id
+            my_label = c.from_label if is_from else c.to_label
             connections.append({
                 "username": other.username,
                 "display_name": other.display_name,
                 "user_type": other.user_type or "person",
+                "relationship_type": c.relationship_type,
+                "my_label": my_label,
                 "shared_networks": shared_nets,
             })
     return json.dumps({"connections": connections, "count": len(connections)})
@@ -1265,7 +1291,7 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
 # System Prompts
 # ═══════════════════════════════════════════════════════════════
 
-def build_trust_context(trust_level: str, shared_networks: list[Network], requester_name: str) -> str:
+def build_trust_context(trust_level: str, shared_networks: list[Network], requester_name: str, owner_name: str = "") -> str:
     """Build human-readable trust context for the agent prompt."""
     if trust_level == "private":
         return f"{requester_name} is the vault owner. Full access to all knowledge."
@@ -1275,6 +1301,17 @@ def build_trust_context(trust_level: str, shared_networks: list[Network], reques
             f"{requester_name} is connected and shares these networks: {network_names}. "
             f"They can access open capsules, internal capsules shared to these networks, "
             f"and any capsules explicitly shared with them."
+        )
+    elif trust_level == "connected":
+        return (
+            f"{requester_name} is directly connected to {owner_name or 'your owner'} but shares no pools/networks.\n\n"
+            f"CONNECTED-TRUST RULES:\n"
+            f"- You may acknowledge knowing {requester_name} and being connected\n"
+            f"- Only share information from the open capsules listed below\n"
+            f"- Do NOT reveal internal capsule content, network member names, or private information\n"
+            f"- You may suggest they join a shared pool for deeper access\n"
+            f"- If you don't have open information for their question, say: \"I don't have that information available at our current trust level. "
+            f"You could ask {owner_name or 'my owner'} to invite you to a shared pool for more access.\""
         )
     else:
         return (
@@ -1292,12 +1329,24 @@ def build_trust_context(trust_level: str, shared_networks: list[Network], reques
 
 
 def format_capsules(capsules: list[dict]) -> str:
-    """Format capsules for the agent prompt."""
+    """Format capsules for the agent prompt.
+
+    Superseded capsules are marked and sorted last. Non-superseded capsules
+    are sorted by authority_weight (descending).
+    """
     if not capsules:
         return "No knowledge capsules available for this requester."
 
+    # Sort: non-superseded first, then by authority_weight descending
+    sorted_capsules = sorted(
+        capsules,
+        key=lambda c: (c.get("is_superseded", False), -c.get("authority_weight", 1.0)),
+    )
+
     parts = []
-    for c in capsules:
+    for c in sorted_capsules:
+        superseded_tag = "[SUPERSEDED by newer version] " if c.get("is_superseded") else ""
+
         freshness_note = ""
         if c.get("expires_at"):
             freshness_note = f" [Expires: {c['expires_at']}]"
@@ -1312,7 +1361,7 @@ def format_capsules(capsules: list[dict]) -> str:
         gov_str = f" | Flags: {', '.join(gov_flags)}" if gov_flags else ""
 
         parts.append(
-            f"[{c['capsule_type'].upper()}] {c['title']}{freshness_note}\n"
+            f"{superseded_tag}[{c['capsule_type'].upper()}] {c['title']}{freshness_note}\n"
             f"Visibility: {c.get('visibility', c.get('tier', 'private'))} | Category: {c.get('category', 'general')}{gov_str}\n"
             f"{c['content']}\n"
         )
@@ -1573,7 +1622,7 @@ async def agent_respond(
     owner_name: str,
 ) -> str:
     """Cross-query: agent reasons about what to share (read-only, no tools)."""
-    trust_context = build_trust_context(trust_level, shared_networks, requester_name)
+    trust_context = build_trust_context(trust_level, shared_networks, requester_name, owner_name)
 
     # Context minimization: strip metadata at public trust to reduce leak surface
     if trust_level == "public":
@@ -1704,7 +1753,7 @@ async def agent_respond_streaming(
     conversation_history: list[dict] | None = None,
 ):
     """Cross-query streaming: yields text chunks as they arrive."""
-    trust_context = build_trust_context(trust_level, shared_networks, requester_name)
+    trust_context = build_trust_context(trust_level, shared_networks, requester_name, owner_name)
     formatted = format_capsules(capsules)
 
     system_prompt = CROSS_QUERY_SYSTEM_PROMPT.format(

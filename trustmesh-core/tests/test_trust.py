@@ -265,3 +265,167 @@ async def test_archived_capsules_excluded(capsule_db):
     )
     assert "cap-open" not in ids
     assert "cap-private" in ids
+
+
+# ── Pool Membership Trust Tests (Phase 2) ──
+
+@pytest_asyncio.fixture
+async def pool_only_db(db: AsyncSession):
+    """Create users with pool membership but NO direct connection."""
+    alice = User(id="alice-id", username="alice", display_name="Alice")
+    bob = User(id="bob-id", username="bob", display_name="Bob")
+    carol = User(id="carol-id", username="carol", display_name="Carol")
+    dave = User(id="dave-id", username="dave", display_name="Dave")
+    db.add_all([alice, bob, carol, dave])
+    await db.flush()
+
+    # Pool that alice and bob share (NO connection between them)
+    pool = Network(id="pool-id", owner_id="alice-id", name="Shared Pool", network_type="custom")
+    db.add(pool)
+    await db.flush()
+
+    db.add(NetworkMembership(network_id="pool-id", user_id="alice-id", role="owner"))
+    db.add(NetworkMembership(network_id="pool-id", user_id="bob-id", role="member"))
+    # carol and dave are NOT in any pool and NOT connected to anyone
+    await db.commit()
+    return db
+
+
+@pytest.mark.asyncio
+async def test_pool_membership_alone_grants_network_trust(pool_only_db):
+    """Users sharing a pool get 'network' trust even without a direct connection."""
+    level, networks = await resolve_trust_level(pool_only_db, "alice-id", "bob-id")
+    assert level == "network"
+    assert len(networks) == 1
+    assert networks[0].name == "Shared Pool"
+
+
+@pytest.mark.asyncio
+async def test_pool_membership_bidirectional(pool_only_db):
+    """Pool trust works both ways."""
+    level, networks = await resolve_trust_level(pool_only_db, "bob-id", "alice-id")
+    assert level == "network"
+    assert len(networks) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_pool_no_connection_is_public(pool_only_db):
+    """No shared pool and no connection = public trust."""
+    level, networks = await resolve_trust_level(pool_only_db, "carol-id", "dave-id")
+    assert level == "public"
+    assert networks == []
+
+
+# ── Category-Scoped Pool Tests (Phase 2) ──
+
+@pytest_asyncio.fixture
+async def category_scoped_db(db: AsyncSession):
+    """Create users with category_scoped and standard pools, and capsules across categories."""
+    alice = User(id="alice-id", username="alice", display_name="Alice")
+    bob = User(id="bob-id", username="bob", display_name="Bob")
+    carol = User(id="carol-id", username="carol", display_name="Carol")
+    db.add_all([alice, bob, carol])
+    await db.flush()
+
+    # Category-scoped pool: only "health" capsules visible
+    health_pool = Network(
+        id="health-pool-id", owner_id="alice-id", name="Health Pool",
+        network_type="custom", pool_type="category_scoped",
+        shared_categories='["health"]',
+    )
+    # Standard pool: no category restriction
+    standard_pool = Network(
+        id="standard-pool-id", owner_id="alice-id", name="Standard Pool",
+        network_type="custom", pool_type="standard",
+    )
+    db.add_all([health_pool, standard_pool])
+    await db.flush()
+
+    # Alice and Bob in health_pool only
+    db.add(NetworkMembership(network_id="health-pool-id", user_id="alice-id", role="owner"))
+    db.add(NetworkMembership(network_id="health-pool-id", user_id="bob-id", role="member"))
+
+    # Alice and Carol in standard_pool only
+    db.add(NetworkMembership(network_id="standard-pool-id", user_id="alice-id", role="owner"))
+    db.add(NetworkMembership(network_id="standard-pool-id", user_id="carol-id", role="member"))
+
+    # Alice's capsules: health, work, and family categories
+    capsules = [
+        KnowledgeCapsule(
+            id="cap-health", owner_id="alice-id", capsule_type="note",
+            title="Health Info", content_encrypted=b"enc",
+            visibility="internal", category="health",
+        ),
+        KnowledgeCapsule(
+            id="cap-work", owner_id="alice-id", capsule_type="note",
+            title="Work Info", content_encrypted=b"enc",
+            visibility="internal", category="work",
+        ),
+        KnowledgeCapsule(
+            id="cap-family", owner_id="alice-id", capsule_type="note",
+            title="Family Info", content_encrypted=b"enc",
+            visibility="internal", category="family",
+        ),
+        KnowledgeCapsule(
+            id="cap-open2", owner_id="alice-id", capsule_type="note",
+            title="Open Info", content_encrypted=b"enc",
+            visibility="open", category="general",
+        ),
+    ]
+    db.add_all(capsules)
+    await db.flush()
+
+    # Share all internal capsules to both pools
+    for cap_id in ["cap-health", "cap-work", "cap-family"]:
+        db.add(CapsuleNetworkAccess(capsule_id=cap_id, network_id="health-pool-id"))
+        db.add(CapsuleNetworkAccess(capsule_id=cap_id, network_id="standard-pool-id"))
+
+    await db.commit()
+    return db
+
+
+@pytest.mark.asyncio
+async def test_category_scoped_pool_filters_capsules(category_scoped_db):
+    """Category-scoped pool only shows capsules matching its shared_categories."""
+    db = category_scoped_db
+    health_pool = await db.get(Network, "health-pool-id")
+
+    ids = await get_accessible_capsule_ids(
+        db, "alice-id", "network", shared_networks=[health_pool],
+        requester_id="bob-id",
+    )
+    assert "cap-health" in ids
+    assert "cap-work" not in ids
+    assert "cap-family" not in ids
+    assert "cap-open2" in ids  # open capsules always visible
+
+
+@pytest.mark.asyncio
+async def test_standard_pool_no_category_filter(category_scoped_db):
+    """Standard pool shows all internal capsules regardless of category."""
+    db = category_scoped_db
+    standard_pool = await db.get(Network, "standard-pool-id")
+
+    ids = await get_accessible_capsule_ids(
+        db, "alice-id", "network", shared_networks=[standard_pool],
+        requester_id="carol-id",
+    )
+    assert "cap-health" in ids
+    assert "cap-work" in ids
+    assert "cap-family" in ids
+    assert "cap-open2" in ids
+
+
+@pytest.mark.asyncio
+async def test_mixed_pools_standard_lifts_restriction(category_scoped_db):
+    """If any shared pool is standard, category restriction is lifted."""
+    db = category_scoped_db
+    health_pool = await db.get(Network, "health-pool-id")
+    standard_pool = await db.get(Network, "standard-pool-id")
+
+    ids = await get_accessible_capsule_ids(
+        db, "alice-id", "network", shared_networks=[health_pool, standard_pool],
+    )
+    assert "cap-health" in ids
+    assert "cap-work" in ids
+    assert "cap-family" in ids
