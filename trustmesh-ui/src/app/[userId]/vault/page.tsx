@@ -9,6 +9,7 @@ import { matchesContext } from "@/lib/context";
 
 const CAPSULE_TYPES = ["memory", "skill", "procedure", "schedule", "preference", "contact"];
 const TIERS = ["public", "network", "private"];
+const TIER_FILTER_LABELS: Record<string, string> = { public: "open", network: "shared", private: "private" };
 
 const TYPE_DESCRIPTIONS: Record<string, string> = {
   memory: "Events, conversations, observations",
@@ -141,7 +142,7 @@ export default function VaultPage() {
                 : "bg-card border border-card-border text-muted-foreground hover:text-foreground hover:border-accent/30"
             }`}
           >
-            {t}
+            {TIER_FILTER_LABELS[t] || t}
           </button>
         ))}
         {(typeFilter !== "all" || tierFilter !== "all" || search) && filtered && (
@@ -168,7 +169,14 @@ export default function VaultPage() {
                   <span className="text-sm font-medium block truncate">{c.title}</span>
                   <span className="text-[11px] text-muted-foreground truncate block">{c.content.slice(0, 80)}{c.content.length > 80 ? "..." : ""}</span>
                 </div>
-                <TrustBadge tier={c.tier} />
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <TrustBadge tier={c.tier} />
+                  {c.network_names && c.network_names.length > 0 && (
+                    <span className="text-[10px] text-muted-foreground truncate max-w-[120px]">
+                      {c.network_names.join(", ")}
+                    </span>
+                  )}
+                </div>
                 <svg
                   width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                   strokeLinecap="round" strokeLinejoin="round"
@@ -184,13 +192,8 @@ export default function VaultPage() {
                     <span>Type: {c.capsule_type}</span>
                     <span>Freshness: {c.freshness}</span>
                     {c.expires_at && <span>Expires: {new Date(c.expires_at).toLocaleDateString()}</span>}
-                    {c.network_ids.length > 0 && (
-                      <span>
-                        Networks: {c.network_ids.map((nid) => {
-                          const net = networks?.find((n) => n.id === nid);
-                          return net?.name || nid.slice(0, 8);
-                        }).join(", ")}
-                      </span>
+                    {c.network_names && c.network_names.length > 0 && (
+                      <span>Shared with: {c.network_names.join(", ")}</span>
                     )}
                   </div>
                   <div className="mt-3 flex gap-2">
@@ -314,9 +317,9 @@ function CapsuleForm({
         </div>
       </div>
 
-      {/* Trust Tier */}
+      {/* Sharing Level */}
       <div className="mb-4">
-        <label className="block text-sm font-medium text-muted-foreground mb-2">Trust Tier</label>
+        <label className="block text-sm font-medium text-muted-foreground mb-2">Sharing Level</label>
         <div className="flex gap-2">
           {TIERS.map((t) => (
             <button
@@ -331,7 +334,7 @@ function CapsuleForm({
             >
               <TrustBadge tier={t} />
               <span className="text-[10px] text-muted-foreground block mt-1.5">
-                {t === "public" ? "Anyone can see" : t === "network" ? "Network members" : "Only you"}
+                {t === "public" ? "Open to anyone" : t === "network" ? "Shared with groups" : "Only you"}
               </span>
             </button>
           ))}

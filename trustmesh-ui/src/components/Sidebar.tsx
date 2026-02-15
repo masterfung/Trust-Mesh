@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import type { User } from "@/lib/api";
+import { PodSwitcher } from "./PodSwitcher";
 
 const NAV_ITEMS = [
   {
@@ -74,6 +75,17 @@ const NAV_ITEMS = [
     ),
   },
   {
+    href: "/pod",
+    label: "Pod",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+        <line x1="12" y1="22.08" x2="12" y2="12"/>
+      </svg>
+    ),
+  },
+  {
     href: "/audit",
     label: "Audit Log",
     icon: (
@@ -124,6 +136,11 @@ export function Sidebar({ user }: { user: User }) {
             <p className="text-xs text-muted-foreground truncate">@{user.username}</p>
           </div>
         </div>
+      </div>
+
+      {/* Pod Switcher */}
+      <div className="px-3 py-2 border-b border-card-border">
+        <PodSwitcher userName={user.display_name} />
       </div>
 
       {/* Navigation */}

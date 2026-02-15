@@ -53,7 +53,31 @@ export default function ChatPage() {
 
   const [queryMode, setQueryMode] = useState<"self" | "other">("self");
   const [sessionHistory, setSessionHistory] = useState<{ role: string; content: string }[]>([]);
-  const otherUsers = users?.filter((u: User) => u.id !== userId) ?? [];
+
+  // Build combined reachable users: discoverable + connected + network members
+  const allReachableUsers = (() => {
+    const byId = new Map<string, User>();
+    // 1. Discoverable users from listUsers API
+    for (const u of users ?? []) {
+      if (u.id !== userId) byId.set(u.id, u);
+    }
+    // 2. Connected peers (may not be discoverable)
+    for (const c of connections ?? []) {
+      if (c.peer && c.peer.id !== userId && !byId.has(c.peer.id)) {
+        byId.set(c.peer.id, c.peer as User);
+      }
+    }
+    // 3. Network members (may not be discoverable)
+    for (const net of networks ?? []) {
+      for (const m of net.members ?? []) {
+        if (m.id !== userId && !byId.has(m.id)) {
+          byId.set(m.id, m as User);
+        }
+      }
+    }
+    return Array.from(byId.values());
+  })();
+  const otherUsers = allReachableUsers;
 
   // Build a set of connected user IDs and a map of user -> shared network names
   const connectedIds = new Set(
@@ -218,6 +242,13 @@ export default function ChatPage() {
     handleStreamQuery();
   };
 
+  const [hasSpeechRecognition, setHasSpeechRecognition] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const win = window as any;
+    setHasSpeechRecognition(!!(win.SpeechRecognition ?? win.webkitSpeechRecognition));
+  }, []);
+
   const toggleVoice = useCallback(() => {
     if (isListening) {
       recognitionRef.current?.stop();
@@ -251,9 +282,17 @@ export default function ChatPage() {
       setIsListening(false);
       if (finalTranscript.trim()) setQuestion(finalTranscript.trim());
     };
-    recognition.onerror = () => setIsListening(false);
-    recognition.start();
-    setIsListening(true);
+    recognition.onerror = (e: any) => {
+      console.error("Speech recognition error:", e.error, e.message);
+      setIsListening(false);
+    };
+    try {
+      recognition.start();
+      setIsListening(true);
+    } catch (err) {
+      console.error("Failed to start speech recognition:", err);
+      setIsListening(false);
+    }
   }, [isListening]);
 
   const targetUser = otherUsers.find((u: User) => u.id === targetId);
@@ -332,11 +371,11 @@ export default function ChatPage() {
               onChange={(e) => setTargetId(e.target.value)}
               className="w-full bg-background border border-card-border rounded-xl px-4 py-3 text-sm appearance-none cursor-pointer"
             >
-              <option value="">Select a person or service...</option>
+              <option value="">Select an agent to query...</option>
               {(() => {
-                const connected = otherUsers.filter((u: User) => connectedIds.has(u.id) && u.user_type !== "service");
-                const services = otherUsers.filter((u: User) => u.user_type === "service");
-                const others = otherUsers.filter((u: User) => !connectedIds.has(u.id) && u.user_type !== "service");
+                const connected = otherUsers.filter((u: User) => connectedIds.has(u.id) && u.user_type === "person");
+                const orgs = otherUsers.filter((u: User) => u.user_type === "organization" || u.user_type === "government");
+                const others = otherUsers.filter((u: User) => !connectedIds.has(u.id) && u.user_type === "person");
                 return (
                   <>
                     {connected.length > 0 && (
@@ -349,15 +388,18 @@ export default function ChatPage() {
                         ))}
                       </optgroup>
                     )}
-                    {services.length > 0 && (
-                      <optgroup label="Services">
-                        {services.map((u: User) => (
-                          <option key={u.id} value={u.id}>{u.display_name} (@{u.username})</option>
+                    {orgs.length > 0 && (
+                      <optgroup label="Organizations">
+                        {orgs.map((u: User) => (
+                          <option key={u.id} value={u.id}>
+                            {u.display_name} (@{u.username})
+                            {userNetworkMap.get(u.id)?.length ? ` — ${userNetworkMap.get(u.id)!.join(", ")}` : ""}
+                          </option>
                         ))}
                       </optgroup>
                     )}
                     {others.length > 0 && (
-                      <optgroup label="Other Users">
+                      <optgroup label="Other People">
                         {others.map((u: User) => (
                           <option key={u.id} value={u.id}>{u.display_name} (@{u.username})</option>
                         ))}
@@ -408,12 +450,15 @@ export default function ChatPage() {
               <button
                 type="button"
                 onClick={toggleVoice}
+                disabled={!hasSpeechRecognition}
                 className={`p-2 rounded-lg transition-all ${
-                  isListening
-                    ? "bg-red-500/20 text-red-400 animate-pulse"
-                    : "bg-card-hover text-muted-foreground hover:text-foreground"
+                  !hasSpeechRecognition
+                    ? "opacity-30 cursor-not-allowed text-muted-foreground"
+                    : isListening
+                      ? "bg-red-500/20 text-red-400 animate-pulse"
+                      : "bg-card-hover text-muted-foreground hover:text-foreground"
                 }`}
-                title={isListening ? "Stop listening" : "Voice input"}
+                title={!hasSpeechRecognition ? "Voice input not supported in this browser (try Chrome)" : isListening ? "Stop listening" : "Voice input"}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
@@ -514,6 +559,7 @@ function MentionInput({
   const filteredUsers = users
     .filter((u) => {
       if (u.id === currentUserId) return false; // Don't show yourself
+      if (u.username?.startsWith("remote:")) return false; // Exclude ghost users
       if (!mentionQuery) return true;
       const q = mentionQuery.toLowerCase();
       return (
@@ -522,10 +568,14 @@ function MentionInput({
       );
     })
     .sort((a, b) => {
-      // Connected users first, then by name
+      // Connected users first, then network members, then others
       const aConnected = connectedIds.has(a.id) ? 0 : 1;
       const bConnected = connectedIds.has(b.id) ? 0 : 1;
       if (aConnected !== bConnected) return aConnected - bConnected;
+      // People before orgs
+      const aIsOrg = a.user_type !== "person" ? 1 : 0;
+      const bIsOrg = b.user_type !== "person" ? 1 : 0;
+      if (aIsOrg !== bIsOrg) return aIsOrg - bIsOrg;
       return a.display_name.localeCompare(b.display_name);
     });
 
@@ -650,7 +700,7 @@ function MentionInput({
           className="absolute left-0 right-24 bottom-full mb-1 bg-card border border-card-border rounded-xl shadow-lg overflow-hidden z-50"
         >
           <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-card-border bg-card-hover/50">
-            Mention a person
+            Mention someone
           </div>
           {filteredUsers.slice(0, 6).map((u, i) => {
             const isConnected = connectedIds.has(u.id);
@@ -684,6 +734,12 @@ function MentionInput({
                       {u.display_name}
                     </span>
                     <span className="text-xs text-muted-foreground">@{u.username}</span>
+                    {u.user_type === "organization" && (
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold uppercase">Org</span>
+                    )}
+                    {u.user_type === "government" && (
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold uppercase">Gov</span>
+                    )}
                   </div>
                   <div className="flex items-center gap-1 mt-0.5">
                     {isConnected ? (

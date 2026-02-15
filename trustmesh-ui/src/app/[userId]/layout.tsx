@@ -95,13 +95,18 @@ function timeAgo(dateStr: string): string {
 
 // -- Context Switcher --
 
-const CONTEXT_OPTIONS: { value: ContextMode; label: string; icon: string }[] = [
+const PERSON_CONTEXTS: { value: ContextMode; label: string; icon: string }[] = [
   { value: "all", label: "All", icon: "◉" },
   { value: "work", label: "Work", icon: "💼" },
   { value: "personal", label: "Personal", icon: "🏠" },
 ];
 
-function ContextSwitcher({ userId, currentContext }: { userId: string; currentContext: ContextMode }) {
+const ORG_CONTEXTS: { value: ContextMode; label: string; icon: string }[] = [
+  { value: "all", label: "All", icon: "◉" },
+  { value: "work", label: "Internal", icon: "🔒" },
+];
+
+function ContextSwitcher({ userId, currentContext, userType }: { userId: string; currentContext: ContextMode; userType: string }) {
   const queryClient = useQueryClient();
   const mutation = useMutation({
     mutationFn: (ctx: ContextMode) => api.switchContext(userId, ctx),
@@ -112,9 +117,11 @@ function ContextSwitcher({ userId, currentContext }: { userId: string; currentCo
     },
   });
 
+  const options = userType === "person" ? PERSON_CONTEXTS : ORG_CONTEXTS;
+
   return (
     <div className="flex items-center gap-1 bg-card rounded-lg border border-card-border p-0.5">
-      {CONTEXT_OPTIONS.map((opt) => (
+      {options.map((opt) => (
         <button
           key={opt.value}
           onClick={() => mutation.mutate(opt.value)}
@@ -470,7 +477,7 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
             <span className="text-sm font-semibold text-foreground">{user.display_name}</span>
           </div>
           <div className="flex items-center gap-3">
-            <ContextSwitcher userId={userId} currentContext={(user.active_context as ContextMode) || "all"} />
+            <ContextSwitcher userId={userId} currentContext={(user.active_context as ContextMode) || "all"} userType={user.user_type || "person"} />
             <NotificationBell userId={userId} />
           </div>
         </header>

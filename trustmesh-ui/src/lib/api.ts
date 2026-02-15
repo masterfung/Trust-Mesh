@@ -1,7 +1,28 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const DEFAULT_API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const REGISTRY_URL = process.env.NEXT_PUBLIC_REGISTRY_URL || "http://localhost:8100";
+
+/** Get the active pod URL (from localStorage or default). */
+export function getPodUrl(): string {
+  if (typeof window !== "undefined") {
+    return localStorage.getItem("trustmesh_pod_url") || DEFAULT_API_BASE;
+  }
+  return DEFAULT_API_BASE;
+}
+
+/** Switch the active pod URL. */
+export function setPodUrl(url: string) {
+  if (typeof window !== "undefined") {
+    localStorage.setItem("trustmesh_pod_url", url);
+  }
+}
+
+/** Get the current API base (dynamic based on selected pod). */
+function getApiBase(): string {
+  return getPodUrl();
+}
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${getApiBase()}${path}`, {
     ...init,
     credentials: "include", // Send httpOnly cookies with every request
     headers: { "Content-Type": "application/json", ...init?.headers },
@@ -74,6 +95,9 @@ export interface Connection {
   to_user_id: string;
   status: string;
   context?: string;
+  relationship_type?: string;
+  my_label?: string;
+  peer_label?: string;
   created_at: string;
   accepted_at?: string;
   peer?: User;
@@ -85,6 +109,10 @@ export interface ConnectionRequest {
   to_user_id: string;
   message: string;
   status: string;
+  relationship_type?: string;
+  from_label?: string;
+  mutual_connections?: number;
+  mutual_networks?: number;
   created_at: string;
   reviewed_at?: string;
   from_user?: User;
@@ -100,6 +128,8 @@ export interface Network {
   is_public?: boolean;
   join_policy?: string;
   context?: ContextMode;
+  pool_type?: string;
+  shared_categories?: string[] | null;
   created_at: string;
   members: User[];
 }
@@ -111,6 +141,8 @@ export interface NetworkDiscovery {
   network_type: string;
   join_policy: string;
   context?: ContextMode;
+  pool_type?: string;
+  shared_categories?: string[] | null;
   member_count: number;
   owner_name: string;
 }
@@ -118,6 +150,7 @@ export interface NetworkDiscovery {
 export interface Capsule {
   id: string;
   owner_id: string;
+  owner_display_name?: string;
   capsule_type: string;
   title: string;
   content: string;
@@ -131,6 +164,7 @@ export interface Capsule {
   created_at: string;
   updated_at: string;
   network_ids: string[];
+  network_names?: string[];
 }
 
 export interface CitadelResult {
@@ -251,10 +285,32 @@ export interface RegistryAgent {
   is_discoverable?: boolean;
 }
 
+export interface RegistryPodAgent {
+  name: string;
+  did: string;
+  pod_url: string;
+  entity_type: string;
+  capabilities: string[];
+  username: string;
+  display_name: string;
+  bio: string;
+  registered_at: string;
+}
+
+export interface PeerPod {
+  id: string;
+  name: string;
+  url: string;
+  status: string;
+  agent_count: number;
+  last_seen_at: string | null;
+  created_at: string | null;
+}
+
 export interface GraphData {
   nodes: { id: string; username: string; display_name: string; bio: string; user_type?: string; profile_data?: ProfileData | null }[];
   edges: { source: string; target: string; type: string }[];
-  networks: { id: string; name: string; network_type: string; members: string[] }[];
+  networks: { id: string; name: string; network_type: string; pool_type?: string; shared_categories?: string[] | null; members: string[] }[];
 }
 
 export interface AuditLogEntry {
@@ -361,22 +417,38 @@ export const api = {
     apiFetch<Connection[]>(`/api/users/${userId}/connections`),
   listConnectionRequests: (userId: string) =>
     apiFetch<ConnectionRequest[]>(`/api/users/${userId}/connection-requests`),
-  sendConnectionRequest: (fromUserId: string, toUserId: string, message: string) =>
+  sendConnectionRequest: (fromUserId: string, toUserId: string, message: string, relationshipType?: string, fromLabel?: string) =>
     apiFetch<ConnectionRequest>("/api/connections/request", {
       method: "POST",
-      body: JSON.stringify({ from_user_id: fromUserId, to_user_id: toUserId, message }),
+      body: JSON.stringify({
+        from_user_id: fromUserId,
+        to_user_id: toUserId,
+        message,
+        relationship_type: relationshipType || undefined,
+        from_label: fromLabel || undefined,
+      }),
     }),
-  updateConnectionRequest: (requestId: string, status: "accepted" | "declined") =>
+  updateConnectionRequest: (requestId: string, status: "accepted" | "declined", toLabel?: string) =>
     apiFetch<ConnectionRequest>(`/api/connection-requests/${requestId}`, {
       method: "PUT",
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, to_label: toLabel || undefined }),
+    }),
+  deleteConnection: (connectionId: string) =>
+    apiFetch<{ status: string }>(`/api/connections/${connectionId}`, { method: "DELETE" }),
+  updateConnectionLabel: (connectionId: string, myLabel?: string, relationshipType?: string) =>
+    apiFetch<Connection>(`/api/connections/${connectionId}/label`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        my_label: myLabel ?? undefined,
+        relationship_type: relationshipType ?? undefined,
+      }),
     }),
 
   // Networks
   listNetworks: (userId: string) =>
     apiFetch<Network[]>(`/api/users/${userId}/networks`),
   getNetwork: (id: string) => apiFetch<Network>(`/api/networks/${id}`),
-  createNetwork: (data: { name: string; description: string; network_type: string; owner_id: string; is_public?: boolean; join_policy?: string }) =>
+  createNetwork: (data: { name: string; description: string; network_type: string; owner_id: string; is_public?: boolean; join_policy?: string; pool_type?: string; shared_categories?: string[] }) =>
     apiFetch<Network>("/api/networks", { method: "POST", body: JSON.stringify(data) }),
   addNetworkMember: (networkId: string, userId: string) =>
     apiFetch<Network>(`/api/networks/${networkId}/members`, {
@@ -403,10 +475,10 @@ export const api = {
     }),
 
   // Invites
-  sendInvite: (networkId: string, email: string, message?: string) =>
+  sendInvite: (networkId: string, email?: string, message?: string) =>
     apiFetch<NetworkInvite>(`/api/networks/${networkId}/invite`, {
       method: "POST",
-      body: JSON.stringify({ email, message: message || "" }),
+      body: JSON.stringify({ email: email || "", message: message || "" }),
     }),
   listInvites: (networkId: string) =>
     apiFetch<NetworkInviteListItem[]>(`/api/networks/${networkId}/invites`),
@@ -465,7 +537,7 @@ export const api = {
 
   // Streaming query
   queryStream: (fromUserId: string, toUserId: string, question: string, conversationHistory?: { role: string; content: string }[]) => {
-    return fetch(`${API_BASE}/api/query/stream`, {
+    return fetch(`${getApiBase()}/api/query/stream`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -480,7 +552,7 @@ export const api = {
 
   // Intake onboarding
   intakeStep: (userId: string, message: string, conversationHistory: { role: string; content: string }[]) => {
-    return fetch(`${API_BASE}/api/users/${userId}/intake`, {
+    return fetch(`${getApiBase()}/api/users/${userId}/intake`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -534,7 +606,31 @@ export const api = {
   getPodInfo: () =>
     apiFetch<{ pod_name: string; pod_url: string; protocol: string; agent_count: number; agents: { owner_username: string; did: string }[] }>("/api/pod"),
 
+  // Pod peers
+  listPeers: () =>
+    apiFetch<{ pod_name: string; pod_url: string; peers: PeerPod[] }>("/api/pod/peers"),
+  addPeer: (url: string) =>
+    apiFetch<{ status: string; peer: PeerPod }>("/api/pod/peers", { method: "POST", body: JSON.stringify({ url }) }),
+  removePeer: (peerId: string) =>
+    apiFetch<{ status: string }>(`/api/pod/peers/${peerId}`, { method: "DELETE" }),
+  pingPeer: (peerId: string) =>
+    apiFetch<{ status: string; info: Record<string, unknown> | null }>(`/api/pod/peers/${peerId}/ping`, { method: "POST" }),
+
+  // User profile update
+  updateUser: (userId: string, data: { is_discoverable?: boolean; bio?: string; display_name?: string }) =>
+    apiFetch<User>(`/api/users/${userId}`, { method: "PUT", body: JSON.stringify(data) }),
+
   // Demo
   demoWarmup: () =>
     apiFetch<{ status: string; keys_loaded: number }>("/api/demo/warmup", { method: "POST" }),
+
+  // Public Registry (separate service on port 8100)
+  registryListAll: () =>
+    fetch(`${REGISTRY_URL}/api/agents`, { headers: { "Content-Type": "application/json" } })
+      .then(r => r.json()) as Promise<{ agents: RegistryPodAgent[]; count: number }>,
+  registrySearchAll: (q: string) =>
+    fetch(`${REGISTRY_URL}/api/search?q=${encodeURIComponent(q)}`, { headers: { "Content-Type": "application/json" } })
+      .then(r => r.json()) as Promise<{ query: string; results: RegistryPodAgent[]; count: number }>,
+  registryHealth: () =>
+    fetch(`${REGISTRY_URL}/api/health`).then(r => r.json()) as Promise<{ status: string; agent_count: number }>,
 };

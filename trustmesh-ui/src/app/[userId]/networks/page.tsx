@@ -14,6 +14,13 @@ const NETWORK_TYPE_CONFIG: Record<string, { icon: string; color: string }> = {
   custom: { icon: "\u{2699}\u{FE0F}", color: "bg-orange-500/15 text-orange-400 border-orange-500/25" },
 };
 
+const POOL_TYPES = ["standard", "category_scoped", "public_registry"];
+const POOL_TYPE_CONFIG: Record<string, { label: string; color: string; description: string }> = {
+  standard: { label: "Standard", color: "bg-zinc-500/15 text-zinc-400 border-zinc-500/25", description: "All shared capsules visible to members" },
+  category_scoped: { label: "Category Scoped", color: "bg-purple-500/15 text-purple-400 border-purple-500/25", description: "Only capsules in selected categories are visible" },
+  public_registry: { label: "Public Registry", color: "bg-cyan-500/15 text-cyan-400 border-cyan-500/25", description: "Open discovery — anyone can find this pool" },
+};
+
 const JOIN_POLICIES = ["open", "request_to_join", "invite_only"];
 
 export default function NetworksPage() {
@@ -94,7 +101,14 @@ export default function NetworksPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <span className="text-sm font-semibold block">{n.name}</span>
-                    <span className="text-[11px] text-muted-foreground capitalize">{n.network_type}</span>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="text-[11px] text-muted-foreground capitalize">{n.network_type}</span>
+                      {n.pool_type && n.pool_type !== "standard" && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${POOL_TYPE_CONFIG[n.pool_type]?.color || POOL_TYPE_CONFIG.standard.color}`}>
+                          {POOL_TYPE_CONFIG[n.pool_type]?.label || n.pool_type}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <span className="text-xs text-muted-foreground bg-card-hover px-2.5 py-1 rounded-lg">{n.members.length} members</span>
                   <svg
@@ -110,23 +124,30 @@ export default function NetworksPage() {
                     {n.description && (
                       <p className="text-xs text-muted-foreground mt-3 mb-3">{n.description}</p>
                     )}
-                    <h3 className="text-xs font-semibold text-muted-foreground mt-3 mb-2">Members</h3>
+                    {/* Pool info */}
+                    {n.pool_type && n.pool_type !== "standard" && (
+                      <div className="mt-3 mb-3 flex items-center gap-2 flex-wrap">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${POOL_TYPE_CONFIG[n.pool_type]?.color || ""}`}>
+                          {POOL_TYPE_CONFIG[n.pool_type]?.label}
+                        </span>
+                        {n.shared_categories?.map((cat) => (
+                          <span key={cat} className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                            {cat}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <h3 className="text-xs font-semibold text-muted-foreground mt-3 mb-2">Members ({n.members.length})</h3>
                     <div className="space-y-1.5">
                       {n.members.map((m: User) => (
-                        <div key={m.id} className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-card-hover transition-colors">
-                          <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-xl bg-accent flex items-center justify-center text-accent-fg text-xs font-bold">
-                              {m.display_name[0]}
-                            </div>
-                            <div>
-                              <span className="text-sm font-medium">{m.display_name}</span>
-                              <span className="text-[11px] text-muted-foreground block">@{m.username}</span>
-                            </div>
-                          </div>
-                          {m.id === n.owner_id && (
-                            <span className="text-[10px] text-accent bg-accent/10 px-2 py-0.5 rounded-full font-medium">Owner</span>
-                          )}
-                        </div>
+                        <NetworkMemberRow
+                          key={m.id}
+                          member={m}
+                          isOwner={m.id === n.owner_id}
+                          canRemove={n.owner_id === userId && m.id !== userId}
+                          networkId={n.id}
+                          onRemoved={() => queryClient.invalidateQueries({ queryKey: ["networks", userId] })}
+                        />
                       ))}
                     </div>
 
@@ -140,7 +161,7 @@ export default function NetworksPage() {
                     )}
 
                     {n.owner_id === userId && (
-                      <InviteByEmail networkId={n.id} />
+                      <ShareInviteLink networkId={n.id} />
                     )}
 
                     {n.owner_id === userId && (
@@ -179,6 +200,17 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
   const [description, setDescription] = useState("");
   const [isPublic, setIsPublic] = useState(false);
   const [joinPolicy, setJoinPolicy] = useState("request_to_join");
+  const [poolType, setPoolType] = useState("standard");
+  const [categoryInput, setCategoryInput] = useState("");
+  const [categories, setCategories] = useState<string[]>([]);
+
+  const addCategory = () => {
+    const cat = categoryInput.trim().toLowerCase();
+    if (cat && !categories.includes(cat)) {
+      setCategories([...categories, cat]);
+      setCategoryInput("");
+    }
+  };
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -187,8 +219,10 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
         description,
         network_type: type,
         owner_id: userId,
-        is_public: isPublic,
-        join_policy: joinPolicy,
+        is_public: isPublic || poolType === "public_registry",
+        join_policy: poolType === "public_registry" ? "open" : joinPolicy,
+        pool_type: poolType,
+        shared_categories: poolType === "category_scoped" ? categories : undefined,
       }),
     onSuccess: onDone,
   });
@@ -244,7 +278,75 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
         />
       </div>
 
+      {/* Pool Type Selection */}
+      <div className="mb-4">
+        <label className="block text-sm font-medium text-muted-foreground mb-2">Pool Type</label>
+        <div className="grid grid-cols-3 gap-2">
+          {POOL_TYPES.map((pt) => {
+            const config = POOL_TYPE_CONFIG[pt];
+            return (
+              <button
+                key={pt}
+                type="button"
+                onClick={() => setPoolType(pt)}
+                className={`p-2.5 rounded-xl text-center transition-all ${
+                  poolType === pt
+                    ? "bg-accent/10 border-2 border-accent"
+                    : "bg-card-hover border-2 border-transparent hover:border-card-border"
+                }`}
+              >
+                <span className="text-xs font-medium block">{config.label}</span>
+                <span className="text-[10px] text-muted-foreground block mt-0.5">{config.description}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Category input (only for category_scoped) */}
+      {poolType === "category_scoped" && (
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-muted-foreground mb-1.5">Shared Categories</label>
+          <div className="flex gap-2 mb-2">
+            <input
+              type="text"
+              value={categoryInput}
+              onChange={(e) => setCategoryInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCategory(); } }}
+              placeholder="e.g., health, work, family"
+              className="flex-1 bg-background border border-card-border rounded-xl px-3 py-2 text-sm placeholder:text-muted-foreground"
+            />
+            <button
+              type="button"
+              onClick={addCategory}
+              disabled={!categoryInput.trim()}
+              className="px-3 py-2 bg-purple-500/15 text-purple-400 border border-purple-500/25 rounded-xl text-xs font-medium hover:bg-purple-500/25 transition-colors disabled:opacity-40"
+            >
+              + Add
+            </button>
+          </div>
+          {categories.length > 0 && (
+            <div className="flex gap-1.5 flex-wrap">
+              {categories.map((cat) => (
+                <span key={cat} className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 font-medium">
+                  {cat}
+                  <button
+                    type="button"
+                    onClick={() => setCategories(categories.filter((c) => c !== cat))}
+                    className="hover:text-purple-300 ml-0.5"
+                  >
+                    x
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <p className="text-[11px] text-muted-foreground mt-1.5">Members will only see capsules in these categories.</p>
+        </div>
+      )}
+
       {/* Public / Discoverable */}
+      {poolType !== "public_registry" && (
       <div className="mb-4">
         <label className="flex items-center gap-3 cursor-pointer group">
           <div className="relative">
@@ -263,9 +365,10 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
           </div>
         </label>
       </div>
+      )}
 
-      {/* Join Policy (only visible when public) */}
-      {isPublic && (
+      {/* Join Policy (only visible when public, not for public_registry which is always open) */}
+      {isPublic && poolType !== "public_registry" && (
         <div className="mb-4">
           <label className="block text-sm font-medium text-muted-foreground mb-1.5">Join Policy</label>
           <div className="grid grid-cols-3 gap-2">
@@ -299,6 +402,70 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
       >
         {mutation.isPending ? "Creating..." : "Create Network"}
       </button>
+    </div>
+  );
+}
+
+/* ── Network Member Row ── */
+
+function NetworkMemberRow({
+  member,
+  isOwner,
+  canRemove,
+  networkId,
+  onRemoved,
+}: {
+  member: User;
+  isOwner: boolean;
+  canRemove: boolean;
+  networkId: string;
+  onRemoved: () => void;
+}) {
+  const removeMutation = useMutation({
+    mutationFn: () => api.removeNetworkMember(networkId, member.id),
+    onSuccess: onRemoved,
+  });
+
+  return (
+    <div className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-card-hover transition-colors group">
+      <div className="flex items-center gap-3">
+        <div className="w-8 h-8 rounded-xl bg-accent flex items-center justify-center text-accent-fg text-xs font-bold">
+          {member.display_name[0]}
+        </div>
+        <div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm font-medium">{member.display_name}</span>
+            {member.user_type === "organization" && (
+              <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold uppercase">Org</span>
+            )}
+            {member.user_type === "government" && (
+              <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold uppercase">Gov</span>
+            )}
+          </div>
+          <span className="text-[11px] text-muted-foreground block">@{member.username}</span>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        {isOwner && (
+          <span className="text-[10px] text-accent bg-accent/10 px-2 py-0.5 rounded-full font-medium">Owner</span>
+        )}
+        {canRemove && (
+          <button
+            onClick={() => {
+              if (confirm(`Remove ${member.display_name} from this network?`)) {
+                removeMutation.mutate();
+              }
+            }}
+            disabled={removeMutation.isPending}
+            className="opacity-0 group-hover:opacity-100 p-1 rounded-lg text-muted-foreground hover:text-danger hover:bg-danger/10 transition-all"
+            title="Remove member"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -347,13 +514,13 @@ function AddMemberToNetwork({
   );
 }
 
-/* ── Invite by Email ── */
+/* ── Share Invite Link ── */
 
-function InviteByEmail({ networkId }: { networkId: string }) {
+function ShareInviteLink({ networkId }: { networkId: string }) {
   const [showInvite, setShowInvite] = useState(false);
-  const [email, setEmail] = useState("");
-  const [message, setMessage] = useState("");
-  const [sent, setSent] = useState<string | null>(null);
+  const [generatedLink, setGeneratedLink] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const { data: invites } = useQuery({
@@ -362,20 +529,30 @@ function InviteByEmail({ networkId }: { networkId: string }) {
     enabled: showInvite,
   });
 
-  const sendMutation = useMutation({
-    mutationFn: () => api.sendInvite(networkId, email, message),
+  const generateMutation = useMutation({
+    mutationFn: () => api.sendInvite(networkId, "", ""),
     onSuccess: (data) => {
-      setSent(data.status === "sent" ? "Email sent!" : "Invite link created (email not configured).");
-      setEmail("");
-      setMessage("");
+      const link = `${window.location.origin}/invite/${data.token}`;
+      setGeneratedLink(link);
       queryClient.invalidateQueries({ queryKey: ["invites", networkId] });
-      setTimeout(() => setSent(null), 4000);
     },
     onError: (err: Error) => {
-      setSent(`Error: ${err.message}`);
-      setTimeout(() => setSent(null), 4000);
+      setStatus(`Error: ${err.message}`);
+      setTimeout(() => setStatus(null), 4000);
     },
   });
+
+  const copyLink = async () => {
+    if (!generatedLink) return;
+    try {
+      await navigator.clipboard.writeText(generatedLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setStatus("Could not copy — select and copy manually");
+      setTimeout(() => setStatus(null), 3000);
+    }
+  };
 
   return (
     <div className="mt-4 pt-4 border-t border-card-border">
@@ -384,51 +561,72 @@ function InviteByEmail({ networkId }: { networkId: string }) {
         className="flex items-center gap-2 text-xs font-semibold text-accent hover:text-accent-hover transition-colors"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-          <polyline points="22,6 12,13 2,6"/>
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
         </svg>
-        {showInvite ? "Hide Invite" : "Invite by Email"}
+        {showInvite ? "Hide Invite" : "Share Invite Link"}
       </button>
 
       {showInvite && (
         <div className="mt-3 space-y-3">
-          <div className="flex gap-2">
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="friend@example.com"
-              className="flex-1 bg-background border border-card-border rounded-xl px-3 py-2 text-sm placeholder:text-muted-foreground"
-            />
-            <button
-              onClick={() => sendMutation.mutate()}
-              disabled={!email.trim() || sendMutation.isPending}
-              className="px-4 py-2 bg-accent hover:bg-accent-hover text-accent-fg text-xs font-semibold rounded-xl disabled:opacity-40 transition-all"
-            >
-              {sendMutation.isPending ? "Sending..." : "Send Invite"}
-            </button>
-          </div>
-          <input
-            type="text"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder="Personal message (optional)"
-            className="w-full bg-background border border-card-border rounded-xl px-3 py-2 text-sm placeholder:text-muted-foreground"
-          />
+          <p className="text-xs text-muted-foreground">Generate a one-time invite link to share via text, email, or any messaging app.</p>
 
-          {sent && (
-            <p className={`text-xs font-medium ${sent.startsWith("Error") ? "text-red-400" : "text-green-400"}`}>
-              {sent}
+          {!generatedLink ? (
+            <button
+              onClick={() => generateMutation.mutate()}
+              disabled={generateMutation.isPending}
+              className="w-full px-4 py-2.5 bg-accent hover:bg-accent-hover text-accent-fg text-sm font-semibold rounded-xl disabled:opacity-40 transition-all hover:shadow-lg hover:shadow-accent/20"
+            >
+              {generateMutation.isPending ? "Generating..." : "Generate Invite Link"}
+            </button>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  readOnly
+                  value={generatedLink}
+                  className="flex-1 bg-background border border-card-border rounded-xl px-3 py-2 text-xs text-muted-foreground font-mono select-all"
+                  onClick={(e) => (e.target as HTMLInputElement).select()}
+                />
+                <button
+                  onClick={copyLink}
+                  className={`px-4 py-2 text-xs font-semibold rounded-xl transition-all ${
+                    copied
+                      ? "bg-success/15 text-success border border-success/20"
+                      : "bg-accent hover:bg-accent-hover text-accent-fg"
+                  }`}
+                >
+                  {copied ? "Copied!" : "Copy"}
+                </button>
+              </div>
+              <button
+                onClick={() => {
+                  setGeneratedLink(null);
+                  generateMutation.mutate();
+                }}
+                disabled={generateMutation.isPending}
+                className="text-xs text-muted-foreground hover:text-accent transition-colors"
+              >
+                Generate another link
+              </button>
+            </div>
+          )}
+
+          {status && (
+            <p className={`text-xs font-medium ${status.startsWith("Error") ? "text-red-400" : "text-green-400"}`}>
+              {status}
             </p>
           )}
 
           {invites && invites.length > 0 && (
             <div className="mt-2">
-              <h4 className="text-[11px] font-semibold text-muted-foreground mb-1.5">Sent Invites</h4>
+              <h4 className="text-[11px] font-semibold text-muted-foreground mb-1.5">Sent Invites ({invites.length})</h4>
               <div className="space-y-1">
                 {invites.map((inv: NetworkInviteListItem) => (
                   <div key={inv.id} className="flex items-center justify-between text-xs py-1.5 px-2 rounded-lg bg-card-hover/50">
-                    <span className="text-muted-foreground truncate">{inv.email}</span>
+                    <span className="text-muted-foreground truncate">
+                      {inv.email || "Link invite"}
+                    </span>
                     <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
                       inv.status === "accepted"
                         ? "bg-green-500/15 text-green-400"

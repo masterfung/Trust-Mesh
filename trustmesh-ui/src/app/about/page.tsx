@@ -2,27 +2,44 @@
 
 import Link from "next/link";
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 /* ═══════════════ TOOLTIP ═══════════════ */
 
 function Tip({ label, desc }: { label: string; desc: string }) {
   const [show, setShow] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+
+  const handleEnter = () => {
+    if (ref.current) {
+      const rect = ref.current.getBoundingClientRect();
+      setPos({
+        top: rect.top - 8,
+        left: Math.max(8, Math.min(rect.left + rect.width / 2, window.innerWidth - 152)),
+      });
+    }
+    setShow(true);
+  };
+
   return (
     <span
+      ref={ref}
       className="relative inline-block cursor-help"
-      onMouseEnter={() => setShow(true)}
+      onMouseEnter={handleEnter}
       onMouseLeave={() => setShow(false)}
-      onFocus={() => setShow(true)}
+      onFocus={handleEnter}
       onBlur={() => setShow(false)}
       tabIndex={0}
     >
       <span className="border-b border-dashed border-current/40">{label}</span>
       {show && (
-        <span className="absolute z-[9999] bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 px-3.5 py-3 rounded-xl bg-[#1a1a2e] border border-card-border shadow-2xl text-left pointer-events-none">
+        <span
+          className="fixed z-[9999] w-72 px-3.5 py-3 rounded-xl bg-[#1a1a2e] border border-card-border shadow-2xl text-left pointer-events-none"
+          style={{ top: pos.top, left: pos.left, transform: "translate(-50%, -100%)" }}
+        >
           <span className="block text-xs font-semibold text-foreground mb-1">{label}</span>
           <span className="block text-[11px] text-foreground/70 leading-relaxed">{desc}</span>
-          <span className="absolute top-full left-1/2 -translate-x-1/2 -mt-px w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-card-border" />
         </span>
       )}
     </span>
@@ -157,7 +174,7 @@ const coverage: Record<string, Set<string>> = {
   "OpenCLAAS": new Set(["Agent Discovery"]),
   "TrustMesh": new Set(capabilities),
 };
-const fwNames = ["A2A", "MCP", "UCP", "x402", "DID", "UCAN", "OpenCLAAS", "TrustMesh"];
+const fwNames = ["TrustMesh", "A2A", "MCP", "UCP", "x402", "DID", "UCAN", "OpenCLAAS"];
 
 /* ═══════════════ SVG DIAGRAMS ═══════════════ */
 
@@ -477,8 +494,8 @@ function EnvironmentTab() {
       <div className="rounded-2xl border border-card-border bg-card p-6">
         <h3 className="text-lg font-semibold mb-1">Capability Coverage</h3>
         <p className="text-sm text-foreground/60 mb-4">What each framework covers — and what only TrustMesh provides end-to-end. <span className="text-foreground/40">Hover a name to learn more.</span></p>
-        <div className="overflow-x-auto overflow-y-visible">
-          <table className="w-full text-sm border-collapse">
+        <div className="-mx-6 px-6 overflow-x-auto pb-2">
+          <table className="w-full text-sm border-collapse min-w-[640px]">
             <thead>
               <tr>
                 <th className="text-left py-2.5 px-2 border-b border-card-border text-foreground/60 font-medium">Capability</th>
@@ -723,34 +740,27 @@ export default function AboutPage() {
     <div className="min-h-screen bg-background">
       {/* Header */}
       <div className="border-b border-card-border">
-        <div className="max-w-5xl mx-auto px-6 py-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2 mb-2">
-                <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#09090b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                  </svg>
-                </div>
-                <h1 className="text-2xl font-bold">
-                  Why <span className="text-gradient">TrustMesh</span>?
-                </h1>
-              </div>
-              <p className="text-sm text-foreground/60 max-w-xl">
-                AI agents are learning to talk. But they haven&apos;t learned to trust.
-              </p>
-            </div>
-            <Link
-              href="/"
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-card border border-card-border rounded-xl hover:border-accent/30 hover:bg-card-hover transition-all text-muted-foreground hover:text-foreground"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="19" y1="12" x2="5" y2="12" />
-                <polyline points="12 19 5 12 12 5" />
-              </svg>
-              Back
-            </Link>
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
+          {/* Nav row */}
+          <div className="flex items-center justify-end gap-1.5 sm:gap-2 mb-3 sm:mb-4">
+            <a href="http://localhost:8100" target="_blank" rel="noopener noreferrer" className="text-xs text-foreground/50 hover:text-foreground transition-colors px-2 sm:px-3 py-1.5 rounded-lg hover:bg-card-hover">Registry</a>
+            <Link href="/doc" className="text-xs text-foreground/50 hover:text-foreground transition-colors px-2 sm:px-3 py-1.5 rounded-lg hover:bg-card-hover">Docs</Link>
+            <Link href="/" className="text-xs bg-accent text-accent-fg px-3 py-1.5 rounded-lg font-medium hover:bg-accent-hover transition-colors">Demo</Link>
           </div>
+          {/* Title */}
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center shrink-0">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#09090b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              </svg>
+            </div>
+            <h1 className="text-xl sm:text-2xl font-bold">
+              Why <span className="text-gradient">TrustMesh</span>?
+            </h1>
+          </div>
+          <p className="text-sm text-foreground/60 max-w-xl">
+            AI agents are learning to talk. But they haven&apos;t learned to trust.
+          </p>
         </div>
       </div>
 
@@ -782,6 +792,16 @@ export default function AboutPage() {
         {tab === "environment" && <EnvironmentTab />}
         {tab === "problem" && <ProblemTab />}
         {tab === "solution" && <SolutionTab />}
+
+        {/* Footer */}
+        <div className="mt-16 pt-8 border-t border-card-border text-center space-y-1">
+          <p className="text-xs text-foreground/40">
+            Built with love by <a href="https://github.com/masterfung" target="_blank" rel="noopener noreferrer" className="text-accent hover:text-accent-hover transition-colors">@masterfung</a>
+          </p>
+          <p className="text-xs text-foreground/40">
+            TrustMesh v0.1 &middot; <Link href="/doc" className="text-accent hover:text-accent-hover transition-colors">Docs</Link> &middot; <Link href="/" className="text-accent hover:text-accent-hover transition-colors">Demo</Link>
+          </p>
+        </div>
       </div>
     </div>
   );

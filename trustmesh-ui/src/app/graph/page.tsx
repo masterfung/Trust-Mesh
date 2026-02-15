@@ -77,7 +77,7 @@ export default function GraphPage() {
   });
 
   // Auto-select first person user when users load
-  const personUsers = users?.filter((u) => u.user_type !== "service") ?? [];
+  const personUsers = users?.filter((u) => u.user_type === "person") ?? [];
   const effectiveUserId = selectedUserId || personUsers[0]?.id || "";
 
   const { data: fullGraph, isLoading: fullLoading } = useQuery({
