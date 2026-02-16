@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import stat
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,147 @@ from src.cli import (
 )
 
 runner = CliRunner()
+
+
+# ── Shared mock helpers ──
+
+ME_RESPONSE = {
+    "id": "user-1",
+    "username": "peter",
+    "display_name": "Peter Johnson",
+    "user_type": "person",
+    "active_context": "all",
+    "is_discoverable": False,
+}
+
+CAPSULES_RESPONSE = [
+    {
+        "id": "aaaa1111-0000-0000-0000-000000000001",
+        "title": "Music Interests",
+        "capsule_type": "preference",
+        "visibility": "internal",
+        "category": "personal",
+        "context": "personal",
+        "content": "Plays guitar — classic rock.",
+        "owner_display_name": "Peter Johnson",
+        "network_names": ["Music Lovers"],
+        "is_archived": False,
+    },
+    {
+        "id": "aaaa1111-0000-0000-0000-000000000002",
+        "title": "Medical Info",
+        "capsule_type": "preference",
+        "visibility": "internal",
+        "category": "health",
+        "context": "personal",
+        "content": "Blood type O+. No known allergies.",
+        "owner_display_name": "Peter Johnson",
+        "network_names": ["The Johnsons"],
+        "is_archived": False,
+    },
+    {
+        "id": "bbbb2222-0000-0000-0000-000000000003",
+        "title": "Old Notes",
+        "capsule_type": "memory",
+        "visibility": "private",
+        "category": "general",
+        "context": "personal",
+        "content": "Archived stuff.",
+        "owner_display_name": "Peter Johnson",
+        "network_names": [],
+        "is_archived": True,
+    },
+]
+
+CONNECTIONS_RESPONSE = [
+    {
+        "id": "conn-1111-0000-0000-000000000001",
+        "from_user_id": "user-1",
+        "to_user_id": "user-2",
+        "status": "accepted",
+        "context": "personal",
+        "relationship_type": "family",
+        "my_label": "wife",
+        "peer_label": "husband",
+        "accepted_at": "2026-02-15T10:00:00",
+        "peer": {"display_name": "Molly Johnson", "username": "molly", "user_type": "person"},
+    },
+    {
+        "id": "conn-2222-0000-0000-000000000002",
+        "from_user_id": "user-1",
+        "to_user_id": "user-3",
+        "status": "accepted",
+        "context": "work",
+        "relationship_type": "work",
+        "my_label": "colleague",
+        "peer_label": "colleague",
+        "accepted_at": "2026-02-15T11:00:00",
+        "peer": {"display_name": "Kyle Rivera", "username": "kyle", "user_type": "person"},
+    },
+]
+
+NETWORKS_RESPONSE = [
+    {
+        "id": "net-1111-0000-0000-000000000001",
+        "name": "The Johnsons",
+        "network_type": "family",
+        "pool_type": "standard",
+        "members": [
+            {"display_name": "Peter Johnson", "username": "peter", "user_type": "person"},
+            {"display_name": "Molly Johnson", "username": "molly", "user_type": "person"},
+        ],
+    },
+    {
+        "id": "net-2222-0000-0000-000000000002",
+        "name": "TechCorp PM Team",
+        "network_type": "team",
+        "pool_type": "category_scoped",
+        "members": [
+            {"display_name": "Molly Johnson", "username": "molly", "user_type": "person"},
+            {"display_name": "Kyle Rivera", "username": "kyle", "user_type": "person"},
+        ],
+    },
+]
+
+PENDING_REQUESTS = [
+    {
+        "id": "req-1111-0000-0000-000000000001",
+        "from_user_id": "user-5",
+        "to_user_id": "user-1",
+        "message": "Let's connect!",
+        "status": "pending",
+        "relationship_type": "friend",
+        "from_label": "buddy",
+        "mutual_connections": 2,
+        "mutual_networks": 1,
+        "created_at": "2026-02-15T10:00:00",
+        "from_user": {"display_name": "Amy Torres", "username": "amy", "user_type": "person"},
+    },
+]
+
+
+def _mock_api_responses(mock_client, responses: dict):
+    """Configure mock_client to return different responses based on the API path.
+
+    responses: dict mapping (method, path_prefix) to response data.
+    Falls back to a generic 200/{} for unmatched paths.
+    """
+    def side_effect(method, path, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        for (m, prefix), data in responses.items():
+            if method.upper() == m.upper() and path.startswith(prefix):
+                if isinstance(data, int):
+                    # Status code only
+                    resp.status_code = data
+                    resp.json.return_value = {"detail": "error"}
+                    resp.text = '{"detail": "error"}'
+                else:
+                    resp.json.return_value = data
+                return resp
+        resp.json.return_value = {}
+        return resp
+    mock_client.request.side_effect = side_effect
 
 
 # ── Session management tests ──
@@ -135,7 +277,7 @@ class TestLoginCommand:
                 result = runner.invoke(app, ["login", "--pod", "http://localhost:8000", "--user", "peter"])
 
         assert result.exit_code == 1
-        assert "Invalid username or password" in result.output
+        assert "Wrong username or password" in result.output
         assert not session_file.exists()
 
     def test_login_connection_error(self, tmp_path, monkeypatch):
@@ -296,6 +438,9 @@ class TestSubcommandHelp:
         ["connections", "list", "--help"],
         ["connections", "request", "--help"],
         ["connections", "accept", "--help"],
+        ["connections", "pending", "--help"],
+        ["connections", "label", "--help"],
+        ["connections", "remove", "--help"],
         ["networks", "list", "--help"],
         ["networks", "members", "--help"],
         ["networks", "create", "--help"],
@@ -586,21 +731,17 @@ class TestPodDiscoverCommand:
             "remote_count": 2,
             "agents": [
                 {
-                    "display_name": "Peter Johnson",
-                    "username": "peter",
+                    "owner_display_name": "Peter Johnson",
+                    "owner_username": "peter",
                     "user_type": "person",
                     "_pod": {"name": "Peter's Pod", "is_local": True},
                 },
                 {
-                    "display_name": "Sarah Johnson",
-                    "username": "sarah",
-                    "user_type": "person",
+                    "name": "Sarah Johnson's Knowledge",
                     "_pod": {"name": "Sarah's Pod", "is_local": False},
                 },
                 {
-                    "display_name": "TechCorp",
-                    "username": "techcorp",
-                    "user_type": "organization",
+                    "name": "TechCorp's Knowledge",
                     "_pod": {"name": "TechCorp Pod", "is_local": False},
                 },
             ],
@@ -638,3 +779,967 @@ class TestPodDiscoverCommand:
         assert result.exit_code == 0
         assert "Total agents" in result.output
         assert "0" in result.output
+
+
+# ── Whoami command tests ──
+
+
+class TestWhoamiData:
+    """Test whoami command with actual data."""
+
+    def test_whoami_shows_user_info(self, tmp_path, monkeypatch):
+        """Whoami displays user name, pod, type, and ID."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/agent/card"): {
+                "did": "did:key:z6Mktest", "public_key_b64": "abc123",
+                "capabilities": ["knowledge-query"],
+            },
+            ("GET", "/api/users/user-1/networks"): NETWORKS_RESPONSE,
+            ("GET", "/api/users/user-1/connections"): CONNECTIONS_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["whoami"])
+        assert result.exit_code == 0
+        assert "Peter Johnson" in result.output
+        assert "@peter" in result.output
+        assert "person" in result.output
+        assert "z6Mktest" in result.output  # Rich may convert :key: to emoji
+        assert "The Johnsons" in result.output
+        assert "Molly Johnson" in result.output
+
+    def test_whoami_no_connections(self, tmp_path, monkeypatch):
+        """Whoami with no connections skips connections section."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/agent/card"): {"did": "did:key:z6Mktest", "capabilities": []},
+            ("GET", "/api/users/user-1/networks"): [],
+            ("GET", "/api/users/user-1/connections"): [],
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["whoami"])
+        assert result.exit_code == 0
+        assert "Peter Johnson" in result.output
+        assert "Connections" not in result.output
+
+
+# ── Vault command tests ──
+
+
+class TestVaultList:
+    """Test the `trustmesh vault list` command."""
+
+    def test_vault_list_shows_capsules(self, tmp_path, monkeypatch):
+        """Vault list displays capsules with all columns."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/capsules"): CAPSULES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "list"])
+        assert result.exit_code == 0
+        assert "3 capsules" in result.output
+        assert "Music" in result.output  # Rich may truncate long titles
+        assert "Medical" in result.output
+        assert "Lovers" in result.output  # network_names shown (Rich may wrap)
+        normalized = " ".join(result.output.split())
+        assert "Shared" in normalized  # adaptive column present (Rich wraps header)
+        assert "Archived" in normalized  # adaptive column present (one is archived)
+
+    def test_vault_list_type_filter(self, tmp_path, monkeypatch):
+        """Vault list filters by capsule type."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/capsules"): CAPSULES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "list", "--type", "memory"])
+        assert result.exit_code == 0
+        assert "1 capsules" in result.output
+        assert "Old Notes" in result.output
+        assert "Music Interests" not in result.output
+
+    def test_vault_list_visibility_filter(self, tmp_path, monkeypatch):
+        """Vault list filters by visibility."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/capsules"): CAPSULES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "list", "--vis", "private"])
+        assert result.exit_code == 0
+        assert "1 capsules" in result.output
+        assert "Old Notes" in result.output
+
+    def test_vault_list_empty(self, tmp_path, monkeypatch):
+        """Vault list shows message when empty."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/capsules"): [],
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "list"])
+        assert result.exit_code == 0
+        assert "No capsules found" in result.output
+
+    def test_vault_list_no_network_column_when_empty(self, tmp_path, monkeypatch):
+        """Vault list hides Shared With column when no capsules have network_names."""
+        capsules = [
+            {**CAPSULES_RESPONSE[0], "network_names": [], "is_archived": False},
+        ]
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/capsules"): capsules,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "list"])
+        assert result.exit_code == 0
+        assert "Shared With" not in result.output
+        assert "Archived" not in result.output
+
+
+class TestVaultGet:
+    """Test the `trustmesh vault get` command."""
+
+    def test_vault_get_by_prefix(self, tmp_path, monkeypatch):
+        """Vault get finds capsule by ID prefix."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/capsules"): CAPSULES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "get", "aaaa1111-0000-0000-0000-000000000001"])
+        assert result.exit_code == 0
+        assert "Music Interests" in result.output
+        assert "Owner: Peter Johnson" in result.output
+        assert "Shared with: Music Lovers" in result.output
+        assert "Plays guitar" in result.output
+        assert "Sharing Level: Shared" in result.output
+
+    def test_vault_get_short_prefix(self, tmp_path, monkeypatch):
+        """Vault get works with short prefix."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/capsules"): CAPSULES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "get", "bbbb"])
+        assert result.exit_code == 0
+        assert "Old Notes" in result.output
+        assert "ARCHIVED" in result.output
+
+    def test_vault_get_not_found(self, tmp_path, monkeypatch):
+        """Vault get with no match shows error."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/capsules"): CAPSULES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "get", "zzzz"])
+        assert result.exit_code == 1
+        assert "No capsule matching" in result.output
+
+    def test_vault_get_ambiguous(self, tmp_path, monkeypatch):
+        """Vault get with ambiguous prefix shows error."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/capsules"): CAPSULES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            # "aaaa" matches two capsules
+            result = runner.invoke(app, ["vault", "get", "aaaa"])
+        assert result.exit_code == 1
+        assert "Ambiguous" in result.output
+
+
+class TestVaultAdd:
+    """Test the `trustmesh vault add` command."""
+
+    def test_vault_add_success(self, tmp_path, monkeypatch):
+        """Vault add creates a capsule."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("POST", "/api/users/user-1/capsules"): {
+                "id": "new-cap-1234",
+                "title": "New Capsule",
+            },
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "add", "--title", "New Capsule", "--content", "test content"])
+        assert result.exit_code == 0
+        assert "Created capsule: New Capsule" in result.output
+
+    def test_vault_add_with_options(self, tmp_path, monkeypatch):
+        """Vault add passes all options."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("POST", "/api/users/user-1/capsules"): {"id": "new-cap-5678", "title": "My Skill"},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, [
+                "vault", "add",
+                "--title", "My Skill",
+                "--content", "I can do Python",
+                "--type", "skill",
+                "--vis", "open",
+                "--category", "work",
+            ])
+        assert result.exit_code == 0
+        assert "Created capsule: My Skill" in result.output
+
+
+class TestVaultArchive:
+    """Test the `trustmesh vault archive` command."""
+
+    def test_vault_archive_success(self, tmp_path, monkeypatch):
+        """Vault archive marks capsule as archived."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/capsules"): CAPSULES_RESPONSE,
+            ("PUT", "/api/capsules/"): {"status": "ok"},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "archive", "aaaa1111-0000-0000-0000-000000000001"])
+        assert result.exit_code == 0
+        assert "Archived capsule aaaa1111" in result.output
+
+    def test_vault_archive_not_found(self, tmp_path, monkeypatch):
+        """Vault archive with no match shows error."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/capsules"): CAPSULES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "archive", "zzzz"])
+        assert result.exit_code == 1
+        assert "No capsule matching" in result.output
+
+
+class TestVaultSearch:
+    """Test the `trustmesh vault search` command."""
+
+    def test_vault_search_shows_response(self, tmp_path, monkeypatch):
+        """Vault search displays agent response."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("POST", "/api/query"): {
+                "response": "Peter plays guitar and likes classic rock.",
+                "agent_actions": ["search_vault"],
+            },
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "search", "music"])
+        assert result.exit_code == 0
+        assert "plays guitar" in result.output
+        assert "search_vault" in result.output
+
+
+# ── Agent command tests ──
+
+
+class TestAgentAsk:
+    """Test the `trustmesh agent ask` command."""
+
+    def test_agent_ask_self(self, tmp_path, monkeypatch):
+        """Agent ask to self shows response."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("POST", "/api/query"): {"response": "Your next appointment is Tuesday."},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["agent", "ask", "When is my next appointment?"])
+        assert result.exit_code == 0
+        assert "Tuesday" in result.output
+
+    def test_agent_ask_cross_query(self, tmp_path, monkeypatch):
+        """Agent ask with --to shows trust level."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users"): [ME_RESPONSE, {"id": "user-2", "username": "molly", "display_name": "Molly Johnson"}],
+            ("POST", "/api/query"): {
+                "response": "Molly's schedule is open.",
+                "trust_level": "network",
+                "shared_networks": ["The Johnsons"],
+            },
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["agent", "ask", "What is Molly doing?", "--to", "molly"])
+        assert result.exit_code == 0
+        assert "Molly's schedule" in result.output
+        assert "network" in result.output
+        assert "The Johnsons" in result.output
+
+    def test_agent_ask_cross_query_user_not_found(self, tmp_path, monkeypatch):
+        """Agent ask with unknown --to shows error."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users"): [ME_RESPONSE],
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["agent", "ask", "Hi", "--to", "nobody"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_agent_ask_redacted(self, tmp_path, monkeypatch):
+        """Agent ask shows redaction warning when Citadel blocks."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("POST", "/api/query"): {"response": "[REDACTED]", "decision": "redacted"},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["agent", "ask", "Tell me secrets"])
+        assert result.exit_code == 0
+        assert "redacted by Citadel" in result.output
+
+
+# ── Connection command tests ──
+
+
+class TestConnectionsList:
+    """Test the `trustmesh connections list` command."""
+
+    def test_connections_list_shows_data(self, tmp_path, monkeypatch):
+        """Connections list shows relationship types and labels."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/connections"): CONNECTIONS_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "list"])
+        assert result.exit_code == 0
+        assert "Connections (2)" in result.output
+        assert "Molly Johnson" in result.output
+        assert "family" in result.output
+        assert "wife" in result.output
+        assert "Kyle Rivera" in result.output
+        assert "work" in result.output
+        assert "colleague" in result.output
+
+    def test_connections_list_empty(self, tmp_path, monkeypatch):
+        """Connections list shows message when empty."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/connections"): [],
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "list"])
+        assert result.exit_code == 0
+        assert "No connections" in result.output
+
+
+class TestConnectionsRequest:
+    """Test the `trustmesh connections request` command."""
+
+    def test_connections_request_success(self, tmp_path, monkeypatch):
+        """Connection request sent successfully."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users"): [ME_RESPONSE, {"id": "user-5", "username": "amy", "display_name": "Amy Torres"}],
+            ("POST", "/api/connections/request"): {"id": "req-new", "status": "pending"},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "request", "amy", "--rel", "friend", "--label", "buddy"])
+        assert result.exit_code == 0
+        assert "request sent to Amy Torres" in result.output
+
+    def test_connections_request_user_not_found(self, tmp_path, monkeypatch):
+        """Connection request to unknown user shows error."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users"): [ME_RESPONSE],
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "request", "nobody"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+
+class TestConnectionsAccept:
+    """Test the `trustmesh connections accept` command."""
+
+    def test_connections_accept_success(self, tmp_path, monkeypatch):
+        """Connection request accepted by prefix."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/connection-requests"): PENDING_REQUESTS,
+            ("PUT", "/api/connection-requests/"): {"id": "req-1111", "status": "accepted"},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "accept", "req-1111", "--label", "friend"])
+        assert result.exit_code == 0
+        assert "Accepted connection from Amy Torres" in result.output
+
+    def test_connections_accept_not_found(self, tmp_path, monkeypatch):
+        """Connection accept with no matching request shows error."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/connection-requests"): PENDING_REQUESTS,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "accept", "nonexistent"])
+        assert result.exit_code == 1
+        assert "No pending request" in result.output
+
+
+class TestConnectionsPending:
+    """Test the `trustmesh connections pending` command."""
+
+    def test_connections_pending_shows_requests(self, tmp_path, monkeypatch):
+        """Pending requests display with mutual context."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/connection-requests"): PENDING_REQUESTS,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "pending"])
+        assert result.exit_code == 0
+        assert "Pending Requests (1)" in result.output
+        assert "Amy Torres" in result.output
+        assert "friend" in result.output
+        assert "buddy" in result.output
+        assert "connect" in result.output  # Rich may wrap across lines
+        # Rich wraps mutual context across table cell lines; check parts individually
+        assert "2 conn" in result.output or "2\xa0conn" in result.output or "conn" in result.output
+        assert "net" in result.output
+
+    def test_connections_pending_empty(self, tmp_path, monkeypatch):
+        """No pending requests shows message."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/connection-requests"): [],
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "pending"])
+        assert result.exit_code == 0
+        assert "No pending" in result.output
+
+
+class TestConnectionsLabel:
+    """Test the `trustmesh connections label` command."""
+
+    def test_connections_label_update(self, tmp_path, monkeypatch):
+        """Label update works with prefix matching."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/connections"): CONNECTIONS_RESPONSE,
+            ("PATCH", "/api/connections/"): {
+                "peer": {"display_name": "Molly Johnson"},
+            },
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "label", "conn-1111", "--label", "spouse", "--rel", "family"])
+        assert result.exit_code == 0
+        assert "Updated connection with Molly Johnson" in result.output
+
+    def test_connections_label_no_args(self, tmp_path, monkeypatch):
+        """Label without --label or --rel shows error."""
+        _mock_session(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["connections", "label", "conn-1111"])
+        assert result.exit_code == 1
+        assert "Provide --label" in result.output
+
+    def test_connections_label_not_found(self, tmp_path, monkeypatch):
+        """Label with no matching connection shows error."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/connections"): CONNECTIONS_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "label", "zzzz", "--label", "test"])
+        assert result.exit_code == 1
+        assert "No connection matching" in result.output
+
+
+class TestConnectionsRemove:
+    """Test the `trustmesh connections remove` command."""
+
+    def test_connections_remove_confirmed(self, tmp_path, monkeypatch):
+        """Connection remove with confirmation calls DELETE."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/connections"): CONNECTIONS_RESPONSE,
+            ("DELETE", "/api/connections/"): {"status": "disconnected"},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "remove", "conn-1111"], input="y\n")
+        assert result.exit_code == 0
+        assert "Disconnected from Molly Johnson" in result.output
+
+    def test_connections_remove_cancelled(self, tmp_path, monkeypatch):
+        """Connection remove cancelled by user."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/connections"): CONNECTIONS_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "remove", "conn-1111"], input="n\n")
+        assert "Cancelled" in result.output
+
+    def test_connections_remove_not_found(self, tmp_path, monkeypatch):
+        """Connection remove with no match shows error."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/connections"): CONNECTIONS_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["connections", "remove", "zzzz"])
+        assert result.exit_code == 1
+        assert "No connection matching" in result.output
+
+
+# ── Network command tests ──
+
+
+class TestNetworksList:
+    """Test the `trustmesh networks list` command."""
+
+    def test_networks_list_shows_data(self, tmp_path, monkeypatch):
+        """Networks list shows all columns."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/networks"): NETWORKS_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["networks", "list"])
+        assert result.exit_code == 0
+        assert "Networks (2)" in result.output
+        assert "The Johnsons" in result.output
+        assert "family" in result.output
+        assert "standard" in result.output
+        assert "TechCorp PM Team" in result.output
+        assert "category_scoped" in result.output
+
+    def test_networks_list_empty(self, tmp_path, monkeypatch):
+        """Networks list shows message when empty."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/networks"): [],
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["networks", "list"])
+        assert result.exit_code == 0
+        assert "No networks" in result.output
+
+
+class TestNetworksMembers:
+    """Test the `trustmesh networks members` command."""
+
+    def test_networks_members_shows_data(self, tmp_path, monkeypatch):
+        """Networks members shows member table."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/networks"): NETWORKS_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["networks", "members", "net-1111"])
+        assert result.exit_code == 0
+        assert "The Johnsons" in result.output
+        assert "Peter Johnson" in result.output
+        assert "Molly Johnson" in result.output
+
+    def test_networks_members_not_found(self, tmp_path, monkeypatch):
+        """Networks members with no match shows error."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("GET", "/api/users/user-1/networks"): NETWORKS_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["networks", "members", "zzzz"])
+        assert result.exit_code == 1
+        assert "No network matching" in result.output
+
+
+class TestNetworksCreate:
+    """Test the `trustmesh networks create` command."""
+
+    def test_networks_create_success(self, tmp_path, monkeypatch):
+        """Networks create returns confirmation."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): ME_RESPONSE,
+            ("POST", "/api/networks"): {"id": "net-new-1234", "name": "Book Club"},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["networks", "create", "--name", "Book Club", "--type", "friends"])
+        assert result.exit_code == 0
+        assert "Created network: Book Club" in result.output
+
+
+# ── Pod golive tests ──
+
+
+class TestPodGoLive:
+    """Test the `trustmesh pod golive` command."""
+
+    def test_golive_go_live(self, tmp_path, monkeypatch):
+        """Go live when currently private."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): {**ME_RESPONSE, "is_discoverable": False},
+            ("PUT", "/api/users/user-1"): {"status": "ok"},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["pod", "golive"], input="y\n")
+        assert result.exit_code == 0
+        assert "now live" in result.output
+
+    def test_golive_go_private(self, tmp_path, monkeypatch):
+        """Go private when currently live."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): {**ME_RESPONSE, "is_discoverable": True},
+            ("PUT", "/api/users/user-1"): {"status": "ok"},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["pod", "golive"], input="y\n")
+        assert result.exit_code == 0
+        assert "removed from the public registry" in result.output
+
+    def test_golive_cancelled(self, tmp_path, monkeypatch):
+        """Go live cancelled by user."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        _mock_api_responses(mock_client, {
+            ("GET", "/api/auth/me"): {**ME_RESPONSE, "is_discoverable": False},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["pod", "golive"], input="n\n")
+        assert "Cancelled" in result.output
+
+
+# ── Registry command tests ──
+
+
+class TestRegistryList:
+    """Test the `trustmesh registry list` command."""
+
+    def test_registry_list_shows_agents(self, tmp_path, monkeypatch):
+        """Registry list displays agents with correct fields."""
+        # No session required for registry
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "agents": [
+                {
+                    "display_name": "Peter Johnson",
+                    "username": "peter",
+                    "entity_type": "person",
+                    "pod_url": "http://localhost:8002",
+                    "capabilities": ["Wiring", "Guitar", "Panel Upgrades"],
+                },
+                {
+                    "display_name": "Riverside Hospital",
+                    "username": "riverside_hospital",
+                    "entity_type": "organization",
+                    "pod_url": "http://localhost:8012",
+                    "capabilities": ["Emergency", "Surgery", "Internal Medicine", "Pediatrics"],
+                },
+            ],
+        }
+        with patch("src.cli.httpx.get", return_value=mock_resp):
+            result = runner.invoke(app, ["registry", "list"])
+        assert result.exit_code == 0
+        assert "2 agents" in result.output
+        assert "Peter Johnson" in result.output
+        assert "peter" in result.output
+        assert "person" in result.output
+        assert "Wiring" in result.output  # Rich may wrap capabilities text
+        assert "Guitar" in result.output
+        assert "Riverside" in result.output
+        assert "organization" in result.output
+        assert "Emergency" in result.output
+
+    def test_registry_list_empty(self, tmp_path, monkeypatch):
+        """Registry list shows message when no agents."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"agents": []}
+        with patch("src.cli.httpx.get", return_value=mock_resp):
+            result = runner.invoke(app, ["registry", "list"])
+        assert result.exit_code == 0
+        assert "No agents registered" in result.output
+
+    def test_registry_list_unreachable(self, tmp_path, monkeypatch):
+        """Registry list shows error when unreachable."""
+        with patch("src.cli.httpx.get", side_effect=Exception("Connection refused")):
+            result = runner.invoke(app, ["registry", "list"])
+        assert result.exit_code == 1
+        assert "Cannot reach registry" in result.output
+
+
+class TestRegistrySearch:
+    """Test the `trustmesh registry search` command."""
+
+    def test_registry_search_results(self, tmp_path, monkeypatch):
+        """Registry search displays matching agents."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "results": [
+                {
+                    "display_name": "Dr. Sarah Lee",
+                    "username": "dr_lee",
+                    "entity_type": "person",
+                    "pod_url": "http://localhost:8005",
+                },
+            ],
+        }
+        with patch("src.cli.httpx.get", return_value=mock_resp):
+            result = runner.invoke(app, ["registry", "search", "doctor"])
+        assert result.exit_code == 0
+        assert "doctor" in result.output
+        assert "Dr. Sarah Lee" in result.output
+        assert "dr_lee" in result.output
+
+    def test_registry_search_no_results(self, tmp_path, monkeypatch):
+        """Registry search shows message when no matches."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"results": []}
+        with patch("src.cli.httpx.get", return_value=mock_resp):
+            result = runner.invoke(app, ["registry", "search", "zzzznothing"])
+        assert result.exit_code == 0
+        assert "No results" in result.output
+
+
+# ── API error handling tests ──
+
+
+class TestApiErrorHandling:
+    """Test _api error handling across commands."""
+
+    def test_session_expired_401(self, tmp_path, monkeypatch):
+        """401 response clears session and exits."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_client.request.return_value = mock_resp
+
+        session_file = tmp_path / ".trustmesh" / "session"
+        assert session_file.exists()  # session was saved by _mock_session
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "list"])
+        assert result.exit_code == 1
+        assert "Session expired" in result.output
+        assert not session_file.exists()  # session cleared
+
+    def test_api_error_shows_detail(self, tmp_path, monkeypatch):
+        """API errors show status code and detail."""
+        _mock_session(tmp_path, monkeypatch)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_resp.json.return_value = {"detail": "Access denied"}
+        mock_resp.text = '{"detail": "Access denied"}'
+        mock_client.request.return_value = mock_resp
+
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["vault", "list"])
+        assert result.exit_code == 1
+        assert "403" in result.output
+        assert "Access denied" in result.output
+
+
+# ── Login edge case tests ──
+
+
+class TestLoginEdgeCases:
+    """Test login edge cases."""
+
+    def test_login_rate_limited(self, tmp_path, monkeypatch):
+        """429 response shows rate limit message."""
+        config_dir = tmp_path / ".trustmesh"
+        session_file = config_dir / "session"
+        monkeypatch.setattr("src.cli.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("src.cli.SESSION_FILE", session_file)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 429
+
+        with patch("src.cli.httpx.post", return_value=mock_resp):
+            with patch("src.cli.getpass.getpass", return_value="test"):
+                result = runner.invoke(app, ["login", "--pod", "http://localhost:8000", "--user", "peter"])
+        assert result.exit_code == 1
+        assert "Too many login attempts" in result.output
+
+    def test_login_no_session_token(self, tmp_path, monkeypatch):
+        """Success response without session cookie shows error."""
+        config_dir = tmp_path / ".trustmesh"
+        session_file = config_dir / "session"
+        monkeypatch.setattr("src.cli.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("src.cli.SESSION_FILE", session_file)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.cookies = {}  # No session cookie
+        mock_resp.json.return_value = {"id": "user-1", "username": "peter", "display_name": "Peter"}
+
+        with patch("src.cli.httpx.post", return_value=mock_resp):
+            with patch("src.cli.getpass.getpass", return_value="test"):
+                result = runner.invoke(app, ["login", "--pod", "http://localhost:8000", "--user", "peter"])
+        assert result.exit_code == 1
+        assert "No session token" in result.output

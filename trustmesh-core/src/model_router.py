@@ -302,9 +302,13 @@ class ModelRouter:
         use_tee = sensitivity == "sensitive" and self._tee_client is not None
 
         if use_tee:
+            tee_model = self._tee_models.get(model, self._tee_models.get("default", model))
+            log.warning(f"[ROUTING-STREAM] sensitivity={sensitivity} → TEE ({self._tee_provider}, model={tee_model})")
             async for chunk in self._tee_stream(messages, system, model, max_tokens):
                 yield chunk
         else:
+            anthro_model = ANTHROPIC_MODELS.get(model, model)
+            log.warning(f"[ROUTING-STREAM] sensitivity={sensitivity} → Anthropic ({anthro_model})")
             async for chunk in self._anthropic_stream(messages, system, model, max_tokens):
                 yield chunk
 
@@ -368,7 +372,11 @@ class ModelRouter:
         use_tee = sensitivity == "sensitive" and self._tee_client is not None
 
         if use_tee:
+            tee_model = self._tee_models.get(model, self._tee_models.get("default", model))
+            log.warning(f"[ROUTING] sensitivity={sensitivity} → TEE ({self._tee_provider}, model={tee_model})")
             return await self._tee_complete(messages, system, model, tools, max_tokens)
+        anthro_model = ANTHROPIC_MODELS.get(model, model)
+        log.warning(f"[ROUTING] sensitivity={sensitivity} → Anthropic ({anthro_model})")
         return await self._anthropic_complete(messages, system, model, tools, max_tokens)
 
     async def _anthropic_complete(

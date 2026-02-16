@@ -128,6 +128,35 @@ def _api(method: str, path: str, session: dict | None = None, **kwargs) -> dict:
 
 # ── Auth commands ──
 
+def _find_multipod_for_username(username: str) -> str | None:
+    """If multi-pod is running, find the pod port for a given username."""
+    for port in range(8001, 8017):
+        try:
+            resp = httpx.get(f"http://localhost:{port}/api/pod", timeout=1.0)
+            if resp.status_code == 200:
+                agents = resp.json().get("agents", [])
+                if agents and agents[0].get("owner_username") == username:
+                    return f"http://localhost:{port}"
+        except Exception:
+            continue
+    return None
+
+
+def _any_multipod_running() -> list[tuple[int, str]]:
+    """Quick scan: return list of (port, pod_name) for running multi-pods."""
+    found = []
+    for port in range(8001, 8017):
+        try:
+            resp = httpx.get(f"http://localhost:{port}/health", timeout=0.5)
+            if resp.status_code == 200:
+                found.append(port)
+                if len(found) >= 2:
+                    return found  # At least 2 = definitely multi-pod
+        except Exception:
+            continue
+    return found
+
+
 @app.command()
 def login(
     pod: str = typer.Option("http://localhost:8000", "--pod", "-p", help="Pod URL"),
@@ -136,39 +165,85 @@ def login(
     """Authenticate with a TrustMesh pod."""
     if not user:
         user = typer.prompt("Username")
-    password = getpass.getpass("Password: ")
 
     pod_url = pod.rstrip("/")
-    try:
-        resp = httpx.post(
-            f"{pod_url}/api/auth/login",
-            json={"username": user, "password": password},
-            timeout=15.0,
-        )
-    except httpx.ConnectError:
-        console.print(f"[red]Cannot connect to {pod_url}[/red]")
-        raise typer.Exit(1)
+    max_attempts = 3
 
-    if resp.status_code == 401:
-        console.print("[red]Invalid username or password[/red]")
-        raise typer.Exit(1)
-    if resp.status_code == 429:
-        console.print("[red]Too many login attempts. Try again later.[/red]")
-        raise typer.Exit(1)
-    if resp.status_code >= 400:
-        console.print(f"[red]Login failed: {resp.text}[/red]")
-        raise typer.Exit(1)
+    for attempt in range(1, max_attempts + 1):
+        password = getpass.getpass("Password: ")
 
-    # Extract session token from Set-Cookie header
-    token = resp.cookies.get("trustmesh_session")
-    if not token:
-        console.print("[red]No session token received[/red]")
-        raise typer.Exit(1)
+        try:
+            resp = httpx.post(
+                f"{pod_url}/api/auth/login",
+                json={"username": user, "password": password},
+                timeout=15.0,
+            )
+        except (httpx.ConnectError, httpx.TimeoutException):
+            # If default port failed, check if multi-pod is running
+            if pod_url == "http://localhost:8000" and _any_multipod_running():
+                console.print(f"[yellow]No pod on :8000, but multi-pod federation is running.[/yellow]")
+                # Try to find the right pod for this username
+                match = _find_multipod_for_username(user)
+                if match:
+                    console.print(f"[green]Found your pod: {match}[/green]")
+                    pod_url = match
+                    # Retry with the correct pod
+                    try:
+                        resp = httpx.post(
+                            f"{pod_url}/api/auth/login",
+                            json={"username": user, "password": password},
+                            timeout=15.0,
+                        )
+                    except (httpx.ConnectError, httpx.TimeoutException):
+                        console.print(f"[red]Cannot connect to {pod_url}[/red]")
+                        raise typer.Exit(1)
+                else:
+                    console.print(f"[dim]Could not find a pod for @{user}. Run 'trustmesh pods' to see available pods.[/dim]")
+                    raise typer.Exit(1)
+            else:
+                console.print(f"[red]Cannot connect to {pod_url} — is the backend running?[/red]")
+                console.print("[dim]Start with: ./dev.sh start  OR  ./multi-pod.sh demo[/dim]")
+                raise typer.Exit(1)
 
-    user_data = resp.json()
-    _save_session(pod_url, token, user_data["id"], user_data["username"])
-    console.print(f"[green]Logged in as {user_data['display_name']} ({user_data['username']})[/green]")
-    console.print(f"  Pod: {pod_url}")
+        if resp.status_code == 429:
+            console.print("[red]Too many login attempts. Try again later.[/red]")
+            raise typer.Exit(1)
+
+        if resp.status_code == 401:
+            remaining = max_attempts - attempt
+            if remaining > 0:
+                console.print(f"[yellow]Wrong username or password. {remaining} attempt{'s' if remaining > 1 else ''} remaining.[/yellow]")
+                # Let them fix the username too
+                retry_user = typer.prompt("Username", default=user)
+                if retry_user != user:
+                    user = retry_user
+                continue
+            else:
+                console.print("[red]Login failed after 3 attempts.[/red]")
+                raise typer.Exit(1)
+
+        if resp.status_code >= 400:
+            console.print(f"[red]Login failed: {resp.text}[/red]")
+            raise typer.Exit(1)
+
+        # Success — extract session token
+        token = resp.cookies.get("trustmesh_session")
+        if not token:
+            console.print("[red]No session token received[/red]")
+            raise typer.Exit(1)
+
+        user_data = resp.json()
+        _save_session(pod_url, token, user_data["id"], user_data["username"])
+        console.print(f"\n[green]Logged in as {user_data['display_name']} ({user_data['username']})[/green]")
+        console.print(f"  Pod: {pod_url}")
+        console.print()
+        console.print("[dim]Quick start:[/dim]")
+        console.print("  [cyan]trustmesh whoami[/cyan]          — your identity & networks")
+        console.print("  [cyan]trustmesh vault list[/cyan]      — browse your capsules")
+        console.print("  [cyan]trustmesh agent chat[/cyan]      — talk to your AI agent")
+        console.print("  [cyan]trustmesh agent ask \"...\"[/cyan] — one-shot question")
+        console.print("  [cyan]trustmesh connections list[/cyan] — your trust connections")
+        return
 
 
 @app.command()
@@ -200,7 +275,7 @@ def status():
     console.print(f"[bold]Health:[/bold] [{status_color}]{health.get('status', 'unknown')}[/{status_color}]")
 
     providers = health.get("providers", {})
-    if providers:
+    if isinstance(providers, dict) and providers:
         console.print("[bold]Providers:[/bold]")
         for name, val in providers.items():
             if isinstance(val, bool):
@@ -275,6 +350,63 @@ def status():
         console.print(f"[bold]Peers:[/bold] {len(peers)} ({active} active)"  )
     except Exception:
         pass
+
+
+@app.command()
+def pods():
+    """Scan local ports 8001-8016 for running TrustMesh pods. Use with multi-pod setup."""
+    table = Table(title="Local TrustMesh Pods")
+    table.add_column("Port", style="cyan")
+    table.add_column("Name", style="bold")
+    table.add_column("Type")
+    table.add_column("Status")
+    table.add_column("Login command", style="dim")
+
+    found = 0
+    for port in range(8001, 8017):
+        url = f"http://localhost:{port}"
+        try:
+            resp = httpx.get(f"{url}/api/pod", timeout=1.5)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            # Use agent owner info (more accurate than pod_name in multi-pod)
+            agents = data.get("agents", [])
+            if agents:
+                agent = agents[0]
+                name = agent.get("owner_display_name", data.get("pod_name", "?"))
+                user_type = agent.get("user_type", "person")
+                username = agent.get("owner_username", "")
+            else:
+                name = data.get("pod_name", "?")
+                user_type = "?"
+                username = ""
+            table.add_row(
+                str(port),
+                f"{name} (@{username})" if username else name,
+                user_type,
+                "[green]online[/green]",
+                f"trustmesh login --pod {url}",
+            )
+            found += 1
+        except (httpx.ConnectError, httpx.TimeoutException):
+            continue
+        except Exception:
+            continue
+
+    if found == 0:
+        console.print("[dim]No pods found on ports 8001-8016.[/dim]")
+        console.print("[dim]Start multi-pod: ./multi-pod.sh demo[/dim]")
+        return
+
+    console.print(table)
+
+    # Show current session if any
+    session = _load_session()
+    if session:
+        console.print(f"\n[dim]Current session: {session.get('username', '?')}@{session['pod_url']}[/dim]")
+    else:
+        console.print(f"\n[dim]Not logged in. Pick a pod above and run the login command.[/dim]")
 
 
 @app.command()
@@ -354,27 +486,36 @@ def vault_list(
         return
 
     vis_display = {"private": "Private", "internal": "Shared", "shareable": "Shared (grant)", "open": "Open"}
+
+    # Check if any capsule has network sharing or archived state
+    has_networks = any(c.get("network_names") for c in capsules)
+    has_archived = any(c.get("is_archived") for c in capsules)
+
     table = Table(title=f"Vault ({len(capsules)} capsules)")
     table.add_column("ID", style="dim", max_width=8)
     table.add_column("Title", style="bold")
     table.add_column("Type")
     table.add_column("Sharing Level")
     table.add_column("Category")
-    table.add_column("Shared With")
-    table.add_column("Archived")
+    if has_networks:
+        table.add_column("Shared With")
+    if has_archived:
+        table.add_column("Archived")
 
     for c in capsules:
-        net_names = c.get("network_names", [])
-        shared_with = ", ".join(net_names) if net_names else ""
-        table.add_row(
+        row = [
             c["id"][:8],
             c["title"],
             c.get("capsule_type", ""),
             vis_display.get(c.get("visibility", ""), c.get("visibility", "")),
             c.get("category", ""),
-            shared_with,
-            "yes" if c.get("is_archived") else "",
-        )
+        ]
+        if has_networks:
+            net_names = c.get("network_names", [])
+            row.append(", ".join(net_names) if net_names else "")
+        if has_archived:
+            row.append("yes" if c.get("is_archived") else "")
+        table.add_row(*row)
     console.print(table)
 
 
@@ -579,6 +720,8 @@ def connections_list():
 
     table = Table(title=f"Connections ({len(connections)})")
     table.add_column("Peer", style="bold")
+    table.add_column("Relationship", style="cyan")
+    table.add_column("Label", style="magenta")
     table.add_column("Type")
     table.add_column("Since")
     table.add_column("ID", style="dim", max_width=8)
@@ -587,6 +730,8 @@ def connections_list():
         peer = c.get("peer", {})
         table.add_row(
             peer.get("display_name", "?"),
+            c.get("relationship_type", "") or "",
+            c.get("my_label", "") or "",
             peer.get("user_type", ""),
             c.get("accepted_at", "")[:10] if c.get("accepted_at") else "",
             c["id"][:8],
@@ -598,6 +743,8 @@ def connections_list():
 def connections_request(
     username: str = typer.Argument(..., help="Username to connect with"),
     message: str = typer.Option(None, "--message", "-m", help="Connection message"),
+    relationship: str = typer.Option(None, "--rel", "-r", help="Relationship type: family|friend|work|healthcare|neighbor|emergency|other"),
+    label: str = typer.Option(None, "--label", "-l", help="Your label for this person (e.g. 'spouse', 'boss')"),
 ):
     """Send a connection request."""
     session = _require_session()
@@ -608,36 +755,135 @@ def connections_request(
         console.print(f"[red]User '{username}' not found[/red]")
         raise typer.Exit(1)
 
-    payload = {"from_user_id": me["id"], "to_user_id": target["id"]}
+    payload: dict = {"from_user_id": me["id"], "to_user_id": target["id"]}
     if message:
         payload["message"] = message
+    if relationship:
+        payload["relationship_type"] = relationship
+    if label:
+        payload["from_label"] = label
     _api("POST", "/api/connections/request", session=session, json=payload)
     console.print(f"[green]Connection request sent to {target['display_name']}[/green]")
 
 
 @conn_app.command("accept")
-def connections_accept(request_id: str = typer.Argument(..., help="Connection request ID")):
+def connections_accept(
+    request_id: str = typer.Argument(..., help="Connection request ID (or prefix)"),
+    label: str = typer.Option(None, "--label", "-l", help="Your label for this person (e.g. 'colleague', 'friend')"),
+):
     """Accept a pending connection request."""
     session = _require_session()
-    _api("PUT", f"/api/connection-requests/{request_id}", session=session, json={"status": "accepted"})
-    console.print("[green]Connection accepted.[/green]")
+    me = _api("GET", "/api/auth/me", session=session)
+    # Support prefix matching
+    requests = _api("GET", f"/api/users/{me['id']}/connection-requests", session=session)
+    matches = [r for r in requests if r["id"].startswith(request_id)]
+    if not matches:
+        console.print(f"[red]No pending request matching '{request_id}'[/red]")
+        raise typer.Exit(1)
+    if len(matches) > 1:
+        console.print(f"[yellow]Ambiguous prefix — {len(matches)} matches. Be more specific.[/yellow]")
+        raise typer.Exit(1)
+    req = matches[0]
+    payload: dict = {"status": "accepted"}
+    if label:
+        payload["to_label"] = label
+    _api("PUT", f"/api/connection-requests/{req['id']}", session=session, json=payload)
+    from_name = req.get("from_user", {}).get("display_name", "?") if req.get("from_user") else "?"
+    console.print(f"[green]Accepted connection from {from_name}.[/green]")
 
 
-@conn_app.command("remove")
-def connections_remove(connection_id: str = typer.Argument(..., help="Connection ID")):
-    """Remove a connection."""
+@conn_app.command("pending")
+def connections_pending():
+    """Show incoming connection requests waiting for your response."""
     session = _require_session()
     me = _api("GET", "/api/auth/me", session=session)
-    # Find connection by prefix
+    requests = _api("GET", f"/api/users/{me['id']}/connection-requests", session=session)
+
+    if not requests:
+        console.print("[dim]No pending connection requests.[/dim]")
+        return
+
+    table = Table(title=f"Pending Requests ({len(requests)})")
+    table.add_column("From", style="bold")
+    table.add_column("Relationship", style="cyan")
+    table.add_column("Their Label", style="magenta")
+    table.add_column("Message")
+    table.add_column("Mutual", style="dim")
+    table.add_column("ID", style="dim", max_width=8)
+
+    for r in requests:
+        from_user = r.get("from_user", {}) or {}
+        mutual_parts = []
+        mc = r.get("mutual_connections", 0)
+        mn = r.get("mutual_networks", 0)
+        if mc:
+            mutual_parts.append(f"{mc} conn")
+        if mn:
+            mutual_parts.append(f"{mn} net")
+        table.add_row(
+            from_user.get("display_name", "?"),
+            r.get("relationship_type", "") or "",
+            r.get("from_label", "") or "",
+            r.get("message", "") or "",
+            ", ".join(mutual_parts) if mutual_parts else "",
+            r["id"][:8],
+        )
+    console.print(table)
+    console.print(f"\n[dim]Accept: trustmesh connections accept <ID> [--label 'your label'][/dim]")
+
+
+@conn_app.command("label")
+def connections_label(
+    connection_id: str = typer.Argument(..., help="Connection ID (or prefix)"),
+    label: str = typer.Option(None, "--label", "-l", help="Your label for this person"),
+    relationship: str = typer.Option(None, "--rel", "-r", help="Relationship type"),
+):
+    """Update your label or relationship type on a connection."""
+    if not label and not relationship:
+        console.print("[red]Provide --label and/or --rel to update.[/red]")
+        raise typer.Exit(1)
+    session = _require_session()
+    me = _api("GET", "/api/auth/me", session=session)
     connections = _api("GET", f"/api/users/{me['id']}/connections", session=session)
     matches = [c for c in connections if c["id"].startswith(connection_id)]
     if not matches:
         console.print(f"[red]No connection matching '{connection_id}'[/red]")
         raise typer.Exit(1)
-    full_id = matches[0]["id"]
-    # The delete endpoint doesn't exist as a simple DELETE on connection ID,
-    # so we remove the member from the network or just inform the user.
-    console.print(f"[yellow]Connection removal is managed via the web UI (connection {full_id[:8]})[/yellow]")
+    if len(matches) > 1:
+        console.print(f"[yellow]Ambiguous prefix — {len(matches)} matches.[/yellow]")
+        raise typer.Exit(1)
+    conn = matches[0]
+    payload: dict = {}
+    if label:
+        payload["my_label"] = label
+    if relationship:
+        payload["relationship_type"] = relationship
+    result = _api("PATCH", f"/api/connections/{conn['id']}/label", session=session, json=payload)
+    peer_name = result.get("peer", {}).get("display_name", "?") if result.get("peer") else "?"
+    console.print(f"[green]Updated connection with {peer_name}.[/green]")
+
+
+@conn_app.command("remove")
+def connections_remove(connection_id: str = typer.Argument(..., help="Connection ID (or prefix)")):
+    """Remove a connection (disconnect from someone)."""
+    session = _require_session()
+    me = _api("GET", "/api/auth/me", session=session)
+    connections = _api("GET", f"/api/users/{me['id']}/connections", session=session)
+    matches = [c for c in connections if c["id"].startswith(connection_id)]
+    if not matches:
+        console.print(f"[red]No connection matching '{connection_id}'[/red]")
+        raise typer.Exit(1)
+    if len(matches) > 1:
+        console.print(f"[yellow]Ambiguous prefix — {len(matches)} matches. Be more specific.[/yellow]")
+        raise typer.Exit(1)
+    conn = matches[0]
+    peer_name = conn.get("peer", {}).get("display_name", "?")
+    confirm = typer.confirm(f"Disconnect from {peer_name}?")
+    if not confirm:
+        console.print("[dim]Cancelled.[/dim]")
+        raise typer.Exit()
+    _api("DELETE", f"/api/connections/{conn['id']}", session=session)
+    console.print(f"[green]Disconnected from {peer_name}.[/green]")
 
 
 # ── Network commands ──
@@ -731,7 +977,7 @@ def pod_info():
     console.print(f"[bold]Agents:[/bold] {info.get('agent_count', 0)}")
     if info.get("agents"):
         for a in info["agents"]:
-            console.print(f"  {a.get('display_name', '?')} (@{a.get('username', '?')})")
+            console.print(f"  {a.get('owner_display_name', '?')} (@{a.get('owner_username', '?')})")
 
 
 @pod_app.command("peers")
@@ -806,13 +1052,17 @@ def pod_discover():
     table.add_column("Local")
 
     for a in agents:
-        pod_info = a.get("_pod", {})
+        pod_meta = a.get("_pod", {})
+        # Local agents have owner_display_name; remote A2A agents have name
+        name = a.get("owner_display_name") or a.get("name", "?")
+        username = a.get("owner_username", "")
+        user_type = a.get("user_type", "")
         table.add_row(
-            a.get("display_name", "?"),
-            a.get("username", ""),
-            a.get("user_type", ""),
-            pod_info.get("name", "?"),
-            "yes" if pod_info.get("is_local") else "",
+            name,
+            username,
+            user_type,
+            pod_meta.get("name", "?"),
+            "yes" if pod_meta.get("is_local") else "",
         )
     console.print(table)
 
@@ -849,8 +1099,7 @@ def pod_golive():
 @reg_app.command("list")
 def registry_list():
     """List agents in the public registry."""
-    session = _require_session()
-    # Registry runs on :8100 by default, or same pod
+    # Registry is public — no session required
     registry_url = os.environ.get("TRUSTMESH_REGISTRY_URL", "http://localhost:8100")
     try:
         resp = httpx.get(f"{registry_url}/api/agents", timeout=10)
@@ -866,16 +1115,19 @@ def registry_list():
 
     table = Table(title=f"Public Registry ({len(agents)} agents)")
     table.add_column("Name", style="bold")
-    table.add_column("Pod")
-    table.add_column("URL")
-    table.add_column("Agents")
+    table.add_column("Username")
+    table.add_column("Type")
+    table.add_column("Pod URL")
+    table.add_column("Capabilities", max_width=30)
 
     for a in agents:
+        caps = a.get("capabilities", [])
         table.add_row(
-            a.get("pod_name", "?"),
+            a.get("display_name", "?"),
+            a.get("username", ""),
+            a.get("entity_type", ""),
             a.get("pod_url", ""),
-            a.get("agent_card_url", ""),
-            str(a.get("agent_count", 0)),
+            ", ".join(caps[:3]) + ("..." if len(caps) > 3 else "") if caps else "",
         )
     console.print(table)
 
@@ -896,8 +1148,20 @@ def registry_search(query: str = typer.Argument(..., help="Search query")):
         console.print(f"[dim]No results for '{query}'[/dim]")
         return
 
+    table = Table(title=f"Search: \"{query}\" ({len(results)} results)")
+    table.add_column("Name", style="bold")
+    table.add_column("Username")
+    table.add_column("Type")
+    table.add_column("Pod URL")
+
     for r in results:
-        console.print(f"  [bold]{r.get('pod_name', '?')}[/bold] — {r.get('pod_url', '')}")
+        table.add_row(
+            r.get("display_name", "?"),
+            r.get("username", ""),
+            r.get("entity_type", ""),
+            r.get("pod_url", ""),
+        )
+    console.print(table)
 
 
 # ── MCP serve ──

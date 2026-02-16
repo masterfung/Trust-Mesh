@@ -1643,7 +1643,7 @@ async def agent_respond(
     response = await router.complete(
         messages=[{"role": "user", "content": question}],
         system=system_prompt,
-        model="default",
+        model="fast",
         sensitivity=sensitivity,
         max_tokens=1024,
     )
@@ -1776,7 +1776,7 @@ async def agent_respond_streaming(
     async for chunk in router.stream_complete(
         messages=messages,
         system=system_prompt,
-        model="default",
+        model="fast",
         sensitivity=sensitivity,
         max_tokens=1024,
     ):
@@ -2142,7 +2142,7 @@ async def generate_briefing(
             day_type=day_type,
             day_guidance=day_guidance,
         ),
-        model="default",
+        model="fast",
         max_tokens=1024,
     )
 

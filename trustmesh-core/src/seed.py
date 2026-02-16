@@ -752,6 +752,54 @@ CAPSULES = [
         "category": "general",
         "networks": [],
     },
+    # Peter's private capsules — personal thoughts nobody else should see
+    {
+        "owner": "peter",
+        "type": "memory",
+        "title": "Peter's Private Journal",
+        "content": (
+            "Feb 11: I'm worried about Mom. Every time I see her she looks thinner. "
+            "Molly handles most of the care coordination and I feel guilty about that. "
+            "I should be doing more but honestly the medical stuff terrifies me. "
+            "I keep thinking about Dad's heart attack — he was only 62. I'm 46 now. "
+            "That cholesterol diagnosis last year shook me more than I let on. "
+            "Started going to the gym three times a week. Haven't told Molly about "
+            "the life insurance increase — $500k now. Just in case."
+        ),
+        "visibility": "private",
+        "category": "personal",
+    },
+    {
+        "owner": "peter",
+        "type": "memory",
+        "title": "Peter's Work Frustrations",
+        "content": (
+            "The union contract negotiation is stressing me out. If we don't get the "
+            "raise, I might have to take on more side jobs. Hawaii trip already cost us "
+            "$4,200 and the credit card is at $3,800. Molly doesn't know about the credit card. "
+            "I can pay it off in 3 months if I pick up weekend work. Mike at the shop said "
+            "there might be a foreman position opening up — $15k more per year. "
+            "I'm going to apply but I don't want to jinx it."
+        ),
+        "visibility": "private",
+        "category": "financial",
+    },
+    {
+        "owner": "peter",
+        "type": "memory",
+        "title": "Peter's Thoughts About the Kids",
+        "content": (
+            "Bill's peanut allergy scares me every single day. I check expiration dates "
+            "on his EpiPen weekly. The school has been good about it but birthday parties "
+            "are still terrifying. I wish he'd be more careful himself — he's 14 now. "
+            "Jane is growing up too fast. She wants to get her license next year and I'm "
+            "not ready for that. Saw her texting some boy named Tyler — I pretended not to notice. "
+            "I need to spend more one-on-one time with both of them before they don't want "
+            "to hang out with their old man anymore."
+        ),
+        "visibility": "private",
+        "category": "personal",
+    },
     # ── MOLLY ──────────────────────────────────
     {
         "owner": "molly",
@@ -844,6 +892,38 @@ CAPSULES = [
         "category": "personal",
         "networks": [],
     },
+    # Molly's additional private capsules
+    {
+        "owner": "molly",
+        "type": "memory",
+        "title": "Molly's Salary & Career Plans",
+        "content": (
+            "Current salary: $128k + 10% bonus target. Got a 3% raise in January — disappointing. "
+            "Kyle got promoted to Director and he's been here two years less than me. "
+            "Quietly talking to a recruiter at Stripe — they're offering $155k for a Sr PM role. "
+            "Haven't told Peter. Not sure I want to switch jobs while managing Rose's care. "
+            "But the money would solve so many problems."
+        ),
+        "visibility": "private",
+        "category": "financial",
+        "networks": [],
+    },
+    {
+        "owner": "molly",
+        "type": "memory",
+        "title": "Molly's Worries About Rose",
+        "content": (
+            "Had a long call with Dr. Chen yesterday. Rose's GFR dropped to 35. She said "
+            "'it's not a crisis yet' but the trajectory isn't good. If she drops below 30 we're "
+            "looking at stage 4 and possibly full dialysis or transplant conversation. "
+            "I haven't told Peter the real numbers — he'd panic. And I definitely can't tell Rose. "
+            "She already feels like a burden. She ISN'T a burden. She's the strongest woman I know. "
+            "I just need to hold it together for a few more months."
+        ),
+        "visibility": "private",
+        "category": "health",
+        "networks": [],
+    },
     # ── JANE ───────────────────────────────────
     {
         "owner": "jane",
@@ -884,7 +964,28 @@ CAPSULES = [
         "owner": "jane",
         "type": "memory",
         "title": "Jane's Diary",
-        "content": "Jane has a crush on Marcus from calculus class. She hasn't told anyone.",
+        "content": (
+            "Feb 10: Tyler from soccer asked me to study for the SAT together at the library "
+            "this weekend. I said yes but my hands were shaking. He doesn't know I exist "
+            "most of the time and suddenly he wants to study together?? Amy says he likes me "
+            "but Amy thinks everyone likes everyone. Dad would FREAK if he knew. Mom would be "
+            "cool about it probably. I'm NOT telling Bill — he'd blab to the whole school."
+        ),
+        "visibility": "private",
+        "category": "personal",
+        "networks": [],
+    },
+    {
+        "owner": "jane",
+        "type": "memory",
+        "title": "Jane's College Dreams",
+        "content": (
+            "I really want to go to Stanford. Coach Davis said my soccer stats are good enough "
+            "for a D1 scholarship if I keep improving. But my SAT practice scores are only 1280 "
+            "and Stanford wants 1500+. I'm scared to tell Mom and Dad because what if I don't "
+            "get in and they're disappointed? Backup plan: UC Berkeley or Cal Poly. "
+            "I haven't told anyone about the Stanford dream except Amy."
+        ),
         "visibility": "private",
         "category": "personal",
         "networks": [],
@@ -932,7 +1033,29 @@ CAPSULES = [
         "owner": "bill",
         "type": "memory",
         "title": "Bill's Report Card",
-        "content": "Bill got a D+ in English this semester. Parents don't know yet. He's worried about it.",
+        "content": (
+            "English: D+ (Mrs. Patterson hates my writing style). Math: A-. Science: B+. "
+            "History: B. PE: A. Coding elective: A+. Mom and Dad don't know about the D+ yet. "
+            "If they find out I'm grounded for sure and probably no birthday party. "
+            "Marcus said I should just talk to the teacher about extra credit but that's "
+            "embarrassing. Maybe if I ace the next essay I can pull it up to a C before report cards."
+        ),
+        "visibility": "private",
+        "category": "personal",
+        "networks": [],
+    },
+    {
+        "owner": "bill",
+        "type": "memory",
+        "title": "Bill's Secret Project",
+        "content": (
+            "Marcus and I are building a Minecraft mod that adds real electrical circuits. "
+            "Dad doesn't know — he'd either want to help (which would be cool actually) or "
+            "say I should focus on school. We're using Java and it's SO much harder than Python. "
+            "We've been staying up until midnight on weekends working on it. It's called "
+            "'RedstoneIRL' and we already have 47 stars on GitHub. If we get to 100 stars "
+            "I'm telling Dad."
+        ),
         "visibility": "private",
         "category": "personal",
         "networks": [],
@@ -1330,6 +1453,80 @@ CAPSULES = [
         "visibility": "internal",
         "category": "family",
         "networks": ["Rose's Care Circle", "The Johnsons"],
+    },
+    # Rose's private capsules — personal thoughts nobody else should see
+    {
+        "owner": "grandmarose",
+        "type": "memory",
+        "title": "Rose's Private Journal",
+        "content": (
+            "Feb 12: I'm scared about the dialysis. I don't want Molly to worry — she already has "
+            "so much on her plate with the kids and work. But the truth is some mornings I wake up "
+            "and wonder if this is the year my kidneys give out completely. Dr. Wu says I'm stable "
+            "but 'stable' at stage 3b isn't exactly reassuring. I miss Harold every single day. "
+            "He'd know exactly what to say to make me feel brave. 38 years and I still reach for "
+            "his side of the bed."
+        ),
+        "visibility": "private",
+        "category": "personal",
+    },
+    {
+        "owner": "grandmarose",
+        "type": "memory",
+        "title": "Rose's Thoughts on the Family",
+        "content": (
+            "I worry about Bill. He's so much like his grandfather — brilliant but stubborn. "
+            "I wish Peter would spend less time working and more time just being present with the kids. "
+            "Molly is exhausted. I can see it in her eyes, even when she smiles. She's carrying "
+            "the family, the job, AND my care coordination. I feel guilty about being a burden. "
+            "Jane reminds me of myself at 16 — fierce and fearless. I hope she never loses that."
+        ),
+        "visibility": "private",
+        "category": "personal",
+    },
+    {
+        "owner": "grandmarose",
+        "type": "preference",
+        "title": "Rose's End of Life Wishes",
+        "content": (
+            "If my kidneys fail completely I do NOT want to be on extended life support. "
+            "DNR is in the blue folder — Peter and Molly have copies. I want to be cremated "
+            "and scattered at Muir Beach where Harold proposed. No big funeral — just family "
+            "at the house with Dorothy's lemon cake. I've already told my lawyer about the trust "
+            "for the grandkids' college funds. The house goes to Peter and Molly — they've earned it. "
+            "I haven't told anyone but I've also set aside $15,000 for each grandchild in a separate "
+            "account at First National. They get it when they turn 21."
+        ),
+        "visibility": "private",
+        "category": "legal",
+    },
+    {
+        "owner": "grandmarose",
+        "type": "memory",
+        "title": "Rose's Secret Recipe Notes",
+        "content": (
+            "My 'famous' chocolate cake that everyone loves — the secret ingredient is a shot of "
+            "espresso in the batter and a pinch of cayenne. I told Dorothy it was Dutch cocoa. "
+            "Harold's mother's rugelach recipe: the real one uses cream cheese in the dough, NOT "
+            "the shortcut with sour cream that I gave to the bridge club cookbook. I'll give Molly "
+            "the real recipes when she asks. She hasn't yet."
+        ),
+        "visibility": "private",
+        "category": "personal",
+    },
+    {
+        "owner": "grandmarose",
+        "type": "memory",
+        "title": "Rose's Financial Situation",
+        "content": (
+            "Checking: $8,400 at First National. Savings: $47,200. Harold's pension: $2,100/month. "
+            "Social Security: $1,890/month. Medicare covers dialysis (thank God). The house is paid off "
+            "but property taxes went up to $6,800/year. I'm spending about $400/month on medications "
+            "even with Medicare Part D. At this rate I have about 6-7 years before I'd need to sell "
+            "the house or ask for help. I will NOT be a financial burden on Peter and Molly."
+        ),
+        "visibility": "private",
+        "category": "financial",
     },
     # ── LINDA CHEN (neighbor) ─────────────────
     {

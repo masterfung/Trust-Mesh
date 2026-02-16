@@ -88,15 +88,26 @@ def _get_me(session: dict | None) -> dict:
 
 # ── Server factory ──
 
+def _get_session(explicit: dict | None = None) -> dict | None:
+    """Get session, re-reading from disk to pick up login changes."""
+    if explicit is not None:
+        return explicit
+    return _load_session()
+
+
 def create_mcp_server(session: dict | None = None) -> FastMCP:
     """Create a FastMCP server, optionally bound to a TrustMesh session.
 
-    If session is None, attempts to load from ~/.trustmesh/session.
+    If session is None, attempts to load from ~/.trustmesh/session on each call.
     Unauthenticated tools (pod info, health, registry) work without a session.
     Authenticated tools (vault, agent, connections) require a session.
     """
-    if session is None:
-        session = _load_session()
+    # Store explicit session if provided; otherwise re-read from disk each call
+    _explicit_session = session
+
+    def _s():
+        """Get fresh session, re-reading from disk to pick up login changes."""
+        return _get_session(_explicit_session)
 
     mcp = FastMCP(
         "TrustMesh",
@@ -117,8 +128,8 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
         Uses semantic search + AI agent to find and summarize relevant knowledge
         from your encrypted vault. Self-query with full private access.
         """
-        me = _get_me(session)
-        result = _api(session, "POST", "/api/query", json={
+        me = _get_me(_s())
+        result = _api(_s(),"POST", "/api/query", json={
             "from_user_id": me["id"],
             "to_user_id": me["id"],
             "question": query,
@@ -147,7 +158,7 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
             visibility: private (only you), internal (trusted connections), open (anyone)
             category: Optional tag (health, work, personal, finance, etc.)
         """
-        me = _get_me(session)
+        me = _get_me(_s())
         payload = {
             "capsule_type": capsule_type,
             "title": title,
@@ -156,7 +167,7 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
         }
         if category:
             payload["category"] = category
-        result = _api(session, "POST", f"/api/users/{me['id']}/capsules", json=payload)
+        result = _api(_s(),"POST", f"/api/users/{me['id']}/capsules", json=payload)
         return f"Saved: {result['title']} (ID: {result['id'][:8]}, visibility: {result['visibility']})"
 
     @mcp.tool()
@@ -167,8 +178,8 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
             capsule_type: Filter by type (memory, note, document, preference, health, etc.)
             visibility: Filter by visibility (private, internal, open)
         """
-        me = _get_me(session)
-        capsules = _api(session, "GET", f"/api/users/{me['id']}/capsules")
+        me = _get_me(_s())
+        capsules = _api(_s(),"GET", f"/api/users/{me['id']}/capsules")
         if capsule_type:
             capsules = [c for c in capsules if c.get("capsule_type") == capsule_type]
         if visibility:
@@ -197,10 +208,10 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
             question: The question to ask
             target_user: Username to cross-query (omit for self-query)
         """
-        me = _get_me(session)
+        me = _get_me(_s())
 
         if target_user:
-            users = _api(session, "GET", "/api/users")
+            users = _api(_s(),"GET", "/api/users")
             target = next((u for u in users if u["username"] == target_user), None)
             if not target:
                 return f"User '{target_user}' not found."
@@ -208,7 +219,7 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
         else:
             to_user_id = me["id"]
 
-        result = _api(session, "POST", "/api/query", json={
+        result = _api(_s(),"POST", "/api/query", json={
             "from_user_id": me["id"],
             "to_user_id": to_user_id,
             "question": question,
@@ -231,8 +242,8 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
     @mcp.tool()
     def list_connections() -> str:
         """List your trust connections with their status and user types."""
-        me = _get_me(session)
-        connections = _api(session, "GET", f"/api/users/{me['id']}/connections")
+        me = _get_me(_s())
+        connections = _api(_s(),"GET", f"/api/users/{me['id']}/connections")
 
         if not connections:
             return "No connections."
@@ -250,8 +261,8 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
     @mcp.tool()
     def list_networks() -> str:
         """List your trust networks/pools with member counts."""
-        me = _get_me(session)
-        networks = _api(session, "GET", f"/api/users/{me['id']}/networks")
+        me = _get_me(_s())
+        networks = _api(_s(),"GET", f"/api/users/{me['id']}/networks")
 
         if not networks:
             return "No networks."
@@ -271,9 +282,9 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
     @mcp.tool()
     def pod_status() -> str:
         """Get current pod health, providers, agents, and peer information."""
-        health = _api(session, "GET", "/health/full")
-        pod_info = _api(session, "GET", "/api/pod")
-        peers_data = _api(session, "GET", "/api/pod/peers")
+        health = _api(_s(),"GET", "/health/full")
+        pod_info = _api(_s(),"GET", "/api/pod")
+        peers_data = _api(_s(),"GET", "/api/pod/peers")
 
         parts = [
             f"Pod: {pod_info.get('pod_name', '?')} ({pod_info.get('pod_url', '')})",
@@ -326,7 +337,7 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
         path = f"/api/registry/search?{qs}" if qs else "/api/registry/agents"
 
         try:
-            result = _api(session, "GET", path)
+            result = _api(_s(),"GET", path)
         except Exception:
             # Fallback to external registry
             registry_url = os.environ.get("TRUSTMESH_REGISTRY_URL", "http://localhost:8100")
@@ -359,7 +370,7 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
     @mcp.tool()
     def health_check() -> str:
         """Check the health status of the TrustMesh pod and its providers."""
-        result = _api(session, "GET", "/health/full")
+        result = _api(_s(),"GET", "/health/full")
         providers = result.get("providers", {})
 
         lines = [f"Status: {result.get('status', 'unknown')}\n"]
@@ -380,16 +391,16 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
     @mcp.resource("trustmesh://profile")
     def get_profile() -> str:
         """Your TrustMesh profile: name, type, networks, and connection summary."""
-        if not session:
+        if not _s():
             return "Not logged in. Run `trustmesh login` first."
-        me = _get_me(session)
-        connections = _api(session, "GET", f"/api/users/{me['id']}/connections")
-        networks = _api(session, "GET", f"/api/users/{me['id']}/networks")
+        me = _get_me(_s())
+        connections = _api(_s(),"GET", f"/api/users/{me['id']}/connections")
+        networks = _api(_s(),"GET", f"/api/users/{me['id']}/networks")
 
         parts = [
             f"User: {me['display_name']} (@{me['username']})",
             f"Type: {me.get('user_type', 'person')}",
-            f"Pod: {session['pod_url']}",
+            f"Pod: {_s()['pod_url']}",
             f"Connections: {len(connections)}",
             f"Networks: {len(networks)}",
         ]
@@ -404,10 +415,10 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
     @mcp.resource("trustmesh://vault/summary")
     def get_vault_summary() -> str:
         """Summary of your knowledge vault: capsule counts by type and visibility."""
-        if not session:
+        if not _s():
             return "Not logged in. Run `trustmesh login` first."
-        me = _get_me(session)
-        capsules = _api(session, "GET", f"/api/users/{me['id']}/capsules")
+        me = _get_me(_s())
+        capsules = _api(_s(),"GET", f"/api/users/{me['id']}/capsules")
 
         by_type: dict[str, int] = {}
         by_vis: dict[str, int] = {}
@@ -434,7 +445,7 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
     @mcp.resource("trustmesh://pod/info")
     def pod_info_resource() -> str:
         """Current pod identity, agents, and configuration."""
-        return json.dumps(_api(session, "GET", "/api/pod"), indent=2)
+        return json.dumps(_api(_s(),"GET", "/api/pod"), indent=2)
 
     return mcp
 
@@ -442,8 +453,8 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
 # ── Entry Points ──
 
 # Module-level server for `mcp.run()` compatibility
-_session = _load_session()
-mcp = create_mcp_server(_session)
+# Pass None so session is re-read from disk on each tool call (picks up login changes)
+mcp = create_mcp_server()
 
 
 def main():

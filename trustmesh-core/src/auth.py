@@ -17,7 +17,7 @@ sessions: dict[str, tuple[str, float]] = {}
 _login_attempts: dict[str, list[float]] = defaultdict(list)
 
 SESSION_TTL = 86400  # 24 hours
-MAX_LOGIN_ATTEMPTS = 10  # per window
+MAX_LOGIN_ATTEMPTS = 100  # per window (generous for demo scripts)
 LOGIN_WINDOW = 300  # 5 minutes
 
 COOKIE_NAME = "trustmesh_session"
