@@ -10,6 +10,8 @@ TrustMesh is a trust-aware knowledge sharing platform for personal AI agents. Fa
 
 - `trustmesh-core/` - Python backend (FastAPI, SQLAlchemy async, SQLite)
 - `trustmesh-ui/` - TypeScript frontend (Next.js 15, Tailwind, D3.js)
+- `trustmesh-registry/` - Public agent registry (Next.js 16, SQLite, DID verification)
+- `citadel-ref/` - [Citadel](https://github.com/TryMightyAI/citadel) AI security sidecar (Go, gitignored)
 - `docs/` - Architecture documentation
 
 ## Development
@@ -54,10 +56,28 @@ uv run pytest tests/test_ucan.py -v        # Specific file
 uv run pytest tests/test_multi_pod.py -v   # Multi-pod (requires running pods)
 ```
 
+### Citadel Security Sidecar
+```bash
+# First-time setup: download ML model + build with ONNX
+./dev.sh citadel
+
+# Or manually:
+cd citadel-ref
+./scripts/setup-ml.sh     # Download HuggingFace model (~685MB) + ONNX Runtime
+make build-ml             # Build with ML detection
+./citadel serve 3001      # Start on port 3001
+```
+
+When Citadel is running, `./dev.sh start` auto-detects it and sets `CITADEL_URL`.
+Without Citadel, the Python heuristic fallback in `citadel.py` handles scanning.
+
+For production multimodal AI security (text, images, PDFs, tool calls), see [Mighty](https://trymighty.ai/).
+
 ### Environment Variables
 - `ANTHROPIC_API_KEY` - Required for LLM calls
 - `VOYAGE_API_KEY` - Optional (for Voyage AI embeddings, falls back to local)
 - `TAVILY_API_KEY` - Optional (for web search tool)
+- `CITADEL_URL` - Optional (Citadel sidecar URL, default `http://localhost:3001`)
 
 ## Architecture Patterns
 
@@ -114,7 +134,7 @@ uv run pytest tests/test_multi_pod.py -v   # Multi-pod (requires running pods)
 | `src/crypto.py` | AES-256-GCM, Argon2id, ed25519, HKDF |
 | `src/ucan.py` | UCAN token create/validate/scope-match |
 | `src/trust.py` | Trust level resolution from connections and networks |
-| `src/citadel.py` | Security scanning (prompt injection + data exfil detection) |
+| `src/citadel.py` | Security scanning via [Citadel](https://github.com/TryMightyAI/citadel) sidecar + heuristic fallback |
 | `src/seed.py` | Demo data seeder (Johnson family scenario) |
 | `src/main.py` | App startup, CORS, vault_keys dict, route registration |
 
@@ -124,4 +144,6 @@ uv run pytest tests/test_multi_pod.py -v   # Multi-pod (requires running pods)
 - Demo password is `DEMO_PASSWORD` constant in `src/seed.py` - only used for `is_demo=True` users
 - The `from src.main import vault_keys` pattern uses lazy import to avoid circular deps
 - ChromaDB runs in-process - no external service needed
-- Citadel Go sidecar is optional - Python heuristic fallback handles scanning in demo mode
+- [Citadel](https://github.com/TryMightyAI/citadel) Go sidecar is optional — Python heuristic fallback handles scanning without it
+- `./dev.sh citadel` does first-time ML setup (HuggingFace model download + ONNX build)
+- `./dev.sh start` auto-starts Citadel if the binary exists in `citadel-ref/`

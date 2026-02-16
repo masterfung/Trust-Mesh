@@ -41,6 +41,8 @@ screenshots/
 .backend.pid
 .frontend.log
 .frontend.pid
+.citadel.log
+.citadel.pid
 trustmesh-core/trustmesh.db.snapshot
 
 # Multi-pod artifacts

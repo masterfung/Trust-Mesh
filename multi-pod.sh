@@ -28,12 +28,14 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$ROOT/trustmesh-core"
 FRONTEND_DIR="$ROOT/trustmesh-ui"
 REGISTRY_DIR="$ROOT/trustmesh-registry"
+CITADEL_DIR="$ROOT/citadel-ref"
 DATA_DIR="$BACKEND_DIR/data/pods"
 LOG_DIR="$ROOT/.multipod-logs"
 PID_DIR="$ROOT/.multipod-pids"
 
 REGISTRY_PORT=8100
 FRONTEND_PORT=3050
+CITADEL_PORT=3001
 
 # Federation shared secret (generated once per session, shared by all pods + orchestrator)
 POOL_SYNC_SECRET_FILE="$ROOT/.multipod-secret"
@@ -145,6 +147,75 @@ _wait_for_health() {
   return 1
 }
 
+# ── Citadel ──
+
+_citadel_setup() {
+  if [[ ! -d "$CITADEL_DIR" ]]; then
+    return 1
+  fi
+  # Download ML model if missing
+  if [[ ! -f "$CITADEL_DIR/models/modernbert-base/model.onnx" ]]; then
+    echo "Citadel: downloading ML model (~685MB, first time only)..."
+    cd "$CITADEL_DIR"
+    ./scripts/setup-ml.sh
+    cd "$ROOT"
+  fi
+  # Build binary if missing or outdated
+  if [[ ! -f "$CITADEL_DIR/citadel" ]] || [[ "$CITADEL_DIR/cmd/gateway/main.go" -nt "$CITADEL_DIR/citadel" ]]; then
+    echo "Citadel: building with ML detection..."
+    cd "$CITADEL_DIR"
+    make build-ml
+    cd "$ROOT"
+  fi
+}
+
+_citadel_start() {
+  local citadel_bin="$CITADEL_DIR/citadel"
+  if [[ ! -f "$citadel_bin" ]]; then
+    return 1
+  fi
+  if _is_running "$PID_DIR/citadel.pid"; then
+    return 0
+  fi
+  _kill_port $CITADEL_PORT
+
+  # Platform-specific ONNX Runtime paths
+  local platform arch onnx_lib
+  platform=$(uname -s | tr '[:upper:]' '[:lower:]')
+  arch=$(uname -m)
+  if [[ "$platform" == "darwin" ]]; then
+    if [[ "$arch" == "arm64" ]]; then
+      onnx_lib="$HOME/onnxruntime-osx-arm64-1.23.2/lib"
+    else
+      onnx_lib="$HOME/onnxruntime-osx-x64-1.23.2/lib"
+    fi
+    export DYLD_LIBRARY_PATH="${onnx_lib}:${DYLD_LIBRARY_PATH:-}"
+  else
+    if [[ "$arch" == "aarch64" ]]; then
+      onnx_lib="$HOME/onnxruntime-linux-aarch64-1.23.2/lib"
+    else
+      onnx_lib="$HOME/onnxruntime-linux-x64-1.23.2/lib"
+    fi
+    export LD_LIBRARY_PATH="${onnx_lib}:${LD_LIBRARY_PATH:-}"
+  fi
+  export HUGOT_MODEL_PATH="$CITADEL_DIR/models/modernbert-base"
+  export CITADEL_ENABLE_HUGOT=true
+
+  nohup "$citadel_bin" serve $CITADEL_PORT > "$LOG_DIR/citadel.log" 2>&1 &
+  echo $! > "$PID_DIR/citadel.pid"
+
+  echo -n "  Waiting for Citadel"
+  for _ in $(seq 1 15); do
+    if curl -sf http://localhost:$CITADEL_PORT/health > /dev/null 2>&1; then
+      echo " ready."
+      return 0
+    fi
+    echo -n "."
+    sleep 0.5
+  done
+  echo " (may still be loading ML model)"
+}
+
 # ── Commands ──
 
 cmd_seed() {
@@ -170,6 +241,16 @@ cmd_start() {
   echo "=== Starting TrustMesh Multi-Pod Federation ==="
   echo ""
 
+  # 0. Auto-setup + start Citadel sidecar if citadel-ref/ exists
+  CITADEL_URL=""
+  if [[ -d "$CITADEL_DIR" ]]; then
+    _citadel_setup || echo "  Citadel build failed — continuing with heuristic fallback."
+    if _citadel_start; then
+      CITADEL_URL="http://localhost:$CITADEL_PORT"
+      echo "  Citadel ML security: $CITADEL_URL"
+    fi
+  fi
+
   # 1. Start public registry (Next.js)
   echo "Starting registry on :$REGISTRY_PORT..."
   _kill_port $REGISTRY_PORT
@@ -191,12 +272,13 @@ cmd_start() {
 
     _kill_port "$port"
 
-    # Each pod gets its own env vars
+    # Each pod gets its own env vars (all share one Citadel sidecar)
     TRUSTMESH_POD_NAME="${POD_NAMES[$key]:-$key}" \
     TRUSTMESH_POD_URL="http://localhost:${port}" \
     TRUSTMESH_DB="$db_path" \
     TRUSTMESH_POOL_SYNC_SECRET="$TRUSTMESH_POOL_SYNC_SECRET" \
     TRUSTMESH_REGISTRY_URL="http://localhost:${REGISTRY_PORT}" \
+    CITADEL_URL="${CITADEL_URL}" \
     nohup uv run uvicorn src.main:app --port "$port" > "$LOG_DIR/${key}.log" 2>&1 &
     echo $! > "$PID_DIR/${key}.pid"
     echo "  Started :${port}  ${POD_NAMES[$key]:-$key}"
@@ -227,6 +309,9 @@ cmd_start() {
   echo ""
   echo "=== Multi-Pod Federation Running ==="
   echo ""
+  if [[ -n "$CITADEL_URL" ]]; then
+    echo "  Citadel:   $CITADEL_URL (ML security scanning)"
+  fi
   echo "  Registry:  http://localhost:$REGISTRY_PORT"
   echo "  Pods:      http://localhost:8001 - http://localhost:8016"
   echo "  Frontend:  http://localhost:$FRONTEND_PORT"
@@ -266,6 +351,10 @@ cmd_stop() {
   _kill_pid "$PID_DIR/registry.pid" "registry"
   _kill_port $REGISTRY_PORT
 
+  # Stop Citadel
+  _kill_pid "$PID_DIR/citadel.pid" "citadel"
+  _kill_port $CITADEL_PORT
+
   # Clean up secret
   rm -f "$POOL_SYNC_SECRET_FILE"
 
@@ -301,6 +390,13 @@ cmd_status() {
       printf "  %-8s %-25s %s\n" ":${port}" "${POD_NAMES[$key]:-$key}" "OFFLINE"
     fi
   done
+
+  # Citadel
+  if curl -sf "http://localhost:$CITADEL_PORT/health" > /dev/null 2>&1; then
+    printf "  %-8s %-25s %s\n" ":$CITADEL_PORT" "Citadel (ML)" "ONLINE"
+  else
+    printf "  %-8s %-25s %s\n" ":$CITADEL_PORT" "Citadel" "OFFLINE (heuristic fallback)"
+  fi
 
   # Frontend
   if curl -sf "http://localhost:$FRONTEND_PORT" > /dev/null 2>&1; then
