@@ -45,6 +45,11 @@ export function PodSwitcher({ userName }: { userName?: string }) {
     setCurrent(getPodUrl());
   }, []);
 
+  const currentPort = current.match(/:(\d+)/)?.[1] || "8000";
+  const currentPod = PODS.find(p => p.port === Number(currentPort));
+  const isMultiPod = currentPort !== "8000";
+
+  // Only check pod statuses when in multi-pod mode and dropdown is opened
   const checkStatuses = useCallback(async () => {
     const checks = PODS.map(async (pod) => {
       try {
@@ -63,8 +68,8 @@ export function PodSwitcher({ userName }: { userName?: string }) {
   }, []);
 
   useEffect(() => {
-    if (open) checkStatuses();
-  }, [open, checkStatuses]);
+    if (open && isMultiPod) checkStatuses();
+  }, [open, isMultiPod, checkStatuses]);
 
   const switchPod = (port: number) => {
     const url = `http://localhost:${port}`;
@@ -74,21 +79,28 @@ export function PodSwitcher({ userName }: { userName?: string }) {
     window.location.reload();
   };
 
-  const currentPort = current.match(/:(\d+)/)?.[1] || "8000";
-  const currentPod = PODS.find(p => p.port === Number(currentPort));
-  const isSinglePod = currentPort === "8000";
+  // Single-pod mode: just show a static label, no dropdown, no health checks
+  if (!isMultiPod) {
+    return (
+      <div className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-card-hover border border-card-border">
+        <span className="w-2 h-2 rounded-full bg-accent" />
+        <span className="truncate font-medium">
+          {userName ? `${userName}'s Pod` : "Local Pod"} (:8000)
+        </span>
+      </div>
+    );
+  }
 
+  // Multi-pod mode: full dropdown with health checks
   return (
     <div className="relative">
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-card-hover border border-card-border hover:border-accent/30 transition-colors"
       >
-        <span className={`w-2 h-2 rounded-full ${isSinglePod ? "bg-accent" : statuses[Number(currentPort)] !== false ? "bg-green-400" : "bg-red-400"}`} />
+        <span className={`w-2 h-2 rounded-full ${statuses[Number(currentPort)] !== false ? "bg-green-400" : "bg-red-400"}`} />
         <span className="truncate font-medium">
-          {isSinglePod
-            ? `${userName ? `${userName}'s Pod` : "Single Pod"} (:8000)`
-            : `${currentPod?.name || "Pod"} (:${currentPort})`}
+          {currentPod?.name || "Pod"} (:${currentPort})
         </span>
         <svg className={`w-3 h-3 ml-auto transition-transform ${open ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <polyline points="6 9 12 15 18 9" />
@@ -97,18 +109,17 @@ export function PodSwitcher({ userName }: { userName?: string }) {
 
       {open && (
         <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-card border border-card-border rounded-lg shadow-xl max-h-80 overflow-y-auto">
-          {/* Single-pod mode */}
+          {/* Back to single-pod */}
           <button
             onClick={() => { setPodUrl("http://localhost:8000"); setCurrent("http://localhost:8000"); setOpen(false); window.location.reload(); }}
-            className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-card-hover transition-colors ${isSinglePod ? "bg-accent/10 text-accent" : ""}`}
+            className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-card-hover transition-colors"
           >
             <span className="w-2 h-2 rounded-full bg-accent" />
             <span className="font-medium">{userName ? `${userName}'s Pod` : "Single Pod"} (:8000)</span>
           </button>
 
           <div className="border-t border-card-border my-1" />
-
-          <p className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">Multi-Pod Federation</p>
+          <p className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">Federation Pods</p>
           {PODS.map((pod) => {
             const badge = TYPE_BADGE[pod.type];
             const isActive = current === `http://localhost:${pod.port}`;

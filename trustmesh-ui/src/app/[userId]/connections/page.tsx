@@ -1,17 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type User, type ContextMode, type Connection, type ConnectionRequest, type Network } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { matchesContext } from "@/lib/context";
 import { RelationshipBadge } from "@/components/TrustBadge";
 import { ProfilePreview } from "@/components/ProfilePreview";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 export default function ConnectionsPage() {
   const { userId } = useParams<{ userId: string }>();
   const queryClient = useQueryClient();
   const [showConnect, setShowConnect] = useState(false);
+  const [disconnectTarget, setDisconnectTarget] = useState<Connection | null>(null);
 
   const { data: currentUser } = useQuery({
     queryKey: ["user", userId],
@@ -145,11 +147,7 @@ export default function ConnectionsPage() {
                 Connected
               </span>
               <button
-                onClick={() => {
-                  if (confirm(`Disconnect from ${c.peer?.display_name}? This will remove trust access between you.`)) {
-                    disconnectMutation.mutate(c.id);
-                  }
-                }}
+                onClick={() => setDisconnectTarget(c)}
                 disabled={disconnectMutation.isPending}
                 className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-muted-foreground hover:text-danger hover:bg-danger/10 transition-all"
                 title="Disconnect"
@@ -173,6 +171,23 @@ export default function ConnectionsPage() {
           </div>
         )}
       </div>
+
+      {/* Disconnect Confirmation */}
+      <ConfirmDialog
+        open={!!disconnectTarget}
+        onCancel={() => setDisconnectTarget(null)}
+        onConfirm={() => {
+          if (disconnectTarget) {
+            disconnectMutation.mutate(disconnectTarget.id);
+            setDisconnectTarget(null);
+          }
+        }}
+        title={`Disconnect from ${disconnectTarget?.peer?.display_name}?`}
+        description="This will remove the trust connection between you. They will no longer have connected-level access to your knowledge, and you'll lose access to theirs."
+        confirmLabel="Disconnect"
+        variant="danger"
+        loading={disconnectMutation.isPending}
+      />
     </div>
   );
 }

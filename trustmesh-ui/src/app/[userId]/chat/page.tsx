@@ -31,6 +31,7 @@ export default function ChatPage() {
   const [results, setResults] = useState<StreamingResult[]>([]);
   const [isListening, setIsListening] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [voiceError, setVoiceError] = useState("");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
 
@@ -249,6 +250,13 @@ export default function ChatPage() {
     setHasSpeechRecognition(!!(win.SpeechRecognition ?? win.webkitSpeechRecognition));
   }, []);
 
+  // Auto-dismiss voice error after 5 seconds
+  useEffect(() => {
+    if (!voiceError) return;
+    const t = setTimeout(() => setVoiceError(""), 5000);
+    return () => clearTimeout(t);
+  }, [voiceError]);
+
   const toggleVoice = useCallback(() => {
     if (isListening) {
       recognitionRef.current?.stop();
@@ -260,14 +268,21 @@ export default function ChatPage() {
     const SpeechRecognition = win.SpeechRecognition ?? win.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-US";
     recognitionRef.current = recognition;
+    setVoiceError("");
 
     let finalTranscript = "";
+    let gotResults = false;
+    // Auto-stop after 15 seconds of listening
+    const autoStopTimer = setTimeout(() => {
+      recognition.stop();
+    }, 15000);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
+      gotResults = true;
       let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         if (event.results[i].isFinal) {
@@ -279,19 +294,37 @@ export default function ChatPage() {
       setQuestion(finalTranscript + interim);
     };
     recognition.onend = () => {
+      clearTimeout(autoStopTimer);
       setIsListening(false);
-      if (finalTranscript.trim()) setQuestion(finalTranscript.trim());
+      if (finalTranscript.trim()) {
+        setQuestion(finalTranscript.trim());
+      } else if (!gotResults) {
+        setVoiceError("No speech detected — check your mic is unmuted and try again");
+      }
     };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onerror = (e: any) => {
-      console.error("Speech recognition error:", e.error, e.message);
+      clearTimeout(autoStopTimer);
+      // no-speech is expected when user hasn't spoken yet in continuous mode — just restart
+      if (e.error === "no-speech") return;
+      console.warn("Speech recognition error:", e.error, e.message);
       setIsListening(false);
+      const messages: Record<string, string> = {
+        "not-allowed": "Microphone access denied — check browser permissions",
+        "network": "Speech service unavailable — check your internet connection",
+        "audio-capture": "No microphone found — check your audio settings",
+        "aborted": "Voice input cancelled",
+      };
+      setVoiceError(messages[e.error] || `Voice input error: ${e.error}`);
     };
     try {
       recognition.start();
       setIsListening(true);
     } catch (err) {
-      console.error("Failed to start speech recognition:", err);
+      clearTimeout(autoStopTimer);
+      console.warn("Failed to start speech recognition:", err);
       setIsListening(false);
+      setVoiceError("Failed to start voice input — try refreshing the page");
     }
   }, [isListening]);
 
@@ -482,6 +515,23 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
+
+        {/* Voice status/error */}
+        {isListening && (
+          <p className="text-xs text-red-400 flex items-center gap-1.5 animate-pulse">
+            <span className="w-2 h-2 rounded-full bg-red-400 inline-block" />
+            Listening... speak now
+          </p>
+        )}
+        {voiceError && !isListening && (
+          <p className="text-xs text-amber-400 flex items-center gap-1.5">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            {voiceError}
+          </p>
+        )}
 
         {/* Trust Context Hint */}
         {(queryMode === "self" || targetUser) && (

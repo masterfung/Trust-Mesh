@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type Network, type User, type Connection, type NetworkInviteListItem, type ContextMode } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { matchesContext } from "@/lib/context";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 const NETWORK_TYPES = ["family", "team", "friends", "custom"];
 const NETWORK_TYPE_CONFIG: Record<string, { icon: string; color: string }> = {
@@ -421,52 +422,64 @@ function NetworkMemberRow({
   networkId: string;
   onRemoved: () => void;
 }) {
+  const [showConfirm, setShowConfirm] = useState(false);
   const removeMutation = useMutation({
     mutationFn: () => api.removeNetworkMember(networkId, member.id),
     onSuccess: onRemoved,
   });
 
   return (
-    <div className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-card-hover transition-colors group">
-      <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded-xl bg-accent flex items-center justify-center text-accent-fg text-xs font-bold">
-          {member.display_name[0]}
-        </div>
-        <div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-sm font-medium">{member.display_name}</span>
-            {member.user_type === "organization" && (
-              <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold uppercase">Org</span>
-            )}
-            {member.user_type === "government" && (
-              <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold uppercase">Gov</span>
-            )}
+    <>
+      <div className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-card-hover transition-colors group">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-xl bg-accent flex items-center justify-center text-accent-fg text-xs font-bold">
+            {member.display_name[0]}
           </div>
-          <span className="text-[11px] text-muted-foreground block">@{member.username}</span>
+          <div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-medium">{member.display_name}</span>
+              {member.user_type === "organization" && (
+                <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold uppercase">Org</span>
+              )}
+              {member.user_type === "government" && (
+                <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold uppercase">Gov</span>
+              )}
+            </div>
+            <span className="text-[11px] text-muted-foreground block">@{member.username}</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {isOwner && (
+            <span className="text-[10px] text-accent bg-accent/10 px-2 py-0.5 rounded-full font-medium">Owner</span>
+          )}
+          {canRemove && (
+            <button
+              onClick={() => setShowConfirm(true)}
+              disabled={removeMutation.isPending}
+              className="opacity-0 group-hover:opacity-100 p-1 rounded-lg text-muted-foreground hover:text-danger hover:bg-danger/10 transition-all"
+              title="Remove member"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          )}
         </div>
       </div>
-      <div className="flex items-center gap-2">
-        {isOwner && (
-          <span className="text-[10px] text-accent bg-accent/10 px-2 py-0.5 rounded-full font-medium">Owner</span>
-        )}
-        {canRemove && (
-          <button
-            onClick={() => {
-              if (confirm(`Remove ${member.display_name} from this network?`)) {
-                removeMutation.mutate();
-              }
-            }}
-            disabled={removeMutation.isPending}
-            className="opacity-0 group-hover:opacity-100 p-1 rounded-lg text-muted-foreground hover:text-danger hover:bg-danger/10 transition-all"
-            title="Remove member"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        )}
-      </div>
-    </div>
+      <ConfirmDialog
+        open={showConfirm}
+        onCancel={() => setShowConfirm(false)}
+        onConfirm={() => {
+          removeMutation.mutate();
+          setShowConfirm(false);
+        }}
+        title={`Remove ${member.display_name}?`}
+        description={`This will remove them from this network. They will lose shared-level access to capsules shared with this group.`}
+        confirmLabel="Remove"
+        variant="danger"
+        loading={removeMutation.isPending}
+      />
+    </>
   );
 }
 

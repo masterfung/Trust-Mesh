@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, Notification as NotificationType, ContextMode } from "@/lib/api";
+import { api, getPodUrl, Notification as NotificationType, ContextMode } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Sidebar } from "@/components/Sidebar";
 import { useParams, useRouter } from "next/navigation";
@@ -187,8 +187,8 @@ function NotificationBell({ userId }: { userId: string }) {
   }, [open]);
 
   useEffect(() => {
-    const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-    const eventSource = new EventSource(`${API_BASE}/api/users/${userId}/notifications/stream`);
+    const API_BASE = getPodUrl();
+    const eventSource = new EventSource(`${API_BASE}/api/users/${userId}/notifications/stream`, { withCredentials: true });
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);

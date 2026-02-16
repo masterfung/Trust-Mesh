@@ -71,6 +71,12 @@ export default function Home() {
     <div className="min-h-screen flex flex-col">
       {/* Top Nav */}
       <nav className="flex items-center justify-end gap-3 px-6 py-3">
+        <Link
+          href="/about"
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors px-3 py-1.5 rounded-lg hover:bg-card"
+        >
+          Protocol Docs
+        </Link>
         <a
           href="http://localhost:8100"
           target="_blank"
