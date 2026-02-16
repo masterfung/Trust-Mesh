@@ -496,6 +496,7 @@ function AddMemberToNetwork({
   connections: Connection[];
   onAdded: () => void;
 }) {
+  const [confirmUser, setConfirmUser] = useState<User | null>(null);
   const memberIds = new Set(currentMembers.map((m) => m.id));
   const eligible = connections
     .filter((c) => c.peer && !memberIds.has(c.peer.id))
@@ -503,27 +504,44 @@ function AddMemberToNetwork({
 
   const mutation = useMutation({
     mutationFn: (uid: string) => api.addNetworkMember(networkId, uid),
-    onSuccess: onAdded,
+    onSuccess: () => {
+      setConfirmUser(null);
+      onAdded();
+    },
   });
 
   if (!eligible.length) return null;
 
   return (
-    <div className="mt-4 pt-4 border-t border-card-border">
-      <h3 className="text-xs font-semibold text-muted-foreground mb-2">Add Connected User</h3>
-      <div className="flex gap-2 flex-wrap">
-        {eligible.map((u) => (
-          <button
-            key={u.id}
-            onClick={() => mutation.mutate(u.id)}
-            disabled={mutation.isPending}
-            className="px-3 py-1.5 text-xs bg-accent/10 text-accent rounded-xl hover:bg-accent/20 transition-colors border border-accent/20 font-medium"
-          >
-            + {u.display_name}
-          </button>
-        ))}
+    <>
+      <div className="mt-4 pt-4 border-t border-card-border">
+        <h3 className="text-xs font-semibold text-muted-foreground mb-2">Add Connected User</h3>
+        <div className="flex gap-2 flex-wrap">
+          {eligible.map((u) => (
+            <button
+              key={u.id}
+              onClick={() => setConfirmUser(u)}
+              disabled={mutation.isPending}
+              className="px-3 py-1.5 text-xs bg-accent/10 text-accent rounded-xl hover:bg-accent/20 transition-colors border border-accent/20 font-medium"
+            >
+              + {u.display_name}
+            </button>
+          ))}
+        </div>
       </div>
-    </div>
+      <ConfirmDialog
+        open={!!confirmUser}
+        onCancel={() => setConfirmUser(null)}
+        onConfirm={() => {
+          if (confirmUser) mutation.mutate(confirmUser.id);
+        }}
+        title={`Add ${confirmUser?.display_name}?`}
+        description={`This will give ${confirmUser?.display_name} access to all capsules shared with this network.`}
+        confirmLabel="Add Member"
+        variant="default"
+        loading={mutation.isPending}
+      />
+    </>
   );
 }
 

@@ -99,11 +99,12 @@ export default function Home() {
             <span className="text-gradient">TrustMesh</span>
           </h1>
           <p className="text-lg md:text-xl text-foreground max-w-2xl mx-auto leading-relaxed font-medium">
-            Your AI remembers everything. It only tells the right people.
+            The trust layer for personal AI agents.
           </p>
           <p className="text-base text-muted-foreground max-w-xl mx-auto leading-relaxed mt-3">
-            Store your knowledge in an encrypted vault. Your AI agent answers questions
-            from people you trust — and stays silent with everyone else.
+            Everyone gets an encrypted vault and an AI agent powered by Opus 4.6.
+            Agents collaborate across trust boundaries — sharing what&apos;s needed,
+            protecting everything else. One command to start. Zero configuration.
           </p>
         </div>
 
