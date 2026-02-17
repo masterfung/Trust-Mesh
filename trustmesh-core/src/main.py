@@ -21,7 +21,7 @@ from sqlalchemy import select, or_
 from src.crypto import decrypt, decrypt_text, derive_vault_key, public_key_to_b64
 from src.database import async_session, init_db
 from src.models import Agent, Connection, KnowledgeCapsule, Network, NetworkMembership, User, parse_profile_data
-from src.routes import audit, briefing, capsules, connections, emergency, fhir, intake, invites, networks, notifications, pin, pod, queries, registry, services, tasks, users
+from src.routes import audit, briefing, capsules, connections, emergency, fhir, intake, invites, networks, notifications, pin, pod, queries, registry, services, tasks, timeline, users
 from src.schemas import GraphEdge, GraphNetwork, GraphNode, GraphResponse
 
 # In-memory vault key store (user_id -> decrypted vault master key)
@@ -130,6 +130,7 @@ app.include_router(pin.router)
 app.include_router(fhir.router)
 app.include_router(pod.router)
 app.include_router(registry.router)
+app.include_router(timeline.router)
 
 
 @app.post("/api/demo/warmup")
