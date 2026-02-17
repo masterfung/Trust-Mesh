@@ -4,9 +4,15 @@ PodOS Timeline API Routes.
 REST API for the Timeline Engine — add entries, tick the engine,
 read state, push events, and manage hooks. The Zig kernel runs
 in-process via the FFI bridge.
+
+The auto-tick loop runs as a background asyncio task, ticking the
+engine at the heartbeat interval. Hook callbacks dispatch to the
+agent system for AGENT_TASK hooks.
 """
 
+import asyncio
 import logging
+import time
 import uuid
 from typing import Optional
 
@@ -21,10 +27,12 @@ router = APIRouter(prefix="/api/timeline", tags=["timeline"])
 
 
 # ═══════════════════════════════════════════
-#  ENGINE SINGLETON
+#  ENGINE SINGLETON + AUTO-TICK
 # ═══════════════════════════════════════════
 
 _engine = None
+_tick_task: Optional[asyncio.Task] = None
+_hook_queue: asyncio.Queue = asyncio.Queue()
 
 
 def _get_engine():
@@ -41,6 +49,7 @@ def _get_engine():
                     "cd kernel && zig build",
                 )
             _engine = TimelineEngine(heartbeat_ms=5000, max_entries=10000)
+            _register_hook_callback(_engine)
             _engine.start()
             logger.info("Timeline engine started")
         except ImportError:
@@ -51,6 +60,287 @@ def _get_engine():
 def _get_optional_engine():
     """Get the engine if it exists, None otherwise."""
     return _engine
+
+
+def _register_hook_callback(engine):
+    """Register the FFI hook callback that queues hooks for async dispatch."""
+    from src.timeline_bridge import _bytes_to_uuid
+
+    def on_hook(entry_id_bytes, hook_index, action_kind, data, data_len):
+        eid = _bytes_to_uuid(entry_id_bytes)
+        logger.info("Hook fired: entry=%s hook=%d action=%d", eid, hook_index, action_kind)
+        try:
+            _hook_queue.put_nowait({
+                "entry_id": str(eid),
+                "hook_index": hook_index,
+                "action_kind": action_kind,
+                "timestamp_ms": int(time.time() * 1000),
+            })
+        except asyncio.QueueFull:
+            logger.warning("Hook queue full, dropping hook for entry %s", eid)
+
+    engine.register_hook_callback(on_hook)
+
+
+async def start_auto_tick():
+    """Start the auto-tick background loop. Called from app lifespan."""
+    global _tick_task
+    try:
+        engine = _get_engine()
+    except Exception:
+        logger.info("Timeline kernel not available — auto-tick disabled")
+        return
+    # Seed demo entries if engine is empty
+    if engine.entry_count == 0:
+        _seed_demo_entries(engine)
+    if _tick_task is None or _tick_task.done():
+        _tick_task = asyncio.create_task(_auto_tick_loop(engine))
+        logger.info("Auto-tick loop started")
+
+
+def _seed_demo_entries(engine):
+    """Seed the timeline engine with demo entries for the Riverside scenario."""
+    from src.timeline_bridge import (
+        EntryBuilder,
+        EntryType,
+        EventSource,
+        HookActionKind,
+        HookPhase,
+        Visibility,
+    )
+
+    now_ms = int(time.time() * 1000)
+    hour = 3_600_000
+
+    entries = [
+        # ── Active health monitoring ──
+        {
+            "label": "Peter's morning medication reminder",
+            "category": "health",
+            "salience": 0.9,
+            "entry_type": EntryType.REMINDER,
+            "cron": "0 8 * * *",  # every day at 8 AM
+            "hook": "Remind Peter about his morning medications. Check his medication capsule for details.",
+        },
+        {
+            "label": "Monitor health capsule updates",
+            "category": "health",
+            "salience": 0.8,
+            "entry_type": EntryType.HOOK,
+            "event": "capsule.created.health",
+            "hook": "A new health capsule was created. Review it and notify the Care Circle if it's important.",
+        },
+        {
+            "label": "Weekly family check-in",
+            "category": "family",
+            "salience": 0.6,
+            "entry_type": EntryType.TASK,
+            "cron": "0 10 * * 0",  # Sundays at 10 AM
+            "hook": "Time for the weekly family check-in. Query family members' agents for any updates or needs.",
+        },
+        # ── Upcoming appointments (time-triggered) ──
+        {
+            "label": "Dr. Lee follow-up appointment prep",
+            "category": "health",
+            "salience": 0.85,
+            "entry_type": EntryType.TASK,
+            "at_ms": now_ms + 2 * hour,  # 2 hours from now
+            "hook": "Prepare for Peter's follow-up with Dr. Lee. Search vault for recent health updates and compile a summary.",
+        },
+        {
+            "label": "Check prescription refill status",
+            "category": "health",
+            "salience": 0.7,
+            "entry_type": EntryType.TASK,
+            "at_ms": now_ms + 4 * hour,  # 4 hours from now
+            "hook": "Check if Peter's prescriptions need refilling. Query Riverside Hospital's agent for pharmacy status.",
+        },
+        # ── Event-triggered reactions ──
+        {
+            "label": "React to new capsule creation",
+            "category": "general",
+            "salience": 0.5,
+            "entry_type": EntryType.HOOK,
+            "event": "capsule.updated.health",
+            "hook": "A health capsule was updated. Check if emergency contacts need to be notified.",
+        },
+        {
+            "label": "React to timeline entry completion",
+            "category": "general",
+            "salience": 0.4,
+            "entry_type": EntryType.HOOK,
+            "event": "timeline.entry_completed",
+            "hook": "A timeline entry was completed. Check if there are follow-up tasks to create.",
+        },
+        # ── Dormant entries (need manual activation) ──
+        {
+            "label": "Emergency contact alert protocol",
+            "category": "health",
+            "salience": 1.0,
+            "entry_type": EntryType.SIGNAL,
+            "event": "emergency.triggered",
+            "hook": "EMERGENCY: Activate the emergency contact chain. Query all Care Circle members immediately.",
+        },
+    ]
+
+    count = 0
+    for e in entries:
+        builder = (
+            EntryBuilder()
+            .set_label(e["label"])
+            .set_category(e["category"])
+            .set_salience(e["salience"])
+            .set_entry_type(e["entry_type"])
+            .set_visibility(Visibility.PRIVATE)
+        )
+
+        if "cron" in e:
+            builder.set_trigger_cron(e["cron"])
+        elif "at_ms" in e:
+            builder.set_trigger_time(e["at_ms"])
+        elif "event" in e:
+            builder.set_trigger_event(EventSource.SYSTEM, e["event"])
+
+        if "hook" in e:
+            builder.add_hook(
+                action=HookActionKind.AGENT_TASK,
+                phase=HookPhase.PRE,
+                prompt=e["hook"],
+            )
+
+        engine.add_entry(builder)
+        count += 1
+
+    logger.info("Seeded %d demo timeline entries", count)
+
+
+async def stop_auto_tick():
+    """Stop the auto-tick background loop. Called from app shutdown."""
+    global _tick_task
+    if _tick_task and not _tick_task.done():
+        _tick_task.cancel()
+        try:
+            await _tick_task
+        except asyncio.CancelledError:
+            pass
+        _tick_task = None
+    engine = _get_optional_engine()
+    if engine:
+        engine.stop()
+    logger.info("Auto-tick loop stopped")
+
+
+async def _auto_tick_loop(engine):
+    """Background loop: tick the engine at its heartbeat interval."""
+    heartbeat_sec = 5.0  # default 5s
+    logger.info("Auto-tick loop running (heartbeat=%.1fs)", heartbeat_sec)
+    while True:
+        try:
+            # Check next wake time from kernel
+            next_wake = engine.next_wake_at
+            now_ms = int(time.time() * 1000)
+            if next_wake > 0 and next_wake > now_ms:
+                sleep_sec = min((next_wake - now_ms) / 1000.0, heartbeat_sec)
+            else:
+                sleep_sec = heartbeat_sec
+
+            await asyncio.sleep(sleep_sec)
+
+            if engine.is_running:
+                engine.tick()
+                # Process any queued hooks
+                await _dispatch_queued_hooks(engine)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Auto-tick error")
+            await asyncio.sleep(1.0)
+
+
+async def _dispatch_queued_hooks(engine):
+    """Process queued hook callbacks — dispatch AGENT_TASK hooks to the agent."""
+    from src.timeline_bridge import HookActionKind
+
+    while not _hook_queue.empty():
+        try:
+            hook = _hook_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+        action = hook["action_kind"]
+        entry_id = hook["entry_id"]
+        hook_index = hook["hook_index"]
+
+        if action == int(HookActionKind.AGENT_TASK):
+            # Dispatch to agent system
+            try:
+                await _dispatch_agent_hook(engine, entry_id, hook_index)
+            except Exception:
+                logger.exception("Agent hook dispatch failed for entry %s", entry_id)
+                # Mark hook as failed so engine can continue
+                try:
+                    engine.complete_hook(uuid.UUID(entry_id), hook_index, False)
+                except Exception:
+                    pass
+        elif action == int(HookActionKind.NOTIFY):
+            # Log notification hooks
+            logger.info("NOTIFY hook for entry %s (hook %d)", entry_id, hook_index)
+            engine.complete_hook(uuid.UUID(entry_id), hook_index, True)
+        else:
+            # Unknown hook type — auto-complete
+            engine.complete_hook(uuid.UUID(entry_id), hook_index, True)
+
+
+async def _dispatch_agent_hook(engine, entry_id_str: str, hook_index: int):
+    """Dispatch an AGENT_TASK hook to the AI agent for processing."""
+    eid = uuid.UUID(entry_id_str)
+    label = engine.get_entry_label(eid) or "unknown"
+    category = engine.get_entry_category(eid) or "general"
+
+    logger.info("Dispatching agent hook: entry=%s label=%s", entry_id_str, label)
+
+    # Build a prompt from the entry's hook data
+    prompt = f"Timeline hook fired for entry '{label}' (category: {category}). Process this entry and take appropriate action."
+
+    # Try to dispatch to agent system
+    try:
+        from src.database import async_session
+        from src.gossip import query_agent
+
+        async with async_session() as db:
+            # Use the first demo user's agent for now
+            # In production, entries would have an owner_id field
+            from sqlalchemy import select
+            from src.models import User
+            result = await db.execute(
+                select(User).where(User.is_demo == True).limit(1)  # noqa: E712
+            )
+            user = result.scalar_one_or_none()
+            if not user:
+                logger.warning("No user found for agent hook dispatch")
+                engine.complete_hook(eid, hook_index, False)
+                return
+
+            from src.main import vault_keys
+            vk = vault_keys.get(user.id)
+            if not vk:
+                logger.warning("No vault key for user %s", user.id)
+                engine.complete_hook(eid, hook_index, False)
+                return
+
+            result = await query_agent(
+                db=db,
+                from_user_id=user.id,
+                to_user_id=user.id,  # self-query
+                question=prompt,
+                vault_keys=vault_keys,
+            )
+            response = result.get("response", "")
+            logger.info("Agent response for hook: %s", response[:200] if response else "empty")
+            engine.complete_hook(eid, hook_index, True)
+    except Exception:
+        logger.exception("Agent hook dispatch failed")
+        engine.complete_hook(eid, hook_index, False)
 
 
 # ═══════════════════════════════════════════

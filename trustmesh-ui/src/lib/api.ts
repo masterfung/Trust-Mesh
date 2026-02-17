@@ -130,6 +130,7 @@ export interface Network {
   context?: ContextMode;
   pool_type?: string;
   shared_categories?: string[] | null;
+  expires_at?: string | null;
   created_at: string;
   members: User[];
 }
@@ -448,7 +449,7 @@ export const api = {
   listNetworks: (userId: string) =>
     apiFetch<Network[]>(`/api/users/${userId}/networks`),
   getNetwork: (id: string) => apiFetch<Network>(`/api/networks/${id}`),
-  createNetwork: (data: { name: string; description: string; network_type: string; owner_id: string; is_public?: boolean; join_policy?: string; pool_type?: string; shared_categories?: string[] }) =>
+  createNetwork: (data: { name: string; description: string; network_type: string; owner_id: string; is_public?: boolean; join_policy?: string; pool_type?: string; shared_categories?: string[]; expires_at?: string; initial_member_ids?: string[] }) =>
     apiFetch<Network>("/api/networks", { method: "POST", body: JSON.stringify(data) }),
   addNetworkMember: (networkId: string, userId: string) =>
     apiFetch<Network>(`/api/networks/${networkId}/members`, {
@@ -633,4 +634,56 @@ export const api = {
       .then(r => r.json()) as Promise<{ query: string; results: RegistryPodAgent[]; count: number }>,
   registryHealth: () =>
     fetch(`${REGISTRY_URL}/api/health`).then(r => r.json()) as Promise<{ status: string; agent_count: number }>,
+
+  // Timeline
+  getTimelineHealth: () =>
+    apiFetch<TimelineHealth>("/api/timeline/health"),
+  getTimelineState: () =>
+    apiFetch<TimelineEngineState>("/api/timeline/state"),
+  listTimelineEntries: () =>
+    apiFetch<TimelineEntry[]>("/api/timeline/entries"),
+  createTimelineEntry: (data: { label: string; category: string; salience?: number; activation_trigger?: { kind: string; at_ms?: number; cron?: string; event_type?: string }; hooks?: { action: number; phase: number; prompt: string }[] }) =>
+    apiFetch<TimelineEntry>("/api/timeline/entries", { method: "POST", body: JSON.stringify(data) }),
+  tickTimeline: () =>
+    apiFetch<{ tick_count: number; next_wake_at: number }>("/api/timeline/tick", { method: "POST" }),
+  transitionTimelineEntry: (entryId: string, newState: number) =>
+    apiFetch<TimelineEntry>(`/api/timeline/entries/${entryId}/transition`, { method: "POST", body: JSON.stringify({ new_state: newState }) }),
+  startTimeline: () =>
+    apiFetch<{ status: string }>("/api/timeline/start", { method: "POST" }),
+  stopTimeline: () =>
+    apiFetch<{ status: string }>("/api/timeline/stop", { method: "POST" }),
 };
+
+// ── Timeline Types ──
+
+export interface TimelineHealth {
+  status: string;
+  kernel_built: boolean;
+  tick_count?: number;
+  entry_count?: number;
+  version?: number;
+  message?: string;
+}
+
+export interface TimelineEngineState {
+  active_count: number;
+  pending_count: number;
+  dormant_count: number;
+  failed_count: number;
+  total_count: number;
+  tick_count: number;
+  signal_count: number;
+  is_running: boolean;
+  signals: { severity: string; message: string; related_entry_id: string }[];
+  active_ids: string[];
+}
+
+export interface TimelineEntry {
+  id: string;
+  label: string;
+  category: string;
+  state: number;
+  state_name: string;
+  salience: number;
+  visibility: number;
+}

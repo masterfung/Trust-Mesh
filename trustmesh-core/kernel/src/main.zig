@@ -13,6 +13,8 @@ pub const resolution = @import("resolution.zig");
 pub const state = @import("state.zig");
 pub const log = @import("log.zig");
 pub const timeline = @import("timeline.zig");
+pub const db = @import("db.zig");
+pub const fts = @import("fts.zig");
 
 // Page allocator for FFI — simple, no libc dependency
 const ffi_allocator = std.heap.page_allocator;
@@ -475,4 +477,119 @@ export fn podos_engine_next_wake(ptr: ?*anyopaque) callconv(.c) i64 {
 export fn podos_engine_tick_count(ptr: ?*anyopaque) callconv(.c) u64 {
     const eng: *timeline.Engine = @ptrCast(@alignCast(ptr orelse return 0));
     return eng.tick_count;
+}
+
+// ═══════════════════════════════════════════
+//  DATABASE / FTS5 (SQLite full-text search)
+// ═══════════════════════════════════════════
+
+/// Open a SQLite DB (same trustmesh.db) and create the FTS5 table.
+/// Returns opaque handle, or null on error.
+export fn podos_db_open(path: [*]const u8, path_len: u32) callconv(.c) ?*anyopaque {
+    // Copy path to null-terminated buffer on the stack
+    var buf: [4096]u8 = undefined;
+    const len: usize = @min(path_len, buf.len - 1);
+    @memcpy(buf[0..len], path[0..len]);
+    buf[len] = 0;
+    const path_z: [*:0]const u8 = buf[0..len :0];
+
+    var database = ffi_allocator.create(db.Database) catch return null;
+    database.* = db.Database.open(path_z) catch {
+        ffi_allocator.destroy(database);
+        return null;
+    };
+
+    // Create FTS5 table
+    fts.initFtsTable(database) catch {
+        database.close();
+        ffi_allocator.destroy(database);
+        return null;
+    };
+
+    return @ptrCast(database);
+}
+
+/// Close a DB handle opened by podos_db_open.
+export fn podos_db_close(handle: ?*anyopaque) callconv(.c) void {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return));
+    database.close();
+    ffi_allocator.destroy(database);
+}
+
+/// Upsert a capsule into the FTS5 index.
+/// Returns 0 on success, negative on error.
+export fn podos_fts_upsert(
+    handle: ?*anyopaque,
+    capsule_id: [*]const u8,
+    id_len: u32,
+    title_ptr: [*]const u8,
+    title_len: u32,
+    content_ptr: [*]const u8,
+    content_len: u32,
+    category_ptr: [*]const u8,
+    category_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    fts.upsertCapsule(
+        database,
+        capsule_id,
+        id_len,
+        title_ptr,
+        title_len,
+        content_ptr,
+        content_len,
+        category_ptr,
+        category_len,
+    ) catch return -2;
+    return 0;
+}
+
+/// Delete a capsule from the FTS5 index.
+/// Returns 0 on success, negative on error.
+export fn podos_fts_delete(
+    handle: ?*anyopaque,
+    capsule_id: [*]const u8,
+    id_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    fts.deleteCapsule(database, capsule_id, id_len) catch return -2;
+    return 0;
+}
+
+/// Search capsules via FTS5 MATCH with BM25 ranking.
+/// `accessible_ids_json` is a JSON array: '["id1","id2",...]'
+/// Results written to out_buf as JSON. out_len set to bytes written.
+/// Returns 0 on success, negative on error.
+export fn podos_fts_search(
+    handle: ?*anyopaque,
+    query: [*]const u8,
+    query_len: u32,
+    accessible_ids_json: [*]const u8,
+    ids_len: u32,
+    top_k: u32,
+    out_buf: [*]u8,
+    out_capacity: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    const written = fts.searchCapsules(
+        database,
+        query,
+        query_len,
+        accessible_ids_json,
+        ids_len,
+        top_k,
+        out_buf,
+        out_capacity,
+    ) catch return -2;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Drop and recreate the FTS5 table (for testing/seeding).
+/// Returns 0 on success, negative on error.
+export fn podos_fts_reset(handle: ?*anyopaque) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    fts.resetFts(database) catch return -2;
+    return 0;
 }

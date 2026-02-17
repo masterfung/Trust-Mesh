@@ -1,90 +1,101 @@
-"""ChromaDB vector store for semantic capsule retrieval — category-scoped collections."""
+"""FTS5 full-text search for capsule retrieval — replaces ChromaDB with Zig kernel.
 
-import re
+Uses SQLite FTS5 (BM25 keyword search) via libpodos for fast, low-memory capsule search.
+The Zig kernel opens the same trustmesh.db as a second WAL-mode connection.
+"""
 
-import chromadb
+import ctypes
+import json
+import os
+from ctypes import c_uint32
 
-_client: chromadb.ClientAPI | None = None
-_collections: dict[str, chromadb.Collection] = {}
-
-
-def get_client() -> chromadb.ClientAPI:
-    """Get or create the ChromaDB client (persistent, in-process)."""
-    global _client
-    if _client is None:
-        _client = chromadb.Client()  # In-memory for hackathon; swap to PersistentClient for prod
-    return _client
+_db_handle = None
 
 
-def _sanitize_category(category: str) -> str:
-    """Normalize category to a valid ChromaDB collection name suffix."""
-    if not category:
-        return "general"
-    # Lowercase, keep only alphanum and underscores
-    sanitized = re.sub(r"[^a-z0-9_]", "_", category.lower()).strip("_")
-    return sanitized or "general"
+def _get_lib():
+    """Get the loaded libpodos library."""
+    from src.timeline_bridge import _get_lib as _tl_get_lib
+    return _tl_get_lib()
 
 
-def get_collection(category: str = "general") -> chromadb.Collection:
-    """Get or create a category-scoped collection."""
-    suffix = _sanitize_category(category)
-    name = f"trustmesh_{suffix}"
-    if name not in _collections:
-        client = get_client()
-        _collections[name] = client.get_or_create_collection(
-            name=name,
-            metadata={"hnsw:space": "cosine"},
-        )
-    return _collections[name]
+def init_fts(db_path: str | None = None) -> None:
+    """Open the Zig-side SQLite connection and create the FTS5 table.
+
+    Called once on startup. Opens the same trustmesh.db the Python side uses.
+    """
+    global _db_handle
+    if _db_handle is not None:
+        return  # Already initialized
+
+    if db_path is None:
+        db_path = os.getenv("TRUSTMESH_DB", "./trustmesh.db")
+
+    lib = _get_lib()
+    path_bytes = db_path.encode("utf-8")
+    _db_handle = lib.podos_db_open(path_bytes, len(path_bytes))
+    if not _db_handle:
+        raise RuntimeError(f"Failed to open FTS5 database at {db_path}")
+
+
+def _ensure_init():
+    """Ensure FTS is initialized (lazy init for backward compat)."""
+    if _db_handle is None:
+        init_fts()
 
 
 def upsert_capsule_embedding(
     capsule_id: str, text: str, metadata: dict | None = None, category: str = "general"
 ):
-    """Embed and store a capsule's text in the category-scoped ChromaDB collection.
+    """Index a capsule's text in the FTS5 table.
 
-    ChromaDB uses its default embedding function (all-MiniLM-L6-v2)
-    which runs locally — no API calls needed.
+    Same signature as the old ChromaDB version for drop-in replacement.
     """
-    collection = get_collection(category)
-    meta = metadata or {}
-    # ChromaDB only accepts str/int/float/bool values in metadata
-    clean_meta = {k: v for k, v in meta.items() if isinstance(v, (str, int, float, bool))}
-    collection.upsert(ids=[capsule_id], documents=[text], metadatas=[clean_meta])
+    _ensure_init()
+    lib = _get_lib()
+
+    # Extract title from "Title: content" format if present, else use full text
+    title = ""
+    content = text
+    if ": " in text:
+        parts = text.split(": ", 1)
+        title = parts[0]
+        content = parts[1]
+
+    id_b = capsule_id.encode("utf-8")
+    title_b = title.encode("utf-8")
+    content_b = content.encode("utf-8")
+    cat_b = (category or "general").encode("utf-8")
+
+    rc = lib.podos_fts_upsert(
+        _db_handle,
+        id_b, len(id_b),
+        title_b, len(title_b),
+        content_b, len(content_b),
+        cat_b, len(cat_b),
+    )
+    if rc < 0:
+        raise RuntimeError(f"FTS5 upsert failed for {capsule_id}: {rc}")
 
 
 def delete_capsule_embedding(capsule_id: str, category: str | None = None):
-    """Remove a capsule from the vector store.
+    """Remove a capsule from the FTS5 index.
 
-    If category is given, delete from that specific collection.
-    If None, try all cached collections.
+    Category is ignored (FTS5 uses one flat table), but kept for API compat.
     """
-    if category is not None:
-        collection = get_collection(category)
-        try:
-            collection.delete(ids=[capsule_id])
-        except Exception:
-            pass
-    else:
-        for collection in _collections.values():
-            try:
-                collection.delete(ids=[capsule_id])
-            except Exception:
-                pass
+    _ensure_init()
+    lib = _get_lib()
+    id_b = capsule_id.encode("utf-8")
+    rc = lib.podos_fts_delete(_db_handle, id_b, len(id_b))
+    if rc < 0:
+        raise RuntimeError(f"FTS5 delete failed for {capsule_id}: {rc}")
 
 
 def move_capsule_embedding(
     capsule_id: str, text: str, metadata: dict | None = None,
     old_category: str = "general", new_category: str = "general",
 ):
-    """Move a capsule embedding from one category collection to another."""
-    if _sanitize_category(old_category) == _sanitize_category(new_category):
-        # Same collection — just upsert in place
-        upsert_capsule_embedding(capsule_id, text, metadata, new_category)
-        return
-    # Upsert to new collection first, then delete from old
+    """Move a capsule embedding — just re-upsert (FTS5 uses one flat table)."""
     upsert_capsule_embedding(capsule_id, text, metadata, new_category)
-    delete_capsule_embedding(capsule_id, old_category)
 
 
 def search_capsules(
@@ -93,76 +104,85 @@ def search_capsules(
     top_k: int = 5,
     categories: list[str] | None = None,
 ) -> list[str]:
-    """Semantic search over accessible capsules, optionally scoped to categories.
+    """Full-text search over accessible capsules using FTS5 BM25 ranking.
 
     Returns capsule IDs ranked by relevance to the query.
+    Categories parameter is accepted for API compat but not used for filtering
+    (FTS5 searches all capsules; trust filtering is via accessible_ids).
     """
-    if not accessible_ids:
+    if not accessible_ids or not query or not query.strip():
         return []
 
-    accessible_set = set(accessible_ids)
+    _ensure_init()
+    lib = _get_lib()
 
-    # Determine which collections to search
-    if categories:
-        collections_to_search = [get_collection(cat) for cat in categories]
-    elif _collections:
-        collections_to_search = list(_collections.values())
-    else:
-        # No cached collections — create/get the default one
-        collections_to_search = [get_collection("general")]
+    # Prepare the query for FTS5 MATCH — escape special chars
+    safe_query = _sanitize_fts_query(query)
+    if not safe_query:
+        return []
 
-    all_results: list[tuple[str, float]] = []
+    query_b = safe_query.encode("utf-8")
+    ids_json = json.dumps(accessible_ids).encode("utf-8")
 
-    for collection in collections_to_search:
-        try:
-            where_filter = (
-                {"capsule_id": {"$in": accessible_ids}}
-                if len(accessible_ids) > 1
-                else {"capsule_id": accessible_ids[0]}
-            )
-            results = collection.query(
-                query_texts=[query],
-                where=where_filter,
-                n_results=min(top_k, len(accessible_ids)),
-            )
-        except Exception:
-            try:
-                results = collection.query(query_texts=[query], n_results=top_k * 2)
-            except Exception:
-                continue
+    # Allocate output buffer (16KB should be plenty)
+    out_buf = ctypes.create_string_buffer(16384)
+    out_len = c_uint32(0)
 
-        if results and results["ids"] and results["ids"][0]:
-            distances = results.get("distances", [[]])[0]
-            for i, cid in enumerate(results["ids"][0]):
-                if cid in accessible_set:
-                    dist = distances[i] if i < len(distances) else 1.0
-                    all_results.append((cid, dist))
+    rc = lib.podos_fts_search(
+        _db_handle,
+        query_b, len(query_b),
+        ids_json, len(ids_json),
+        top_k,
+        out_buf, 16384,
+        ctypes.byref(out_len),
+    )
 
-    # Sort by distance (lower = more similar for cosine), deduplicate
-    all_results.sort(key=lambda x: x[1])
-    seen = set()
-    final = []
-    for cid, _ in all_results:
-        if cid not in seen:
-            seen.add(cid)
-            final.append(cid)
-            if len(final) >= top_k:
-                break
+    if rc < 0:
+        # Search failed (e.g., malformed query) — return empty rather than crash
+        return []
 
-    return final
+    # Parse JSON result: [{"id":"...","rank":-1.23}, ...]
+    result_json = out_buf.raw[:out_len.value].decode("utf-8")
+    try:
+        results = json.loads(result_json)
+    except json.JSONDecodeError:
+        return []
+
+    return [r["id"] for r in results if "id" in r]
+
+
+def _sanitize_fts_query(query: str) -> str:
+    """Sanitize a query string for FTS5 MATCH syntax.
+
+    FTS5 uses a query language where some characters are special.
+    We convert the user query into a safe OR-joined keyword search.
+    """
+    # Split into words, strip non-alphanumeric (keep unicode letters)
+    import re
+    words = re.findall(r'\w+', query, re.UNICODE)
+    if not words:
+        return ""
+    # Join with OR for broader matching (any word matches)
+    return " OR ".join(words)
 
 
 def reset_collections():
-    """Reset all collections (for testing/seeding)."""
-    global _collections
-    client = get_client()
-    for name in list(_collections.keys()):
-        try:
-            client.delete_collection(name)
-        except Exception:
-            pass
-    _collections.clear()
+    """Reset the FTS5 table (for testing/seeding)."""
+    _ensure_init()
+    lib = _get_lib()
+    rc = lib.podos_fts_reset(_db_handle)
+    if rc < 0:
+        raise RuntimeError(f"FTS5 reset failed: {rc}")
 
 
 # Backward-compat alias
 reset_collection = reset_collections
+
+
+def close_fts():
+    """Close the Zig-side DB connection. Called on shutdown."""
+    global _db_handle
+    if _db_handle is not None:
+        lib = _get_lib()
+        lib.podos_db_close(_db_handle)
+        _db_handle = None

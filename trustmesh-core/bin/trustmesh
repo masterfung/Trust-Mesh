@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Wrapper so you can run `trustmesh` directly without `uv run`.
+# Add this directory to PATH, or symlink this file to /usr/local/bin/trustmesh.
+exec uv --directory "$(cd "$(dirname "$0")/.." && pwd)" run trustmesh "$@"

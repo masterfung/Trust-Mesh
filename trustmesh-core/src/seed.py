@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from src.crypto import derive_vault_key, encrypt, encrypt_text, generate_key, generate_ed25519_keypair, hash_pin, public_key_to_did
 from src.database import drop_db, init_db, async_session
-from src.embeddings import reset_collections, upsert_capsule_embedding
+from src.embeddings import init_fts, reset_collections, upsert_capsule_embedding
 from src.models import (
     Agent,
     CapsuleNetworkAccess,
@@ -1731,6 +1731,7 @@ async def seed():
 
     await drop_db()
     await init_db()
+    init_fts()
     reset_collections()
 
     # Import vault_keys from main to populate

@@ -344,6 +344,99 @@ AGENT_TOOLS = [
             "required": ["to", "subject", "body"],
         },
     },
+    # ── Timeline / PodOS tools ──
+    {
+        "name": "create_timeline_entry",
+        "description": (
+            "Create a new entry in the PodOS timeline — a scheduled task, reminder, "
+            "event-triggered action, or recurring check. The timeline engine ticks "
+            "automatically and transitions entries through states."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Human-readable label for the entry (e.g., 'Check Peter's medication', 'Follow up with Dr. Lee')",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Category: health, personal, work, family, home, general",
+                },
+                "salience": {
+                    "type": "number",
+                    "description": "Priority 0.0–1.0 (0.9+ = urgent, 0.5 = normal, 0.2 = low)",
+                },
+                "trigger_type": {
+                    "type": "string",
+                    "enum": ["immediate", "time", "event", "cron"],
+                    "description": "When to activate: 'immediate' (now), 'time' (at specific ms), 'event' (on event), 'cron' (recurring)",
+                },
+                "trigger_at_ms": {
+                    "type": "integer",
+                    "description": "For 'time' trigger: Unix ms when to activate",
+                },
+                "trigger_event_type": {
+                    "type": "string",
+                    "description": "For 'event' trigger: event type string (e.g., 'capsule.created', 'capsule.updated')",
+                },
+                "trigger_cron": {
+                    "type": "string",
+                    "description": "For 'cron' trigger: 5-field cron expression (e.g., '0 9 * * *' for 9 AM daily)",
+                },
+                "hook_prompt": {
+                    "type": "string",
+                    "description": "What you (the agent) should do when this entry activates. This will be dispatched back to you as a task.",
+                },
+            },
+            "required": ["label", "category"],
+        },
+    },
+    {
+        "name": "list_timeline_entries",
+        "description": (
+            "List active and pending entries in the PodOS timeline. "
+            "Shows what's currently happening and what's coming up."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filter_state": {
+                    "type": "string",
+                    "enum": ["all", "active", "pending", "dormant", "failed"],
+                    "description": "Filter by state. Default: 'all'",
+                },
+            },
+        },
+    },
+    {
+        "name": "complete_timeline_entry",
+        "description": (
+            "Mark a timeline entry as completed. Use when a task or reminder has been "
+            "fulfilled and should be retired from the active timeline."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {
+                    "type": "string",
+                    "description": "UUID of the timeline entry to complete",
+                },
+            },
+            "required": ["entry_id"],
+        },
+    },
+    {
+        "name": "check_timeline_state",
+        "description": (
+            "Get the overall state of the PodOS timeline engine — how many entries "
+            "are active, pending, failed. Also shows any signals (warnings/alerts)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
 
 
@@ -497,6 +590,7 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
             capsule.id,
             f"{title}: {content}",
             {"capsule_id": capsule.id, "owner_id": ctx.owner_id, "visibility": visibility},
+            category=category,
         )
 
         action = {
@@ -547,6 +641,7 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
             capsule.id,
             f"{title}: {content}",
             {"capsule_id": capsule.id, "owner_id": ctx.owner_id, "visibility": visibility},
+            category=category,
         )
 
         # Build governance summary for confirmation
@@ -1257,6 +1352,219 @@ async def handle_draft_email(ctx: ToolContext, params: dict) -> str:
     })
 
 
+# ═══════════════════════════════════════════════════════════════
+# Timeline Tool Handlers
+# ═══════════════════════════════════════════════════════════════
+
+async def handle_create_timeline_entry(ctx: ToolContext, inp: dict) -> str:
+    """Create a timeline entry in the PodOS kernel."""
+    try:
+        from src.routes.timeline import _get_engine
+        from src.timeline_bridge import (
+            EntryBuilder,
+            EntryState,
+            EntryType,
+            EventSource,
+            HookActionKind,
+            HookPhase,
+        )
+
+        engine = _get_engine()
+    except Exception:
+        return json.dumps({"error": "Timeline engine not available"})
+
+    import time as _time
+
+    label = inp.get("label", "Unnamed entry")
+    category = inp.get("category", "general")
+    salience = inp.get("salience", 0.5)
+    trigger_type = inp.get("trigger_type", "immediate")
+
+    builder = (
+        EntryBuilder()
+        .set_label(label)
+        .set_category(category)
+        .set_salience(salience)
+        .set_entry_type(EntryType.TASK)
+    )
+
+    # Configure trigger
+    now_ms = int(_time.time() * 1000)
+    if trigger_type == "time" and inp.get("trigger_at_ms"):
+        builder.set_trigger_time(inp["trigger_at_ms"])
+    elif trigger_type == "event" and inp.get("trigger_event_type"):
+        builder.set_trigger_event(EventSource.SYSTEM, inp["trigger_event_type"])
+    elif trigger_type == "cron" and inp.get("trigger_cron"):
+        builder.set_trigger_cron(inp["trigger_cron"])
+    elif trigger_type == "immediate":
+        builder.set_trigger_time(now_ms - 1000)  # already past → fires on next tick
+
+    # Add agent hook if prompt provided
+    hook_prompt = inp.get("hook_prompt", "")
+    if hook_prompt:
+        builder.add_hook(
+            action=HookActionKind.AGENT_TASK,
+            phase=HookPhase.PRE,
+            prompt=hook_prompt,
+        )
+
+    entry_id = engine.add_entry(builder)
+
+    # Push event so other entries can react
+    engine.push_event("timeline.entry_created", EventSource.AGENT)
+
+    ctx.actions.append({
+        "type": "timeline_entry_created",
+        "entry_id": str(entry_id),
+        "label": label,
+    })
+
+    return json.dumps({
+        "success": True,
+        "entry_id": str(entry_id),
+        "label": label,
+        "category": category,
+        "salience": salience,
+        "trigger_type": trigger_type,
+        "message": f"Timeline entry '{label}' created (id: {str(entry_id)[:8]}...). It will be processed by the engine.",
+    })
+
+
+async def handle_list_timeline_entries(ctx: ToolContext, filter_state: str = "all") -> str:
+    """List entries from the timeline engine."""
+    try:
+        from src.routes.timeline import _get_engine
+        from src.timeline_bridge import EntryState
+
+        engine = _get_engine()
+    except Exception:
+        return json.dumps({"error": "Timeline engine not available"})
+
+    ids = engine.get_all_entry_ids()
+    entries = []
+    for eid in ids:
+        state_val = engine.get_entry_state(eid)
+        if state_val is None:
+            continue
+
+        state_name = EntryState(state_val).name
+
+        # Apply filter
+        if filter_state != "all" and state_name.lower() != filter_state.lower():
+            continue
+
+        label = engine.get_entry_label(eid) or ""
+        category = engine.get_entry_category(eid) or ""
+        salience = engine.get_entry_salience(eid) or 0.0
+
+        entries.append({
+            "id": str(eid),
+            "label": label,
+            "category": category,
+            "state": state_name,
+            "salience": round(salience, 2),
+        })
+
+    # Sort by salience (highest first)
+    entries.sort(key=lambda e: e["salience"], reverse=True)
+
+    return json.dumps({
+        "count": len(entries),
+        "entries": entries[:20],  # Cap at 20
+        "message": f"Found {len(entries)} timeline entries" + (f" (filter: {filter_state})" if filter_state != "all" else ""),
+    })
+
+
+async def handle_complete_timeline_entry(ctx: ToolContext, entry_id_str: str) -> str:
+    """Transition a timeline entry to COMPLETED."""
+    import uuid as _uuid
+    try:
+        from src.routes.timeline import _get_engine
+        from src.timeline_bridge import EntryState, EventSource
+
+        engine = _get_engine()
+    except Exception:
+        return json.dumps({"error": "Timeline engine not available"})
+
+    try:
+        eid = _uuid.UUID(entry_id_str)
+    except ValueError:
+        return json.dumps({"error": f"Invalid entry ID: {entry_id_str}"})
+
+    state_val = engine.get_entry_state(eid)
+    if state_val is None:
+        return json.dumps({"error": f"Entry not found: {entry_id_str}"})
+
+    label = engine.get_entry_label(eid) or ""
+    current_state = EntryState(state_val)
+
+    # Walk through valid transitions to reach COMPLETED
+    try:
+        if current_state == EntryState.ACTIVE:
+            engine.transition_entry(eid, EntryState.DEACTIVATING)
+            engine.transition_entry(eid, EntryState.COMPLETED)
+        elif current_state == EntryState.DEACTIVATING:
+            engine.transition_entry(eid, EntryState.COMPLETED)
+        elif current_state in (EntryState.DORMANT, EntryState.PENDING, EntryState.ACTIVATING):
+            # Can't complete from these states — archive instead
+            engine.transition_entry(eid, EntryState.ARCHIVED)
+        elif current_state == EntryState.COMPLETED:
+            return json.dumps({"success": True, "message": f"Entry '{label}' is already completed."})
+        else:
+            return json.dumps({"error": f"Cannot complete entry in state {current_state.name}"})
+    except RuntimeError as e:
+        return json.dumps({"error": f"Transition failed: {e}"})
+
+    engine.push_event("timeline.entry_completed", EventSource.AGENT)
+
+    ctx.actions.append({
+        "type": "timeline_entry_completed",
+        "entry_id": entry_id_str,
+        "label": label,
+    })
+
+    return json.dumps({
+        "success": True,
+        "entry_id": entry_id_str,
+        "label": label,
+        "message": f"Timeline entry '{label}' marked as completed.",
+    })
+
+
+async def handle_check_timeline_state(ctx: ToolContext) -> str:
+    """Get overall timeline engine state."""
+    try:
+        from src.routes.timeline import _get_engine
+
+        engine = _get_engine()
+    except Exception:
+        return json.dumps({"error": "Timeline engine not available"})
+
+    state = engine.state
+    signals_summary = []
+    for s in state.signals[:5]:
+        signals_summary.append({
+            "severity": s.severity.name.lower(),
+            "message": s.message,
+        })
+
+    return json.dumps({
+        "is_running": engine.is_running,
+        "tick_count": state.tick_count,
+        "active_count": state.active_count,
+        "pending_count": state.pending_count,
+        "dormant_count": state.dormant_count,
+        "failed_count": state.failed_count,
+        "total_count": state.total_count,
+        "signals": signals_summary,
+        "message": (
+            f"Timeline engine: {state.active_count} active, "
+            f"{state.pending_count} pending, {state.dormant_count} dormant, "
+            f"{state.failed_count} failed. {state.tick_count} ticks so far."
+        ),
+    })
+
+
 async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> str:
     """Route a tool call to its handler. Returns JSON string."""
     if tool_name == "search_vault":
@@ -1283,6 +1591,15 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
         return await handle_check_calendar(ctx, tool_input.get("time_range", "this_week"))
     elif tool_name == "draft_email":
         return await handle_draft_email(ctx, tool_input)
+    # Timeline tools
+    elif tool_name == "create_timeline_entry":
+        return await handle_create_timeline_entry(ctx, tool_input)
+    elif tool_name == "list_timeline_entries":
+        return await handle_list_timeline_entries(ctx, tool_input.get("filter_state", "all"))
+    elif tool_name == "complete_timeline_entry":
+        return await handle_complete_timeline_entry(ctx, tool_input["entry_id"])
+    elif tool_name == "check_timeline_state":
+        return await handle_check_timeline_state(ctx)
     else:
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
@@ -1433,7 +1750,7 @@ You are talking directly to {owner_name} (your owner). You have FULL access to t
 {formatted_capsules}
 
 ## What You Can Do
-You have eleven tools:
+You have fifteen tools:
 
 1. **search_vault** — Search for existing capsules before saving. ALWAYS search first to avoid duplicates.
 2. **save_capsule** — Save new knowledge or update existing capsules.
@@ -1446,6 +1763,10 @@ You have eleven tools:
 9. **discover_networks** — Find public networks/groups the owner can join (music, dance, sports, neighborhood, etc.).
 10. **check_calendar** — Check the owner's calendar for upcoming events, meetings, and appointments.
 11. **draft_email** — Compose and save an email draft (saved to vault as a capsule).
+12. **create_timeline_entry** — Schedule a task, reminder, or event-triggered action in the PodOS timeline.
+13. **list_timeline_entries** — See what's active, pending, or coming up in the timeline.
+14. **complete_timeline_entry** — Mark a timeline entry as done when the task is fulfilled.
+15. **check_timeline_state** — Get the heartbeat of the timeline engine (counts, signals, health).
 
 ## When to use tools — be PROACTIVE:
 - User asks about services, businesses, or providers → ALWAYS list_services first, then request_quotes for matching ones, then web_search for more
@@ -1463,7 +1784,13 @@ You have eleven tools:
 - User asks about schedule, calendar, meetings, appointments → check_calendar
 - User asks "what's on my calendar?" or "when is my next meeting?" → check_calendar
 - User asks to write/draft/compose an email → draft_email
-- User asks about upcoming plans → check_calendar + search_vault
+- User asks about upcoming plans → check_calendar + search_vault + list_timeline_entries
+- User asks "remind me" or "schedule" or "follow up" → create_timeline_entry with appropriate trigger
+- User asks "what's happening?" or "what's active?" → check_timeline_state + list_timeline_entries
+- User asks to track something over time → create_timeline_entry with cron trigger
+- User says "that's done" or "finished with X" → complete_timeline_entry
+- When you create a task that needs future action → create_timeline_entry with hook_prompt describing what you should do
+- When you query a peer and need to follow up → create_timeline_entry with time trigger + hook_prompt
 
 ## IMPORTANT: Always check the mesh FIRST
 When the user asks about ANY type of provider, service, or business — ALWAYS call list_services before web_search.

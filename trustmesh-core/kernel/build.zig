@@ -1,5 +1,12 @@
 const std = @import("std");
 
+fn addSqlite(mod: *std.Build.Module) void {
+    // macOS Homebrew keg-only sqlite paths
+    mod.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/include" });
+    mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/lib" });
+    mod.linkSystemLibrary("sqlite3", .{});
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -12,16 +19,20 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    addSqlite(podos_mod);
 
     // ── Shared library (libpodos.dylib / libpodos.so) ──
+    const lib_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    addSqlite(lib_mod);
+
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
         .name = "podos",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = lib_mod,
     });
     b.installArtifact(lib);
 
@@ -36,6 +47,7 @@ pub fn build(b: *std.Build) void {
         "tests/test_state.zig",
         "tests/test_log.zig",
         "tests/test_timeline.zig",
+        "tests/test_fts.zig",
     };
 
     const test_step = b.step("test", "Run all kernel tests");
@@ -47,6 +59,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         test_module.addImport("podos", podos_mod);
+        addSqlite(test_module);
 
         const t = b.addTest(.{ .root_module = test_module });
         const run_t = b.addRunArtifact(t);

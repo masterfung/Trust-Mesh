@@ -54,11 +54,13 @@ async def _load_vault_keys():
                     pass  # Skip users with bad keys
 
 
-async def _rebuild_embeddings():
-    """Rebuild ChromaDB embeddings from DB for all users with loaded vault keys."""
-    from src.embeddings import reset_collection, upsert_capsule_embedding
+async def _init_fts_index():
+    """Initialize FTS5 index and rebuild from DB for all users with loaded vault keys."""
+    from src.embeddings import init_fts, reset_collections, upsert_capsule_embedding
 
-    reset_collection()
+    db_path = os.getenv("TRUSTMESH_DB", "./trustmesh.db")
+    init_fts(db_path)
+    reset_collections()
     async with async_session() as db:
         result = await db.execute(select(KnowledgeCapsule))
         count = 0
@@ -72,24 +74,31 @@ async def _rebuild_embeddings():
                     cap.id,
                     f"{cap.title}: {text}",
                     {"capsule_id": cap.id, "owner_id": cap.owner_id, "visibility": cap.visibility},
+                    category=cap.category or "general",
                 )
                 count += 1
             except Exception:
                 pass
-    print(f"Rebuilt {count} embeddings.")
+    print(f"Indexed {count} capsules in FTS5.")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifecycle: init DB + load vault keys + rebuild embeddings on startup."""
+    """Application lifecycle: init DB + load vault keys + build FTS5 index on startup."""
     import asyncio
     await init_db()
     await _load_vault_keys()
-    await _rebuild_embeddings()
+    await _init_fts_index()
     # Auto-register discoverable agents with the public registry (fire-and-forget)
     from src.federation import sync_discoverable_agents_to_registry
     asyncio.create_task(sync_discoverable_agents_to_registry())
+    # Start the PodOS Timeline auto-tick loop (fire-and-forget)
+    from src.routes.timeline import start_auto_tick
+    asyncio.create_task(start_auto_tick())
     yield
+    # Shutdown: stop the timeline engine
+    from src.routes.timeline import stop_auto_tick
+    await stop_auto_tick()
 
 
 app = FastAPI(

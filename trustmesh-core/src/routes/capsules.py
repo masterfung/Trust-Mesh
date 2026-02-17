@@ -15,6 +15,18 @@ from src.schemas import CapsuleCreate, CapsuleResponse, CapsuleShareRequest, Cap
 router = APIRouter(prefix="/api", tags=["capsules"])
 
 
+def _push_timeline_event(event_type: str):
+    """Push a capsule event to the timeline engine (best-effort, no-op if unavailable)."""
+    try:
+        from src.routes.timeline import _get_optional_engine
+        engine = _get_optional_engine()
+        if engine and engine.is_running:
+            from src.timeline_bridge import EventSource
+            engine.push_event(event_type, EventSource.SYSTEM)
+    except Exception:
+        pass  # Timeline is optional — never block capsule operations
+
+
 def _vault_key_for_user(user_id: str) -> bytes:
     """Get vault key for user. Uses the in-memory key store from main app."""
     from src.main import vault_keys
@@ -159,6 +171,9 @@ async def create_capsule(
     )
     await db.commit()
 
+    # Push timeline event (fires any event-triggered entries watching for capsule changes)
+    _push_timeline_event(f"capsule.created.{data.category or 'general'}")
+
     # Resolve network names
     network_names = []
     if network_ids:
@@ -298,6 +313,9 @@ async def update_capsule(
         details={"capsule_id": capsule_id, "title": capsule.title},
     )
     await db.commit()
+
+    # Push timeline event
+    _push_timeline_event(f"capsule.updated.{capsule.category or 'general'}")
 
     na_result = await db.execute(
         select(CapsuleNetworkAccess.network_id).where(CapsuleNetworkAccess.capsule_id == capsule_id)

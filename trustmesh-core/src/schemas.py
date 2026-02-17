@@ -228,6 +228,8 @@ class NetworkCreate(BaseModel):
     context: str = "personal"  # work | personal | both
     pool_type: str = "standard"  # standard | category_scoped | public_registry
     shared_categories: list[str] | None = None
+    expires_at: datetime | None = None
+    initial_member_ids: list[str] | None = None
 
 
 class NetworkResponse(BaseModel):
@@ -241,6 +243,7 @@ class NetworkResponse(BaseModel):
     context: str = "personal"
     pool_type: str = "standard"
     shared_categories: list[str] | None = None
+    expires_at: datetime | None = None
     created_at: datetime
     members: list[UserPublic] = []
 

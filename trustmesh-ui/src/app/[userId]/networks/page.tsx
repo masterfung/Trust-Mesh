@@ -7,6 +7,7 @@ import { useParams } from "next/navigation";
 import { matchesContext } from "@/lib/context";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
+const CAPSULE_CATEGORIES = ["health", "home", "work", "personal", "family", "general"];
 const NETWORK_TYPES = ["family", "team", "friends", "custom"];
 const NETWORK_TYPE_CONFIG: Record<string, { icon: string; color: string }> = {
   family: { icon: "\u{1F3E0}", color: "bg-blue-500/15 text-blue-400 border-blue-500/25" },
@@ -77,6 +78,7 @@ export default function NetworksPage() {
       {showForm && (
         <NetworkForm
           userId={userId}
+          connections={connections || []}
           onDone={() => {
             setShowForm(false);
             queryClient.invalidateQueries({ queryKey: ["networks", userId] });
@@ -112,6 +114,17 @@ export default function NetworksPage() {
                     </div>
                   </div>
                   <span className="text-xs text-muted-foreground bg-card-hover px-2.5 py-1 rounded-lg">{n.members.length} members</span>
+                  {n.expires_at && (
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${
+                      new Date(n.expires_at) < new Date()
+                        ? "bg-red-500/15 text-red-400 border-red-500/25"
+                        : "bg-amber-500/15 text-amber-400 border-amber-500/25"
+                    }`}>
+                      {new Date(n.expires_at) < new Date()
+                        ? "Expired"
+                        : `Expires ${new Date(n.expires_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`}
+                    </span>
+                  )}
                   <svg
                     width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                     strokeLinecap="round" strokeLinejoin="round"
@@ -195,23 +208,34 @@ export default function NetworksPage() {
 
 /* ── Network Form ── */
 
-function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void }) {
+function NetworkForm({ userId, connections, onDone }: { userId: string; connections: Connection[]; onDone: () => void }) {
   const [name, setName] = useState("");
   const [type, setType] = useState("custom");
   const [description, setDescription] = useState("");
   const [isPublic, setIsPublic] = useState(false);
   const [joinPolicy, setJoinPolicy] = useState("request_to_join");
   const [poolType, setPoolType] = useState("standard");
-  const [categoryInput, setCategoryInput] = useState("");
   const [categories, setCategories] = useState<string[]>([]);
+  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [expiresAt, setExpiresAt] = useState("");
+  const [showPublicConfirm, setShowPublicConfirm] = useState(false);
 
-  const addCategory = () => {
-    const cat = categoryInput.trim().toLowerCase();
-    if (cat && !categories.includes(cat)) {
-      setCategories([...categories, cat]);
-      setCategoryInput("");
-    }
+  const toggleCategory = (cat: string) => {
+    setCategories((prev) =>
+      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
+    );
   };
+
+  const toggleMember = (memberId: string) => {
+    setSelectedMembers((prev) =>
+      prev.includes(memberId) ? prev.filter((id) => id !== memberId) : [...prev, memberId]
+    );
+  };
+
+  // Filter out ghost users from eligible members
+  const eligibleMembers = connections
+    .filter((c) => c.peer && !c.peer.username.startsWith("remote:"))
+    .map((c) => c.peer!);
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -224,9 +248,19 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
         join_policy: poolType === "public_registry" ? "open" : joinPolicy,
         pool_type: poolType,
         shared_categories: poolType === "category_scoped" ? categories : undefined,
+        expires_at: expiresAt ? new Date(expiresAt).toISOString() : undefined,
+        initial_member_ids: selectedMembers.length > 0 ? selectedMembers : undefined,
       }),
     onSuccess: onDone,
   });
+
+  const handleCreate = () => {
+    if (poolType === "public_registry") {
+      setShowPublicConfirm(true);
+    } else {
+      mutation.mutate();
+    }
+  };
 
   return (
     <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
@@ -304,47 +338,76 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
         </div>
       </div>
 
-      {/* Category input (only for category_scoped) */}
+      {/* Category checkboxes (only for category_scoped) */}
       {poolType === "category_scoped" && (
         <div className="mb-4">
-          <label className="block text-sm font-medium text-muted-foreground mb-1.5">Shared Categories</label>
-          <div className="flex gap-2 mb-2">
-            <input
-              type="text"
-              value={categoryInput}
-              onChange={(e) => setCategoryInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCategory(); } }}
-              placeholder="e.g., health, work, family"
-              className="flex-1 bg-background border border-card-border rounded-xl px-3 py-2 text-sm placeholder:text-muted-foreground"
-            />
-            <button
-              type="button"
-              onClick={addCategory}
-              disabled={!categoryInput.trim()}
-              className="px-3 py-2 bg-purple-500/15 text-purple-400 border border-purple-500/25 rounded-xl text-xs font-medium hover:bg-purple-500/25 transition-colors disabled:opacity-40"
-            >
-              + Add
-            </button>
+          <label className="block text-sm font-medium text-muted-foreground mb-2">Shared Categories</label>
+          <div className="flex gap-2 flex-wrap">
+            {CAPSULE_CATEGORIES.map((cat) => (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => toggleCategory(cat)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all border ${
+                  categories.includes(cat)
+                    ? "bg-purple-500/20 text-purple-300 border-purple-500/40"
+                    : "bg-card-hover text-muted-foreground border-card-border hover:border-purple-500/30"
+                }`}
+              >
+                {categories.includes(cat) ? "\u2713 " : ""}{cat}
+              </button>
+            ))}
           </div>
-          {categories.length > 0 && (
-            <div className="flex gap-1.5 flex-wrap">
-              {categories.map((cat) => (
-                <span key={cat} className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 font-medium">
-                  {cat}
-                  <button
-                    type="button"
-                    onClick={() => setCategories(categories.filter((c) => c !== cat))}
-                    className="hover:text-purple-300 ml-0.5"
-                  >
-                    x
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
           <p className="text-[11px] text-muted-foreground mt-1.5">Members will only see capsules in these categories.</p>
         </div>
       )}
+
+      {/* Add Members */}
+      {eligibleMembers.length > 0 && (
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-muted-foreground mb-2">Add Members</label>
+          <div className="flex gap-2 flex-wrap">
+            {eligibleMembers.map((u) => (
+              <button
+                key={u.id}
+                type="button"
+                onClick={() => toggleMember(u.id)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all border ${
+                  selectedMembers.includes(u.id)
+                    ? "bg-accent/20 text-accent border-accent/40"
+                    : "bg-card-hover text-muted-foreground border-card-border hover:border-accent/30"
+                }`}
+              >
+                {selectedMembers.includes(u.id) ? "\u2713 " : "+ "}{u.display_name}
+              </button>
+            ))}
+          </div>
+          {selectedMembers.length > 0 && (
+            <p className="text-[11px] text-muted-foreground mt-1.5">{selectedMembers.length} member{selectedMembers.length !== 1 ? "s" : ""} will be added on creation.</p>
+          )}
+        </div>
+      )}
+
+      {/* Expiry date picker */}
+      <div className="mb-4">
+        <label className="block text-sm font-medium text-muted-foreground mb-1.5">Pool Duration (optional)</label>
+        <input
+          type="datetime-local"
+          value={expiresAt}
+          onChange={(e) => setExpiresAt(e.target.value)}
+          className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm text-foreground [color-scheme:dark]"
+        />
+        <p className="text-[11px] text-muted-foreground mt-1">Network will become inactive after this date.</p>
+        {expiresAt && (
+          <button
+            type="button"
+            onClick={() => setExpiresAt("")}
+            className="text-[11px] text-red-400 hover:text-red-300 mt-1 transition-colors"
+          >
+            Clear expiry
+          </button>
+        )}
+      </div>
 
       {/* Public / Discoverable */}
       {poolType !== "public_registry" && (
@@ -397,12 +460,27 @@ function NetworkForm({ userId, onDone }: { userId: string; onDone: () => void })
       )}
 
       <button
-        onClick={() => mutation.mutate()}
+        onClick={handleCreate}
         disabled={!name.trim() || mutation.isPending}
         className="w-full bg-accent hover:bg-accent-hover text-accent-fg font-semibold py-3 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/20"
       >
         {mutation.isPending ? "Creating..." : "Create Network"}
       </button>
+
+      {/* Public Registry confirmation dialog */}
+      <ConfirmDialog
+        open={showPublicConfirm}
+        onCancel={() => setShowPublicConfirm(false)}
+        onConfirm={() => {
+          setShowPublicConfirm(false);
+          mutation.mutate();
+        }}
+        title="Make this network publicly discoverable?"
+        description="Public Registry networks are visible to anyone on the TrustMesh network. Members and shared capsules will be discoverable by external agents."
+        confirmLabel="Create Public Network"
+        variant="default"
+        loading={mutation.isPending}
+      />
     </div>
   );
 }

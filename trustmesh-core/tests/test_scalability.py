@@ -2,7 +2,7 @@
 
 Covers:
 1. Compiled Citadel patterns
-2. Category-scoped ChromaDB collections
+2. FTS5 search (was: category-scoped ChromaDB collections)
 3. Capsule supersession & authority
 4. Slim ghost users (no connection rows)
 5. Ghost staleness check
@@ -99,91 +99,92 @@ def test_compiled_soft_only_at_public():
 
 
 # ═══════════════════════════════════════════════════════════════
-# Change 2: Category-Scoped Collections (5 tests)
+# Change 2: FTS5 Search (5 tests — was ChromaDB category-scoped)
 # ═══════════════════════════════════════════════════════════════
 
 def test_upsert_to_category():
-    """Capsule upserted into a category-specific collection."""
-    from src.embeddings import get_collection, reset_collections, upsert_capsule_embedding
-
-    reset_collections()
-    upsert_capsule_embedding("cap-1", "health record content", {"capsule_id": "cap-1"}, category="health")
-
-    collection = get_collection("health")
-    assert collection.name == "trustmesh_health"
-    result = collection.get(ids=["cap-1"])
-    assert "cap-1" in result["ids"]
-
-    reset_collections()
-
-
-def test_search_within_category():
-    """Search scoped to a category only finds capsules in that collection."""
+    """Capsule upserted with category is searchable."""
     from src.embeddings import reset_collections, search_capsules, upsert_capsule_embedding
 
     reset_collections()
-    upsert_capsule_embedding("health-1", "patient blood pressure log", {"capsule_id": "health-1"}, category="health")
-    upsert_capsule_embedding("work-1", "quarterly business report", {"capsule_id": "work-1"}, category="work")
+    upsert_capsule_embedding("cap-1", "Health Record: blood pressure monitoring daily", {"capsule_id": "cap-1"}, category="health")
 
-    # Search health category — should find health capsule
-    results = search_capsules("blood pressure", ["health-1", "work-1"], top_k=5, categories=["health"])
+    results = search_capsules("blood pressure", ["cap-1"], top_k=5)
+    assert "cap-1" in results
+
+    reset_collections()
+
+
+def test_search_within_accessible_ids():
+    """Search only finds capsules in the accessible_ids list (trust filtering)."""
+    from src.embeddings import reset_collections, search_capsules, upsert_capsule_embedding
+
+    reset_collections()
+    upsert_capsule_embedding("health-1", "Patient: blood pressure log measurements", {"capsule_id": "health-1"}, category="health")
+    upsert_capsule_embedding("work-1", "Quarterly: business report analysis", {"capsule_id": "work-1"}, category="work")
+
+    # Only health-1 accessible — should find it
+    results = search_capsules("blood pressure", ["health-1"], top_k=5)
     assert "health-1" in results
 
-    # Search work category — should NOT find health capsule
-    results = search_capsules("blood pressure", ["health-1", "work-1"], top_k=5, categories=["work"])
+    # Only work-1 accessible — should NOT find health capsule
+    results = search_capsules("blood pressure", ["work-1"], top_k=5)
     assert "health-1" not in results
 
     reset_collections()
 
 
-def test_search_across_categories():
-    """Search across multiple categories merges results."""
+def test_search_across_capsules():
+    """Search with multiple accessible IDs finds matches in both."""
     from src.embeddings import reset_collections, search_capsules, upsert_capsule_embedding
 
     reset_collections()
-    upsert_capsule_embedding("h-1", "patient record", {"capsule_id": "h-1"}, category="health")
-    upsert_capsule_embedding("w-1", "work schedule", {"capsule_id": "w-1"}, category="work")
+    upsert_capsule_embedding("h-1", "Patient: medical record examination", {"capsule_id": "h-1"}, category="health")
+    upsert_capsule_embedding("w-1", "Work: schedule planning record", {"capsule_id": "w-1"}, category="work")
 
-    results = search_capsules("record schedule", ["h-1", "w-1"], top_k=5, categories=["health", "work"])
+    results = search_capsules("record", ["h-1", "w-1"], top_k=5)
     assert len(results) == 2
 
     reset_collections()
 
 
 def test_move_embedding():
-    """Moving a capsule embedding removes from old collection and adds to new."""
-    from src.embeddings import get_collection, move_capsule_embedding, reset_collections, upsert_capsule_embedding
+    """Moving a capsule re-indexes it (old content gone, new content searchable)."""
+    from src.embeddings import move_capsule_embedding, reset_collections, search_capsules, upsert_capsule_embedding
 
     reset_collections()
-    upsert_capsule_embedding("cap-m", "some content", {"capsule_id": "cap-m"}, category="old_cat")
+    upsert_capsule_embedding("cap-m", "Old Category: original content about cats", {"capsule_id": "cap-m"}, category="old_cat")
 
-    # Verify it's in old
-    old_col = get_collection("old_cat")
-    assert "cap-m" in old_col.get(ids=["cap-m"])["ids"]
+    # Move to new category with updated content
+    move_capsule_embedding("cap-m", "New Category: updated content about dogs", {"capsule_id": "cap-m"}, "old_cat", "new_cat")
 
-    # Move
-    move_capsule_embedding("cap-m", "some content", {"capsule_id": "cap-m"}, "old_cat", "new_cat")
+    # Should find with new content
+    results = search_capsules("dogs", ["cap-m"], top_k=5)
+    assert "cap-m" in results
 
-    # Verify it's in new, not in old
-    new_col = get_collection("new_cat")
-    assert "cap-m" in new_col.get(ids=["cap-m"])["ids"]
-
-    old_result = old_col.get(ids=["cap-m"])
-    assert "cap-m" not in old_result["ids"]
+    # Should NOT find with old content
+    results = search_capsules("cats", ["cap-m"], top_k=5)
+    assert "cap-m" not in results
 
     reset_collections()
 
 
 def test_reset_collections():
-    """reset_collections clears all cached collections."""
-    from src.embeddings import _collections, reset_collections, upsert_capsule_embedding
+    """reset_collections clears all indexed data."""
+    from src.embeddings import reset_collections, search_capsules, upsert_capsule_embedding
 
     reset_collections()
-    upsert_capsule_embedding("x", "data", {"capsule_id": "x"}, category="test_cat")
-    assert len(_collections) > 0
+    upsert_capsule_embedding("x", "Test: searchable data content", {"capsule_id": "x"}, category="test_cat")
+
+    # Verify it's searchable
+    results = search_capsules("searchable", ["x"], top_k=5)
+    assert "x" in results
 
     reset_collections()
-    assert len(_collections) == 0
+
+    # After reset, should not find anything
+    results = search_capsules("searchable", ["x"], top_k=5)
+    assert "x" not in results
 
 
 # ═══════════════════════════════════════════════════════════════

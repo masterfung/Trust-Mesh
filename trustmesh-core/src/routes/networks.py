@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.audit import log_event
 from src.auth import get_current_user_id
 from src.crypto import encrypt, generate_key
 from src.database import get_db
@@ -55,6 +56,7 @@ async def _network_response(db: AsyncSession, network: Network) -> NetworkRespon
         join_policy=network.join_policy,
         pool_type=network.pool_type,
         shared_categories=shared_cats,
+        expires_at=network.expires_at,
         created_at=network.created_at,
         members=members,
     )
@@ -88,6 +90,7 @@ async def create_network(data: NetworkCreate, db: AsyncSession = Depends(get_db)
         context=data.context,
         pool_type=data.pool_type,
         shared_categories=json.dumps(data.shared_categories) if data.shared_categories else None,
+        expires_at=data.expires_at,
         encrypted_network_key=encrypted_key,
     )
     db.add(network)
@@ -100,8 +103,50 @@ async def create_network(data: NetworkCreate, db: AsyncSession = Depends(get_db)
         role="owner",
     )
     db.add(membership)
+
+    # Add initial members (skip silently if connection check fails)
+    initial_member_count = 0
+    if data.initial_member_ids:
+        for member_id in data.initial_member_ids:
+            if member_id == data.owner_id:
+                continue
+            user = await db.get(User, member_id)
+            if not user:
+                continue
+            conn_result = await db.execute(
+                select(Connection).where(
+                    Connection.status == "accepted",
+                    or_(
+                        and_(Connection.from_user_id == data.owner_id, Connection.to_user_id == member_id),
+                        and_(Connection.from_user_id == member_id, Connection.to_user_id == data.owner_id),
+                    ),
+                )
+            )
+            if not conn_result.scalar_one_or_none():
+                continue
+            db.add(NetworkMembership(network_id=network.id, user_id=member_id, role="member"))
+            initial_member_count += 1
+
     await db.commit()
     await db.refresh(network)
+
+    # Audit log
+    await log_event(
+        db,
+        actor_user_id=auth_user_id,
+        action="network_created",
+        event_type="network",
+        details={
+            "network_id": network.id,
+            "name": data.name,
+            "pool_type": data.pool_type,
+            "is_public": data.is_public or data.pool_type == "public_registry",
+            "expires_at": data.expires_at.isoformat() if data.expires_at else None,
+            "initial_member_count": initial_member_count,
+        },
+    )
+    await db.commit()
+
     return await _network_response(db, network)
 
 
@@ -239,6 +284,21 @@ async def add_member(
     )
     db.add(membership)
     await db.commit()
+
+    # Audit log
+    await log_event(
+        db,
+        actor_user_id=auth_user_id,
+        action="member_added",
+        event_type="network",
+        details={
+            "network_id": network_id,
+            "network_name": network.name,
+            "added_user_id": data.user_id,
+        },
+    )
+    await db.commit()
+
     return await _network_response(db, network)
 
 
@@ -282,6 +342,21 @@ async def remove_member(
             await db.delete(user)
 
     await db.commit()
+
+    # Audit log
+    await log_event(
+        db,
+        actor_user_id=auth_user_id,
+        action="member_removed",
+        event_type="network",
+        details={
+            "network_id": network_id,
+            "network_name": network.name,
+            "removed_user_id": user_id,
+        },
+    )
+    await db.commit()
+
     return {"ok": True}
 
 

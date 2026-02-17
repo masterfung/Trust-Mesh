@@ -359,6 +359,39 @@ def _configure_signatures(lib: ctypes.CDLL) -> None:
     lib.podos_engine_tick_count.argtypes = [c_void_p]
     lib.podos_engine_tick_count.restype = c_uint64
 
+    # ── Database / FTS5 ──
+
+    lib.podos_db_open.argtypes = [c_char_p, c_uint32]
+    lib.podos_db_open.restype = c_void_p
+
+    lib.podos_db_close.argtypes = [c_void_p]
+    lib.podos_db_close.restype = None
+
+    lib.podos_fts_upsert.argtypes = [
+        c_void_p,  # handle
+        c_char_p, c_uint32,  # capsule_id, id_len
+        c_char_p, c_uint32,  # title, title_len
+        c_char_p, c_uint32,  # content, content_len
+        c_char_p, c_uint32,  # category, category_len
+    ]
+    lib.podos_fts_upsert.restype = c_int32
+
+    lib.podos_fts_delete.argtypes = [c_void_p, c_char_p, c_uint32]
+    lib.podos_fts_delete.restype = c_int32
+
+    lib.podos_fts_search.argtypes = [
+        c_void_p,              # handle
+        c_char_p, c_uint32,    # query, query_len
+        c_char_p, c_uint32,    # accessible_ids_json, ids_len
+        c_uint32,              # top_k
+        c_char_p, c_uint32,    # out_buf, out_capacity
+        POINTER(c_uint32),     # out_len
+    ]
+    lib.podos_fts_search.restype = c_int32
+
+    lib.podos_fts_reset.argtypes = [c_void_p]
+    lib.podos_fts_reset.restype = c_int32
+
 
 # ═══════════════════════════════════════════
 #  HELPER: UUID ↔ 16-byte C buffer

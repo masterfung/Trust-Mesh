@@ -86,6 +86,7 @@ class Network(Base):
     pool_type: Mapped[str] = mapped_column(String(20), default="standard")  # standard | category_scoped | public_registry
     shared_categories: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of categories
     encrypted_network_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     memberships: Mapped[list["NetworkMembership"]] = relationship(back_populates="network")

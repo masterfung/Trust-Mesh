@@ -6,6 +6,7 @@ from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import Connection, Network, NetworkMembership, PeerPod, User
+from src.models import utcnow
 
 GHOST_STALE_HOURS = 24
 
@@ -60,10 +61,12 @@ async def get_shared_networks(
         NetworkMembership.user_id == user_b_id
     ).subquery()
 
+    now = utcnow()
     result = await db.execute(
         select(Network).where(
             Network.id.in_(select(a_networks.c.network_id)),
             Network.id.in_(select(b_networks.c.network_id)),
+            or_(Network.expires_at.is_(None), Network.expires_at > now),
         )
     )
     return list(result.scalars().all())

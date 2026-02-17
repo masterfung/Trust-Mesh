@@ -35,12 +35,22 @@ async def get_db() -> AsyncSession:
             await session.close()
 
 
+def _migrate_network_expires_at(conn):
+    """Add expires_at column to networks table if missing."""
+    from sqlalchemy import text
+    result = conn.execute(text("PRAGMA table_info(networks)"))
+    columns = {row[1] for row in result}
+    if "expires_at" not in columns:
+        conn.execute(text("ALTER TABLE networks ADD COLUMN expires_at DATETIME"))
+
+
 async def init_db():
-    """Create all tables."""
+    """Create all tables and run migrations."""
     from src.models import Base
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_migrate_network_expires_at)
 
 
 async def drop_db():
