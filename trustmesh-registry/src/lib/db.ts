@@ -24,6 +24,8 @@ export function getDb(): Database.Database {
         updated_at TEXT NOT NULL
       )
     `);
+    // Index for fast username lookups (not unique — same username on different pods is valid)
+    _db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_username ON agents(username) WHERE username != ''`);
   }
   return _db;
 }
@@ -74,6 +76,7 @@ export function registerAgent(agent: {
   const db = getDb();
   const now = new Date().toISOString();
   const caps = JSON.stringify(agent.capabilities || []);
+  const username = agent.username || "";
 
   db.prepare(`
     INSERT INTO agents (did, name, pod_url, entity_type, capabilities, username, display_name, bio, registered_at, updated_at)
@@ -93,7 +96,7 @@ export function registerAgent(agent: {
     agent.pod_url,
     agent.entity_type || "person",
     caps,
-    agent.username || "",
+    username,
     agent.display_name || "",
     agent.bio || "",
     now,
