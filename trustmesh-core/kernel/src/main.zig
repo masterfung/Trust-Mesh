@@ -21,6 +21,11 @@ pub const trust = @import("trust.zig");
 pub const session = @import("session.zig");
 pub const rate_limit = @import("rate_limit.zig");
 pub const transit = @import("transit.zig");
+pub const federation_auth = @import("federation_auth.zig");
+pub const federation = @import("federation.zig");
+pub const json = @import("json.zig");
+pub const credential = @import("credential.zig");
+pub const credential_audit = @import("credential_audit.zig");
 
 // Page allocator for FFI — simple, no libc dependency
 const ffi_allocator = std.heap.page_allocator;
@@ -1421,4 +1426,287 @@ export fn podos_transit_has_key(
 ) callconv(.c) i32 {
     const engine = _transit_engine orelse return 0;
     return if (engine.hasKey(user_id[0..uid_len])) 1 else 0;
+}
+
+// ═══════════════════════════════════════════
+//  FEDERATION AUTH (Phase 6)
+// ═══════════════════════════════════════════
+
+/// Initialize the federation auth nonce cache. Call once at startup.
+/// Returns 0 on success.
+export fn podos_federation_auth_init() callconv(.c) i32 {
+    federation_auth.initNonceCache(ffi_allocator);
+    return 0;
+}
+
+/// Destroy the federation auth nonce cache. Call on shutdown.
+export fn podos_federation_auth_deinit() callconv(.c) void {
+    federation_auth.deinitNonceCache();
+}
+
+// ═══════════════════════════════════════════
+//  CREDENTIAL STORE (Phase 7)
+// ═══════════════════════════════════════════
+
+/// Create a credential. `secret_encrypted` is already encrypted by the transit engine.
+/// `scoped_tools_json` is a JSON array string. `expires_at` may be null (pass len=0).
+/// Returns 0 on success, negative on error.
+export fn podos_credential_create(
+    db_handle: ?*anyopaque,
+    id: [*]const u8,
+    id_len: u32,
+    owner_id: [*]const u8,
+    owner_len: u32,
+    name: [*]const u8,
+    name_len: u32,
+    service: [*]const u8,
+    service_len: u32,
+    category: [*]const u8,
+    cat_len: u32,
+    secret_enc: [*]const u8,
+    secret_enc_len: u32,
+    scoped_tools_json: [*]const u8,
+    tools_len: u32,
+    expires_at: ?[*]const u8,
+    exp_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const exp = if (expires_at != null and exp_len > 0) expires_at.?[0..exp_len] else null;
+    credential.create(
+        database,
+        id[0..id_len],
+        owner_id[0..owner_len],
+        name[0..name_len],
+        service[0..service_len],
+        category[0..cat_len],
+        secret_enc[0..secret_enc_len],
+        scoped_tools_json[0..tools_len],
+        exp,
+    ) catch return -2;
+    return 0;
+}
+
+/// List credentials for owner (metadata only, no secrets).
+/// Writes JSON array to out_buf. Returns bytes written, or negative on error.
+export fn podos_credential_list(
+    db_handle: ?*anyopaque,
+    owner_id: [*]const u8,
+    owner_len: u32,
+    out_buf: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const written = credential.list(
+        database,
+        owner_id[0..owner_len],
+        out_buf[0..out_cap],
+    ) catch return -2;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Find credentials scoped to a specific tool. Returns JSON array with encrypted blobs.
+export fn podos_credential_for_tool(
+    db_handle: ?*anyopaque,
+    owner_id: [*]const u8,
+    owner_len: u32,
+    tool_name: [*]const u8,
+    tool_len: u32,
+    out_buf: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const written = credential.forTool(
+        database,
+        owner_id[0..owner_len],
+        tool_name[0..tool_len],
+        out_buf[0..out_cap],
+    ) catch return -2;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Update use count + last_used_at for a credential.
+export fn podos_credential_update_use(
+    db_handle: ?*anyopaque,
+    id: [*]const u8,
+    id_len: u32,
+    actor_id: [*]const u8,
+    actor_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    credential.updateUse(database, id[0..id_len], actor_id[0..actor_len]) catch return -2;
+    return 0;
+}
+
+/// Soft-delete a credential (owner check enforced).
+export fn podos_credential_deactivate(
+    db_handle: ?*anyopaque,
+    id: [*]const u8,
+    id_len: u32,
+    owner_id: [*]const u8,
+    owner_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    credential.deactivate(database, id[0..id_len], owner_id[0..owner_len]) catch |err| switch (err) {
+        credential.CredentialError.PermissionDenied => return -3,
+        else => return -2,
+    };
+    return 0;
+}
+
+/// Create a credential share.
+export fn podos_credential_share_create(
+    db_handle: ?*anyopaque,
+    share_id: [*]const u8,
+    share_id_len: u32,
+    cred_id: [*]const u8,
+    cred_id_len: u32,
+    grantor_id: [*]const u8,
+    grantor_len: u32,
+    grantee_id: [*]const u8,
+    grantee_len: u32,
+    grantee_type: [*]const u8,
+    gtype_len: u32,
+    expires_at: [*]const u8,
+    exp_len: u32,
+    max_uses: i32,
+    secret_reenc: ?[*]const u8,
+    secret_reenc_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const reenc = if (secret_reenc != null and secret_reenc_len > 0) secret_reenc.?[0..secret_reenc_len] else null;
+    credential.shareCreate(
+        database,
+        share_id[0..share_id_len],
+        cred_id[0..cred_id_len],
+        grantor_id[0..grantor_len],
+        grantee_id[0..grantee_len],
+        grantee_type[0..gtype_len],
+        expires_at[0..exp_len],
+        if (max_uses > 0) max_uses else null,
+        reenc,
+    ) catch |err| switch (err) {
+        credential.CredentialError.PermissionDenied => return -3,
+        else => return -2,
+    };
+    return 0;
+}
+
+/// Check grantee share access. Returns bytes written to out_buf, or 0 if no valid share.
+export fn podos_credential_share_check(
+    db_handle: ?*anyopaque,
+    cred_id: [*]const u8,
+    cred_id_len: u32,
+    grantee_id: [*]const u8,
+    grantee_len: u32,
+    out_buf: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const written = credential.shareCheck(
+        database,
+        cred_id[0..cred_id_len],
+        grantee_id[0..grantee_len],
+        out_buf[0..out_cap],
+    ) catch return -2;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Revoke a share (grantor check enforced).
+export fn podos_credential_share_revoke(
+    db_handle: ?*anyopaque,
+    share_id: [*]const u8,
+    share_id_len: u32,
+    grantor_id: [*]const u8,
+    grantor_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    credential.shareRevoke(
+        database,
+        share_id[0..share_id_len],
+        grantor_id[0..grantor_len],
+    ) catch return -2;
+    return 0;
+}
+
+/// Append a credential audit record. Returns 0 on success.
+/// Caller must treat non-zero as a fail-safe abort condition.
+export fn podos_credential_audit_append(
+    db_handle: ?*anyopaque,
+    cred_id: [*]const u8,
+    cred_id_len: u32,
+    operation: [*]const u8,
+    op_len: u32,
+    actor_id: [*]const u8,
+    actor_len: u32,
+    tool_name: ?[*]const u8,
+    tool_len: u32,
+    share_id: ?[*]const u8,
+    share_len: u32,
+    ip_fp: ?[*]const u8,
+    ip_len: u32,
+    decision: [*]const u8,
+    decision_len: u32,
+    details_json: ?[*]const u8,
+    details_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const tn = if (tool_name != null and tool_len > 0) tool_name.?[0..tool_len] else null;
+    const sid = if (share_id != null and share_len > 0) share_id.?[0..share_len] else null;
+    const ipfp = if (ip_fp != null and ip_len > 0) ip_fp.?[0..ip_len] else null;
+    const dj = if (details_json != null and details_len > 0) details_json.?[0..details_len] else null;
+    credential_audit.append(
+        database,
+        cred_id[0..cred_id_len],
+        operation[0..op_len],
+        actor_id[0..actor_len],
+        tn, sid, ipfp,
+        decision[0..decision_len],
+        dj,
+    ) catch return -2;
+    return 0;
+}
+
+/// Query audit log for a credential. Returns JSON array in out_buf.
+export fn podos_credential_audit_query(
+    db_handle: ?*anyopaque,
+    cred_id: [*]const u8,
+    cred_id_len: u32,
+    limit_n: u32,
+    out_buf: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const written = credential_audit.query(
+        database,
+        cred_id[0..cred_id_len],
+        limit_n,
+        out_buf[0..out_cap],
+    ) catch return -2;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Sweep expired shares and mark them revoked. For cron use.
+export fn podos_credential_sweep_expiry(
+    db_handle: ?*anyopaque,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    credential_audit.sweepExpiredShares(database) catch return -2;
+    return 0;
+}
+
+/// Also init credential tables when opening the DB. (helper called from podos_db_open callers)
+export fn podos_credential_init_tables(
+    db_handle: ?*anyopaque,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    database.initCredentialTables() catch return -2;
+    return 0;
 }

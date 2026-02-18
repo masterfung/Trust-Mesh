@@ -18,15 +18,25 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$ROOT/trustmesh-core"
 FRONTEND_DIR="$ROOT/trustmesh-ui"
 CITADEL_DIR="$ROOT/citadel-ref"
+KERNEL_DIR="$ROOT/trustmesh-core/kernel"
 BACKEND_PID="$ROOT/.backend.pid"
 FRONTEND_PID="$ROOT/.frontend.pid"
 CITADEL_PID="$ROOT/.citadel.pid"
+ZIG_SERVER_PID="$ROOT/.zig-server.pid"
 BACKEND_LOG="$ROOT/.backend.log"
 FRONTEND_LOG="$ROOT/.frontend.log"
 CITADEL_LOG="$ROOT/.citadel.log"
+ZIG_SERVER_LOG="$ROOT/.zig-server.log"
 BACKEND_PORT=8000
 FRONTEND_PORT=3050
 CITADEL_PORT=3001
+PYTHON_PORT=9000
+
+# Set TRUSTMESH_ZIG_HTTP=1 to enable Zig HTTP proxy (Phase 3).
+# When enabled: Zig server on :8000, Python FastAPI on :9000.
+# Default: 0 (Python-only mode for safety).
+ZIG_HTTP="${TRUSTMESH_ZIG_HTTP:-0}"
+ZIG_SERVER_BIN="$KERNEL_DIR/zig-out/bin/podos-server"
 
 # ── Helpers ──
 
@@ -193,6 +203,22 @@ cmd_citadel_start() {
   echo " (may still be loading ML model)"
 }
 
+cmd_build_zig_server() {
+  # Build the Zig HTTP server binary if source is newer than binary
+  if [[ ! -f "$ZIG_SERVER_BIN" ]] || \
+     [[ "$KERNEL_DIR/src/http.zig" -nt "$ZIG_SERVER_BIN" ]] || \
+     [[ "$KERNEL_DIR/src/server_main.zig" -nt "$ZIG_SERVER_BIN" ]] || \
+     [[ "$KERNEL_DIR/build.zig" -nt "$ZIG_SERVER_BIN" ]]; then
+    echo "Building Zig HTTP server..."
+    if ! (cd "$KERNEL_DIR" && zig build server 2>&1); then
+      echo "  Zig server build failed — falling back to Python-only mode."
+      return 1
+    fi
+    echo "  Built: $ZIG_SERVER_BIN"
+  fi
+  return 0
+}
+
 cmd_start() {
   # Check if already running
   if _is_running "$BACKEND_PID" && _is_running "$FRONTEND_PID"; then
@@ -204,6 +230,9 @@ cmd_start() {
   # Clean up stale port bindings
   _kill_port $BACKEND_PORT
   _kill_port $FRONTEND_PORT
+  if [[ "$ZIG_HTTP" == "1" ]]; then
+    _kill_port $PYTHON_PORT
+  fi
 
   # Seed if no database
   if [[ ! -f "$BACKEND_DIR/trustmesh.db" ]]; then
@@ -222,23 +251,56 @@ cmd_start() {
     fi
   fi
 
-  # Start backend
-  echo "Starting backend on :$BACKEND_PORT..."
+  # Determine backend port (Python listens on :9000 when Zig HTTP active)
+  local python_listen_port=$BACKEND_PORT
+  if [[ "$ZIG_HTTP" == "1" ]]; then
+    python_listen_port=$PYTHON_PORT
+  fi
+
+  # Start Python backend
+  echo "Starting Python backend on :$python_listen_port..."
   cd "$BACKEND_DIR"
   export TRUSTMESH_DEV_MODE=1
-  nohup uv run uvicorn src.main:app --reload --port $BACKEND_PORT > "$BACKEND_LOG" 2>&1 &
+  nohup uv run uvicorn src.main:app --reload --port "$python_listen_port" > "$BACKEND_LOG" 2>&1 &
   echo $! > "$BACKEND_PID"
 
-  # Wait for backend health
-  echo -n "  Waiting for backend"
+  # Wait for Python backend
+  echo -n "  Waiting for Python backend"
   for _ in $(seq 1 20); do
-    if curl -sf http://localhost:$BACKEND_PORT/health/full > /dev/null 2>&1; then
+    if curl -sf "http://localhost:$python_listen_port/health/full" > /dev/null 2>&1; then
       echo " ready."
       break
     fi
     echo -n "."
     sleep 0.5
   done
+
+  # Start Zig HTTP server if enabled
+  if [[ "$ZIG_HTTP" == "1" ]]; then
+    if cmd_build_zig_server; then
+      echo "Starting Zig HTTP server on :$BACKEND_PORT (proxy → :$PYTHON_PORT)..."
+      PODOS_PORT=$BACKEND_PORT PODOS_PYTHON_PORT=$PYTHON_PORT \
+        PODOS_DB_PATH="$BACKEND_DIR/trustmesh.db" \
+        nohup "$ZIG_SERVER_BIN" > "$ZIG_SERVER_LOG" 2>&1 &
+      echo $! > "$ZIG_SERVER_PID"
+
+      echo -n "  Waiting for Zig server"
+      for _ in $(seq 1 15); do
+        if curl -sf "http://localhost:$BACKEND_PORT/health/full" > /dev/null 2>&1; then
+          echo " ready."
+          break
+        fi
+        echo -n "."
+        sleep 0.3
+      done
+    else
+      echo "  Zig server unavailable — Python serving on :$BACKEND_PORT"
+      # Restart Python on correct port
+      _kill_pid "$BACKEND_PID" "Python backend"
+      nohup uv run uvicorn src.main:app --reload --port "$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
+      echo $! > "$BACKEND_PID"
+    fi
+  fi
 
   # Start frontend
   echo "Starting frontend on :$FRONTEND_PORT..."
@@ -249,7 +311,7 @@ cmd_start() {
   # Wait for frontend
   echo -n "  Waiting for frontend"
   for _ in $(seq 1 20); do
-    if curl -sf http://localhost:$FRONTEND_PORT > /dev/null 2>&1; then
+    if curl -sf "http://localhost:$FRONTEND_PORT" > /dev/null 2>&1; then
       echo " ready."
       break
     fi
@@ -259,7 +321,12 @@ cmd_start() {
 
   echo ""
   echo "TrustMesh is running:"
-  echo "  Backend:  http://localhost:$BACKEND_PORT"
+  if [[ "$ZIG_HTTP" == "1" ]] && _is_running "$ZIG_SERVER_PID"; then
+    echo "  Zig HTTP: http://localhost:$BACKEND_PORT  (proxy → Python :$PYTHON_PORT)"
+    echo "  Python:   http://localhost:$PYTHON_PORT   (internal)"
+  else
+    echo "  Backend:  http://localhost:$BACKEND_PORT"
+  fi
   echo "  Frontend: http://localhost:$FRONTEND_PORT"
   if _is_running "$CITADEL_PID"; then
     echo "  Citadel:  http://localhost:$CITADEL_PORT (ML security scanning)"
@@ -267,16 +334,23 @@ cmd_start() {
   echo ""
   echo "  Logs: ./dev.sh logs"
   echo "  Stop: ./dev.sh stop"
+  if [[ "$ZIG_HTTP" == "1" ]]; then
+    echo "  Disable Zig HTTP: TRUSTMESH_ZIG_HTTP=0 ./dev.sh start"
+  else
+    echo "  Enable Zig HTTP:  TRUSTMESH_ZIG_HTTP=1 ./dev.sh start"
+  fi
 }
 
 cmd_stop() {
   _kill_pid "$FRONTEND_PID" "frontend"
+  _kill_pid "$ZIG_SERVER_PID" "zig-server"
   _kill_pid "$BACKEND_PID" "backend"
   _kill_pid "$CITADEL_PID" "citadel"
   # Clean up any orphans on our ports
   _kill_port $BACKEND_PORT
   _kill_port $FRONTEND_PORT
   _kill_port $CITADEL_PORT
+  _kill_port $PYTHON_PORT
   echo "TrustMesh stopped."
 }
 
@@ -288,8 +362,13 @@ cmd_restart() {
 
 cmd_status() {
   echo "TrustMesh Status:"
+  if _is_running "$ZIG_SERVER_PID"; then
+    echo "  Zig HTTP: RUNNING (PID $(<"$ZIG_SERVER_PID"), port $BACKEND_PORT → proxy :$PYTHON_PORT)"
+  fi
   if _is_running "$BACKEND_PID"; then
-    echo "  Backend:  RUNNING (PID $(<"$BACKEND_PID"), port $BACKEND_PORT)"
+    local port=$BACKEND_PORT
+    if _is_running "$ZIG_SERVER_PID"; then port=$PYTHON_PORT; fi
+    echo "  Backend:  RUNNING (PID $(<"$BACKEND_PID"), port $port)"
   else
     echo "  Backend:  STOPPED"
   fi
@@ -306,8 +385,8 @@ cmd_status() {
 }
 
 cmd_logs() {
-  echo "=== Tailing backend + frontend + citadel logs (Ctrl+C to stop) ==="
-  tail -f "$BACKEND_LOG" "$FRONTEND_LOG" "$CITADEL_LOG" 2>/dev/null || echo "No log files found. Start the app first."
+  echo "=== Tailing backend + frontend + citadel + zig-server logs (Ctrl+C to stop) ==="
+  tail -f "$BACKEND_LOG" "$FRONTEND_LOG" "$CITADEL_LOG" "$ZIG_SERVER_LOG" 2>/dev/null || echo "No log files found. Start the app first."
 }
 
 # ── Main ──

@@ -36,6 +36,27 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    // ── podos-server: standalone HTTP proxy executable (Phase 3) ──
+    // Entry point: src/server_main.zig
+    // Listens on :8000, proxies unhandled routes to Python FastAPI on :9000.
+    const server_mod = b.createModule(.{
+        .root_source_file = b.path("src/server_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    server_mod.addImport("podos", podos_mod);
+    addSqlite(server_mod);
+
+    const server_exe = b.addExecutable(.{
+        .name = "podos-server",
+        .root_module = server_mod,
+    });
+    b.installArtifact(server_exe);
+
+    // Shorthand: zig build server
+    const server_step = b.step("server", "Build podos-server HTTP proxy binary");
+    server_step.dependOn(&b.addInstallArtifact(server_exe, .{}).step);
+
     // ── Unit tests ──
     const test_files = [_][]const u8{
         "tests/test_types.zig",
@@ -54,6 +75,9 @@ pub fn build(b: *std.Build) void {
         "tests/test_rate_limit.zig",
         "tests/test_timeline_persist.zig",
         "tests/test_transit.zig",
+        "tests/test_federation_auth.zig",
+        "tests/test_credential.zig",
+        "tests/test_credential_audit.zig",
     };
 
     const test_step = b.step("test", "Run all kernel tests");

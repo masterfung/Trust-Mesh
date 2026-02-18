@@ -2,7 +2,7 @@
 // Opens the same trustmesh.db as the Python backend (WAL mode supports concurrent readers).
 
 const std = @import("std");
-const c = @cImport(@cInclude("sqlite3.h"));
+pub const c = @cImport(@cInclude("sqlite3.h"));
 
 pub const SqliteError = error{
     CantOpen,
@@ -40,6 +40,89 @@ pub const Database = struct {
         _ = c.sqlite3_close(self.handle);
     }
 
+    /// Create credential tables (vault_secrets, credential_shares,
+    /// credential_ops, credential_fts). Safe to call on existing DB.
+    pub fn initCredentialTables(self: *Database) SqliteError!void {
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS vault_secrets (
+            \\    id TEXT PRIMARY KEY,
+            \\    owner_id TEXT NOT NULL,
+            \\    name TEXT NOT NULL,
+            \\    service TEXT NOT NULL DEFAULT '',
+            \\    category TEXT NOT NULL DEFAULT '',
+            \\    secret_encrypted BLOB NOT NULL,
+            \\    scoped_tools TEXT NOT NULL DEFAULT '[]',
+            \\    expires_at TEXT,
+            \\    rotation_interval_days INTEGER,
+            \\    is_active INTEGER NOT NULL DEFAULT 1,
+            \\    use_count INTEGER NOT NULL DEFAULT 0,
+            \\    last_used_at TEXT,
+            \\    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            \\    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+            \\)
+        );
+        try self.exec(
+            \\CREATE INDEX IF NOT EXISTS idx_vault_secrets_owner
+            \\    ON vault_secrets(owner_id, is_active)
+        );
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS credential_shares (
+            \\    id TEXT PRIMARY KEY,
+            \\    credential_id TEXT NOT NULL,
+            \\    grantor_id TEXT NOT NULL,
+            \\    grantee_id TEXT NOT NULL,
+            \\    grantee_type TEXT NOT NULL CHECK(grantee_type IN ('user','network')),
+            \\    expires_at TEXT NOT NULL,
+            \\    max_uses INTEGER,
+            \\    use_count INTEGER NOT NULL DEFAULT 0,
+            \\    can_reshare INTEGER NOT NULL DEFAULT 0,
+            \\    secret_reencrypted BLOB,
+            \\    revoked_at TEXT,
+            \\    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+            \\)
+        );
+        try self.exec(
+            \\CREATE INDEX IF NOT EXISTS idx_credential_shares_grantee
+            \\    ON credential_shares(grantee_id, grantee_type)
+            \\    WHERE revoked_at IS NULL
+        );
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS credential_ops (
+            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\    credential_id TEXT NOT NULL,
+            \\    operation TEXT NOT NULL CHECK(operation IN (
+            \\        'created','updated','used','rotated',
+            \\        'shared','share_revoked','share_expired','deactivated','deleted'
+            \\    )),
+            \\    actor_id TEXT NOT NULL,
+            \\    tool_name TEXT,
+            \\    share_id TEXT,
+            \\    ip_fingerprint TEXT,
+            \\    decision TEXT NOT NULL DEFAULT 'allowed'
+            \\        CHECK(decision IN ('allowed','denied')),
+            \\    details TEXT,
+            \\    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+            \\)
+        );
+        try self.exec(
+            \\CREATE INDEX IF NOT EXISTS idx_credential_ops_credential
+            \\    ON credential_ops(credential_id, created_at)
+        );
+        try self.exec(
+            \\CREATE INDEX IF NOT EXISTS idx_credential_ops_actor
+            \\    ON credential_ops(actor_id, created_at)
+        );
+        try self.exec(
+            \\CREATE VIRTUAL TABLE IF NOT EXISTS credential_fts USING fts5(
+            \\    credential_id UNINDEXED,
+            \\    name,
+            \\    service,
+            \\    category UNINDEXED,
+            \\    tokenize='porter unicode61'
+            \\)
+        );
+    }
+
     /// Execute a simple SQL statement (no results).
     pub fn exec(self: *Database, sql: [*:0]const u8) SqliteError!void {
         var err_msg: [*c]u8 = null;
@@ -52,7 +135,15 @@ pub const Database = struct {
     pub fn prepare(self: *Database, sql: [*:0]const u8) SqliteError!Statement {
         var stmt: ?*c.sqlite3_stmt = null;
         const rc = c.sqlite3_prepare_v2(self.handle, sql, -1, &stmt, null);
-        if (rc != c.SQLITE_OK or stmt == null) return SqliteError.PrepareFailed;
+        if (rc != c.SQLITE_OK or stmt == null) {
+            const errmsg: [*c]const u8 = c.sqlite3_errmsg(self.handle);
+            if (errmsg != null) {
+                std.log.err("sqlite3_prepare_v2 failed: rc={d} sql={s} err={s}", .{ rc, sql, errmsg });
+            } else {
+                std.log.err("sqlite3_prepare_v2 failed: rc={d} sql={s}", .{ rc, sql });
+            }
+            return SqliteError.PrepareFailed;
+        }
         return Statement{ .handle = stmt.? };
     }
 };
@@ -86,6 +177,7 @@ pub const Statement = struct {
         const rc = c.sqlite3_step(self.handle);
         if (rc == c.SQLITE_ROW) return true;
         if (rc == c.SQLITE_DONE) return false;
+        std.log.err("sqlite3_step failed: rc={d}", .{rc});
         return SqliteError.StepFailed;
     }
 
@@ -95,6 +187,16 @@ pub const Statement = struct {
 
     pub fn getDouble(self: *Statement, col: c_int) f64 {
         return c.sqlite3_column_double(self.handle, col);
+    }
+
+    /// Read a BLOB column. Returns null if the column is NULL.
+    /// The returned slice points into SQLite-managed memory valid until the next step/finalize.
+    pub fn getBlob(self: *Statement, col: c_int) ?[]const u8 {
+        const ptr: ?[*]const u8 = @ptrCast(c.sqlite3_column_blob(self.handle, col));
+        if (ptr == null) return null;
+        const len = c.sqlite3_column_bytes(self.handle, col);
+        if (len <= 0) return null;
+        return ptr.?[0..@intCast(len)];
     }
 
     pub fn getInt(self: *Statement, col: c_int) c_int {
