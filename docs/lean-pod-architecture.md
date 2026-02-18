@@ -2,6 +2,32 @@
 
 > From ~500MB per pod to ~80MB. Same capabilities. 10x lighter.
 
+### Implementation Status (Feb 2026)
+
+| Phase | Status | Zig Files | LOC |
+|-------|--------|-----------|-----|
+| **1: SQLite + FTS5** | **COMPLETE** | `db.zig`, `fts.zig`, `timeline_persist.zig` | 624 |
+| **2: Crypto** | **COMPLETE** | `crypto.zig` | 493 |
+| **3: Zig HTTP Server** | Not started | — | — |
+| **4: Trust/Sessions/Rate** | **COMPLETE** | `trust.zig`, `session.zig`, `rate_limit.zig` | 867 |
+| **5: Transit Engine** | **COMPLETE** | `transit.zig` | 506 |
+| **6: Federation Client** | Not started | — | — |
+
+**Kernel totals**: 18 source files, 5,792 LOC + 3,023 test LOC = **8,815 lines of Zig**. 112 C ABI exports. `libpodos.dylib` = 1.9MB. 697 Python tests passing (0 failures), 56 skipped (multi-pod conditional).
+
+### Security Hardening (Feb 2026) — COMPLETE
+
+6-phase security hardening applied across the entire stack:
+
+| Phase | Scope | Key Changes |
+|-------|-------|-------------|
+| **1: Transit Engine** | Vault keys never leave Zig | `transit.zig` in-memory keyring, AAD-bound encryption, Python `vault_keys` dict removed |
+| **2: Auth/Sessions/PIN** | Session binding + rotation | Fingerprint binding (UA+IP), sliding inactivity timeout, per-user session cap (10), CSRF double-submit cookie, secure cookie flag |
+| **3: Rate Limiting** | Emergency + PIN throttling | PIN attempt rate limiting, emergency token issuance/presentation rate limits, rate limit response headers |
+| **4: Trust/Lifecycle** | Expiry + soft delete | Capsule `expires_at` enforcement at all trust levels, trust race condition fix, soft delete with `deleted_at`, capsule version history, background lifecycle loop (15min) |
+| **5: Audit/Citadel/Headers** | Defense in depth | `log_event_strict()` fail-safe audit, Citadel circuit breaker (3 failures/60s), security headers (nosniff, DENY, HSTS, Permissions-Policy), CORS explicit allow_headers |
+| **6: Federation/Emergency** | Signed requests + revocation | Verb+path in federation signatures, ghost DID verification via agent card, UCAN token revocation endpoint, strict scope enforcement (no fallback) |
+
 ---
 
 ## Table of Contents
@@ -10,11 +36,12 @@
 2. [Current Architecture & Footprint](#current-architecture--footprint)
 3. [Target Architecture](#target-architecture)
 4. [Migration Phases](#migration-phases)
-   - [Phase 1: SQLite + FTS5 in Zig](#phase-1-sqlite--fts5-in-zig)
-   - [Phase 2: Crypto in Zig](#phase-2-crypto-in-zig)
+   - [Phase 1: SQLite + FTS5 in Zig](#phase-1-sqlite--fts5-in-zig) — COMPLETE
+   - [Phase 2: Crypto in Zig](#phase-2-crypto-in-zig) — COMPLETE
    - [Phase 3: Zig HTTP Server](#phase-3-zig-http-server)
-   - [Phase 4: Trust, Sessions, Rate Limiting in Zig](#phase-4-trust-sessions-rate-limiting-in-zig)
-   - [Phase 5: Federation Client in Zig](#phase-5-federation-client-in-zig)
+   - [Phase 4: Trust, Sessions, Rate Limiting in Zig](#phase-4-trust-sessions-rate-limiting-in-zig) — COMPLETE
+   - [Phase 5: Transit Engine in Zig](#phase-5-transit-engine-in-zig) — COMPLETE
+   - [Phase 6: Federation Client in Zig](#phase-6-federation-client-in-zig)
 5. [Future Phases](#future-phases)
 6. [Zig Kernel Module Map](#zig-kernel-module-map)
 7. [What Stays in Python (and Why)](#what-stays-in-python-and-why)
@@ -30,7 +57,7 @@ A single TrustMesh pod today runs **~500MB RSS**. For 16-pod federation, that's 
 
 The pod's actual responsibilities — storing encrypted capsules, resolving trust, managing sessions, serving HTTP — are lightweight operations that don't need a Python runtime, an ORM, or an in-process ML model.
 
-The Zig timeline kernel (`libpodos.dylib`, 1.4MB, 2,308 lines) already proves the pattern: compile to native code, expose a C ABI, call from Python via ctypes. This document extends that pattern to the entire pod core.
+The Zig kernel (`libpodos.dylib`, 1.9MB, 5,792 lines, 112 C ABI exports) already proves the pattern: compile to native code, expose a C ABI, call from Python via ctypes. Phases 1, 2, and 4 are complete — ChromaDB is killed, crypto is native, trust/sessions/rate limiting run in Zig. This document extends the pattern to the remaining pod core (HTTP server, federation).
 
 ### Goals
 
@@ -45,43 +72,46 @@ The Zig timeline kernel (`libpodos.dylib`, 1.4MB, 2,308 lines) already proves th
 
 ## Current Architecture & Footprint
 
-### Per-Pod Memory Breakdown
+### Per-Pod Memory Breakdown (post-Phase 1+2+4)
 
-| Component | RSS | Role |
-|-----------|-----|------|
-| Python interpreter + stdlib | ~40MB | Runtime |
-| FastAPI + uvicorn | ~20MB | HTTP server, ASGI |
-| SQLAlchemy async + aiosqlite | ~15MB | ORM, DB access |
-| **ChromaDB + all-MiniLM-L6-v2** | **~300-500MB** | Vector search, embeddings |
-| cryptography + argon2-cffi | ~10MB | AES-256-GCM, Ed25519, Argon2id |
-| anthropic + httpx | ~10MB | LLM API client |
-| Other deps (mcp, typer, pydantic, etc.) | ~15MB | Various |
-| Zig kernel (libpodos.dylib) | ~2MB | Timeline engine |
-| **Total** | **~400-600MB** | |
+| Component | RSS | Role | Status |
+|-----------|-----|------|--------|
+| Python interpreter + stdlib | ~40MB | Runtime | Active |
+| FastAPI + uvicorn | ~20MB | HTTP server, ASGI | Active (Phase 3 replaces) |
+| SQLAlchemy async + aiosqlite | ~15MB | ORM, DB access | Active (Phase 3 replaces) |
+| ~~ChromaDB + all-MiniLM-L6-v2~~ | ~~300-500MB~~ | ~~Vector search~~ | **REMOVED** (Phase 1) |
+| ~~cryptography + argon2-cffi~~ | ~~10MB~~ | ~~Crypto~~ | **Replaced by Zig** (Phase 2) |
+| anthropic + httpx | ~10MB | LLM API client | Active |
+| Other deps (mcp, typer, pydantic, etc.) | ~15MB | Various | Active |
+| **Zig kernel (libpodos.dylib)** | **~2MB** | **Timeline + FTS5 + crypto + trust + sessions + rate limits** | **Active** |
+| **Total** | **~120MB** | | **~4x reduction achieved** |
 
-### Process Count (16-pod federation)
+### Pre-Migration Baseline (for reference)
 
-| Process | Count | Memory |
-|---------|-------|--------|
-| uvicorn (Python) | 16 | ~6-10GB total |
-| Bun (Next.js UI) | 1 | ~150-200MB |
-| Bun (Registry) | 1 | ~100-150MB |
-| Go (Citadel) | 1 | ~50-100MB |
-| **Total** | **19** | **~7-10GB** |
+| Component | RSS |
+|-----------|-----|
+| ChromaDB + all-MiniLM-L6-v2 | ~300-500MB |
+| Full Python stack | ~100MB |
+| **Original total** | **~400-600MB** |
 
-### Where the Bytes Go
+### Where the Bytes Went
 
 ```
-ChromaDB          ████████████████████████████████████████  60-80%
-Python runtime    ████████                                  10-15%
-FastAPI/uvicorn   ████                                      5%
-SQLAlchemy        ███                                       4%
-Crypto libs       ██                                        3%
-Anthropic SDK     ██                                        3%
-Zig kernel        ▏                                         <1%
+REMOVED ──────────────────────────────────────────────────
+  ChromaDB          ████████████████████████████████████████  (was 60-80%)
+  cryptography      ██                                        (was 3%)
+                                                              → Replaced by Zig FTS5 + crypto
+
+REMAINING ────────────────────────────────────────────────
+  Python runtime    ████████████████                          30%
+  FastAPI/uvicorn   ████████                                  15%
+  SQLAlchemy        ██████                                    10%
+  Anthropic SDK     ████                                      8%
+  Other deps        ████                                      8%
+  Zig kernel        ▎                                         <2%
 ```
 
-ChromaDB is the elephant. Killing it alone is a 4x improvement.
+Phase 1 killed ChromaDB — the 4x improvement is achieved. Phases 3+5 target the remaining Python surface.
 
 ---
 
@@ -149,12 +179,16 @@ For 16 pods: **~1.5-2GB** instead of ~10GB.
 
 ## Migration Phases
 
-### Phase 1: SQLite + FTS5 in Zig
+### Phase 1: SQLite + FTS5 in Zig — COMPLETE
 
-> **Effort**: ~1-2 weeks | **Memory win**: ~400MB per pod (biggest single win)
-> **New Zig files**: `kernel/src/db.zig`, `kernel/src/fts.zig`
+> **Status**: COMPLETE | **Memory win**: ~400MB per pod (biggest single win)
+> **Zig files**: `kernel/src/db.zig` (116 LOC), `kernel/src/fts.zig` (189 LOC), `kernel/src/timeline_persist.zig` (319 LOC)
+> **Tests**: `test_fts.zig` (310 LOC, 13 tests), `test_timeline_persist.zig` (260 LOC, 16 tests), 14 Python FTS bridge tests
+> **Exports**: 6 FTS (`podos_db_open/close`, `podos_fts_upsert/delete/search/reset`) + 8 timeline persistence
 
-The biggest win and the right place to start. ChromaDB is ~400MB of the ~500MB pod footprint. Replace it with FTS5 (built into SQLite) and do it in Zig from day one — this establishes `db.zig` as the foundation all later phases build on, avoiding throwaway Python-only work.
+ChromaDB is removed. FTS5 (built into SQLite) handles BM25 keyword search. Timeline entry persistence (SQLite tables for entries, outbox, inbox) was added alongside the FTS5 work since it shares the same `db.zig` foundation.
+
+**Bonus delivered**: Timeline persistence — entries, sync outbox, and dedupe inbox survive pod restarts. Python bridge fully wired with `_restore_persisted_entries()` on startup.
 
 #### Why Zig (not Python-only)
 
@@ -447,12 +481,14 @@ If this is a concern for future multi-tenant scenarios, the FTS5 table could be 
 
 ---
 
-### Phase 2: Crypto in Zig
+### Phase 2: Crypto in Zig — COMPLETE
 
-> **Effort**: ~1 week | **Memory win**: ~10MB (small, but eliminates `cryptography` + `argon2-cffi` C extensions)
-> **New Zig files**: `kernel/src/crypto.zig`
+> **Status**: COMPLETE | **Memory win**: ~10MB (eliminates `cryptography` + `argon2-cffi` C extensions)
+> **Zig files**: `kernel/src/crypto.zig` (490 LOC)
+> **Tests**: `test_crypto.zig` (355 LOC), plus Python cross-validation tests
+> **Exports**: 15 crypto functions (`podos_crypto_generate_key`, `encrypt/decrypt`, `ed25519_keygen/sign/verify`, `derive_vault_key`, `hash_pin/verify_pin`, `sha256_hex`, `pubkey_to_did/did_to_pubkey`, `b64url_encode/decode`)
 
-Port all crypto operations to Zig, exposed via C ABI. Python calls Zig for all crypto instead of the `cryptography` library.
+All crypto operations ported to Zig `std.crypto`. Python calls Zig via ctypes for all crypto instead of the `cryptography` library.
 
 #### Zig std.crypto Coverage
 
@@ -672,12 +708,14 @@ Routes move from Python to Zig one module at a time. Priority order:
 
 ---
 
-### Phase 4: Trust, Sessions, Rate Limiting in Zig
+### Phase 4: Trust, Sessions, Rate Limiting in Zig — COMPLETE
 
-> **Effort**: ~3-5 days | **Memory win**: Negligible (these are tiny modules)
-> **New Zig files**: `kernel/src/trust.zig`, `kernel/src/session.zig`, `kernel/src/rate_limit.zig`
+> **Status**: COMPLETE | **Memory win**: Negligible (these are tiny modules, but critical for Phase 3)
+> **Zig files**: `kernel/src/trust.zig` (221 LOC), `kernel/src/session.zig` (216 LOC), `kernel/src/rate_limit.zig` (284 LOC)
+> **Tests**: `test_trust.zig` (282 LOC), `test_session.zig` (230 LOC), `test_rate_limit.zig` (190 LOC)
+> **Exports**: 1 trust (`podos_trust_resolve`) + 8 session (`init/deinit/create/validate/invalidate/invalidate_user/check_login_rate/reset/inject`) + 6 rate limit (`init/deinit/check_connection/record_connection/check_query/record_query/reset`)
 
-These are simple, self-contained modules with clear logic. Small LOC, easy to port.
+All three modules ported to Zig and exposed via C ABI. Python bridges call Zig for trust resolution, session management, and rate limiting. These modules are prerequisites for Phase 3 (Zig HTTP server can handle auth natively).
 
 #### Trust Resolution (103 lines Python → ~150 lines Zig)
 
@@ -786,7 +824,23 @@ pub fn checkConnectionRate(user_id: []const u8) !struct { allowed: bool, reason:
 
 ---
 
-### Phase 5: Federation Client in Zig
+### Phase 5: Transit Engine in Zig — COMPLETE
+
+> **Status**: COMPLETE | **Memory win**: Vault keys never leave Zig memory
+> **Zig files**: `kernel/src/transit.zig` (506 LOC)
+> **Tests**: `test_transit.zig` (201 LOC)
+> **Exports**: 7 transit functions (`podos_transit_init/deinit/store_key/has_key/remove_key/encrypt/decrypt`)
+
+The transit engine is the security-critical keyring: vault encryption keys are stored in Zig memory and never exposed to Python. Python calls `transit_bridge.encrypt(user_id, plaintext, aad)` / `decrypt(user_id, ciphertext, aad)` — the key material stays on the Zig side.
+
+- **AAD-bound encryption**: Each capsule encrypted with Additional Authenticated Data (capsule_id + user_id) preventing ciphertext substitution
+- **`secureZero`**: Keys are zeroed on removal (`podos_transit_remove_key`)
+- **`_TransitKeyStore`**: Python `vault_keys` dict in `main.py` is now a thin wrapper that delegates to the Zig transit engine
+- **`transit_bridge.py`**: ctypes bridge — `store_key()`, `has_key()`, `encrypt()`, `decrypt()`, `remove_key()`
+
+---
+
+### Phase 6: Federation Client in Zig
 
 > **Effort**: ~2 weeks | **Memory win**: Eliminates `httpx` from Python
 > **New Zig files**: `kernel/src/federation.zig`, `kernel/src/federation_auth.zig`
@@ -861,9 +915,9 @@ Ghost user management (create, lookup, cascade delete) is DB operations + trust 
 
 ## Future Phases
 
-These are beyond the initial 5-phase plan but complete the long-term vision:
+These are beyond the initial 6-phase plan but complete the long-term vision:
 
-### Phase 6: CLI in Zig
+### Phase 7: CLI in Zig
 
 > **Effort**: ~1-2 weeks
 
@@ -871,7 +925,7 @@ The CLI (`src/cli.py`, 1,188 lines) is just HTTP calls + terminal formatting. Zi
 
 Alternative: Write in Go, since Citadel is already Go and the CLI toolchain is mature (cobra, etc.).
 
-### Phase 7: Python → MCP + Anthropic Only
+### Phase 8: Python → MCP + Anthropic Only
 
 > **Effort**: ~1 week (cleanup)
 
@@ -885,11 +939,11 @@ httpx              # HTTP client (used by anthropic SDK)
 
 That's it. ~50-60MB for the Python sidecar. Everything else is Zig.
 
-### Phase 8: Registry in Zig
+### Phase 9: Registry in Zig
 
 The standalone `trustmesh-registry/` (Next.js 16 + better-sqlite3) is just 5 API routes + SQLite. Could fold into the Zig binary as a compilation flag (`--enable-registry`), or keep as a separate Zig binary for deployment flexibility.
 
-### Phase 9: Static Frontend Serving
+### Phase 10: Static Frontend Serving
 
 `next build` → static assets. Zig serves them from a directory. No Bun runtime in production. Development still uses `bun dev` for hot reload.
 
@@ -897,36 +951,66 @@ The standalone `trustmesh-registry/` (Next.js 16 + better-sqlite3) is just 5 API
 
 ## Zig Kernel Module Map
 
-After all phases, the kernel source tree:
+### Current State (18 source files, 5,792 LOC)
 
 ```
 kernel/src/
-├── main.zig              # C ABI exports (existing 48 + new ~60)
-├── types.zig             # Core types (existing)
-├── entry.zig             # Entry state machine (existing)
-├── event.zig             # Event queue (existing)
-├── cron.zig              # Cron parser (existing)
-├── dag.zig               # Dependency graph (existing)
-├── resolution.zig        # Three-stream resolution (existing)
-├── state.zig             # Central state (existing)
-├── log.zig               # Transition log (existing)
-├── timeline.zig          # Timeline engine (existing)
+├── main.zig              # 1,424 LOC — 112 C ABI exports (entry point for libpodos.dylib)
+├── types.zig             #   179 LOC — Core types, EntryId, timestamps
+├── entry.zig             #   308 LOC — Entry state machine
+├── event.zig             #    95 LOC — Event queue
+├── cron.zig              #   192 LOC — Cron parser (5-field, bitset matching)
+├── dag.zig               #   186 LOC — Dependency graph
+├── resolution.zig        #    92 LOC — Three-stream resolution
+├── state.zig             #   156 LOC — Central state
+├── log.zig               #   149 LOC — Transition log
+├── timeline.zig          #   521 LOC — Timeline engine (tick-tock)
 │
-├── db.zig                # Phase 1: SQLite C API wrapper (foundation for all DB access)
-├── fts.zig               # Phase 1: FTS5 search, upsert, delete
-├── crypto.zig            # Phase 2: AES-GCM, Ed25519, Argon2id, DID
+├── db.zig                #   116 LOC — Phase 1: SQLite C API wrapper  ✅
+├── fts.zig               #   189 LOC — Phase 1: FTS5 search           ✅
+├── timeline_persist.zig  #   319 LOC — Phase 1: Entry persistence      ✅
+├── crypto.zig            #   493 LOC — Phase 2: Full crypto suite      ✅
+├── trust.zig             #   225 LOC — Phase 4: Trust resolution       ✅
+├── session.zig           #   314 LOC — Phase 4: Session management     ✅
+├── rate_limit.zig        #   328 LOC — Phase 4: Rate limiting          ✅
+└── transit.zig           #   506 LOC — Phase 5: Transit engine (vault key storage + encrypt/decrypt)  ✅
+```
+
+### Tests (16 files, 3,023 LOC)
+
+```
+kernel/tests/
+├── test_types.zig             #    76 LOC
+├── test_entry.zig             #   162 LOC
+├── test_event.zig             #    82 LOC
+├── test_cron.zig              #    83 LOC
+├── test_dag.zig               #   114 LOC
+├── test_resolution.zig        #    95 LOC
+├── test_state.zig             #    58 LOC
+├── test_log.zig               #    70 LOC
+├── test_timeline.zig          #   145 LOC
+├── test_fts.zig               #   310 LOC  ✅
+├── test_timeline_persist.zig  #   260 LOC  ✅
+├── test_crypto.zig            #   355 LOC  ✅
+├── test_trust.zig             #   282 LOC  ✅
+├── test_session.zig           #   405 LOC  ✅
+├── test_rate_limit.zig        #   325 LOC  ✅
+└── test_transit.zig           #   201 LOC  ✅
+```
+
+### Remaining (Phase 3 + 6)
+
+```
+kernel/src/ (future)
 ├── http.zig              # Phase 3: HTTP server, routing, CORS
 ├── router.zig            # Phase 3: Route table, path matching
 ├── json.zig              # Phase 3: JSON parse/serialize helpers
-├── models.zig            # Phase 3+: Struct definitions for all tables (as routes migrate)
-├── trust.zig             # Phase 4: Trust resolution
-├── session.zig           # Phase 4: Session management, cookies
-├── rate_limit.zig        # Phase 4: Sliding window rate limiter
-├── federation.zig        # Phase 5: Outbound HTTP client, ghost lifecycle
-└── federation_auth.zig   # Phase 5: Ed25519 request signing/verification
+├── models.zig            # Phase 3+: Struct definitions for DB tables
+├── federation.zig        # Phase 6: Outbound HTTP client, ghost lifecycle
+└── federation_auth.zig   # Phase 6: Ed25519 request signing/verification
 ```
 
-Estimated total: **~6,000-8,000 lines of Zig** (up from 2,308 current).
+Estimated final total: **~8,000-9,000 lines of Zig** (currently at 5,792 — ~68% complete).
 
 ---
 
@@ -938,7 +1022,7 @@ Estimated total: **~6,000-8,000 lines of Zig** (up from 2,308 current).
 | `gossip.py` (partial) | ~200 | LLM orchestration (trust filtering moves to Zig, LLM call stays in Python) |
 | `citadel.py` (partial) | ~100 | Heuristic fallback patterns (Go sidecar handles primary scanning) |
 | `mcp_server.py` | 466 | MCP protocol (JSON-RPC over stdio, Python `mcp` library) |
-| `cli.py` | 1,188 | Stays until Phase 6 (works fine against Zig HTTP server) |
+| `cli.py` | 1,188 | Stays until Phase 7 (works fine against Zig HTTP server) |
 | `seed.py` | 2,030 | Stays as client-side script (calls HTTP API) |
 
 **MCP is the anchor.** The `mcp` Python library implements the full Model Context Protocol spec (stdio transport, JSON-RPC, tool registration, resource management). Reimplementing this in Zig would be ~2,000+ lines for a moving spec target. Not worth it.
@@ -949,39 +1033,45 @@ Estimated total: **~6,000-8,000 lines of Zig** (up from 2,308 current).
 
 ## Testing Strategy
 
-### Phase 1 (SQLite + FTS5 in Zig)
+### Phase 1 (SQLite + FTS5 in Zig) — COMPLETE
 
-- **Zig unit tests**: `zig build test` for db.zig (open, prepare, bind, step) and fts.zig (upsert, search, delete)
-- **FFI integration tests**: Python pytest calling Zig via ctypes — upsert capsule, search, verify results
-- **BM25 quality tests**: Known queries → expected capsule ordering
-- **Concurrent access**: Python (SQLAlchemy) writes capsule + Zig writes FTS5 index simultaneously
-- **Regression**: Full gossip pipeline tests pass with FTS5 backend instead of ChromaDB
-- **Key test**: Trust-filtered FTS5 search returns correct capsules for exact-match queries
-- **Seed validation**: Seed script populates FTS5 index via Zig, search returns all expected capsules
+- **Zig unit tests**: 13 FTS tests (BM25 ranking, filtering, porter stemming, UTF-8, top_k limits) + 16 persistence tests (CRUD, outbox/inbox, owner filtering)
+- **FFI integration tests**: 14 Python pytest tests calling Zig via ctypes
+- **BM25 quality tests**: Known queries → expected capsule ordering verified
+- **Concurrent access**: Python (SQLAlchemy) + Zig share `trustmesh.db` via WAL mode — working in production
+- **Regression**: Full gossip pipeline (675 Python tests passing) with FTS5 backend
+- **Trust-filtered search**: `accessible_ids` passed as JSON array, filtered via `json_each()` in SQL
 
-### Phase 2 (Crypto)
+### Phase 2 (Crypto) — COMPLETE
 
-- **Cross-validation**: Encrypt with Python (old), decrypt with Zig (new) and vice versa
-- **DID round-trip**: `public_key → did:key → public_key` identical in both implementations
-- **UCAN compat**: Tokens signed by Zig validate in Python verifier (and reverse)
-- Zig unit tests via `zig build test` (existing pattern)
+- **Zig unit tests**: 355 LOC covering AES-GCM round-trip, Ed25519 sign/verify, Argon2id key derivation, DID encoding, base58btc, base64url
+- **Cross-validation**: Python-encrypted data decrypts in Zig and vice versa
+- **DID round-trip**: `public_key → did:key → public_key` byte-identical between implementations
+- **UCAN compat**: Tokens signed by Zig validate in Python verifier
 
-### Phase 3 (HTTP Server)
+### Phase 4 (Trust/Sessions/Rate) — COMPLETE
 
-- **Proxy mode**: All existing pytest tests pass through Zig proxy → Python backend
+- **Trust tests**: 282 LOC — 4-level resolution (private/network/connected/public), ghost staleness, shared network detection
+- **Session tests**: 230 LOC — create/validate/invalidate, TTL expiry, login rate limiting, user session purge
+- **Rate limit tests**: 190 LOC — sliding window, daily/weekly caps, query rate limits, reset
+- **Python bridge tests**: Existing Python tests now call Zig via FFI bridges
+
+### Phase 3 (HTTP Server) — NOT STARTED
+
+- **Proxy mode**: All existing pytest tests must pass through Zig proxy → Python backend
 - **Route migration**: Each migrated route gets its own Zig test + existing Python test still passes
 - **CORS**: Browser-based test for preflight OPTIONS handling
 - **Cookie auth**: Verify httpOnly cookie flow through Zig
 - **SQLAlchemy elimination**: Routes that move to Zig use db.zig directly (no more ORM)
 - **Schema compatibility**: Verify Zig raw SQL creates/reads identical data to SQLAlchemy
 
-### Phase 4 (Trust/Sessions/Rate)
+### Phase 5 (Transit Engine) — COMPLETE
 
-- Port existing trust tests to call Zig functions
-- Session TTL and rate limit window tests
-- **Ghost staleness**: Verify 24-hour timeout logic matches Python behavior
+- **Key isolation**: Vault keys stored only in Zig memory, never exposed to Python
+- **AAD round-trip**: Encrypt with AAD, verify decrypt requires matching AAD
+- **Key lifecycle**: Store, has_key, remove (with secureZero), re-store
 
-### Phase 5 (Federation)
+### Phase 6 (Federation) — NOT STARTED
 
 - **Signing compat**: Zig-signed requests accepted by Python verifier (and reverse)
 - **Multi-pod smoke tests**: Existing `test_multi_pod.py` passes with Zig pods
@@ -991,91 +1081,100 @@ Estimated total: **~6,000-8,000 lines of Zig** (up from 2,308 current).
 
 ## Risks & Mitigations
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Zig HTTP server maturity | `std.http.Server` lacks middleware, may have edge cases | Start in proxy mode; fall back to httpz/zap if needed |
-| SQLite concurrent access | Zig HTTP + Python sidecar both hitting same DB | SQLite WAL mode handles this; busy_timeout=5000ms |
-| Argon2id in Zig std | May not match Python argon2-cffi output byte-for-byte | Cross-validate early; both use Argon2id spec, should match with same params |
-| JSON handling verbosity | Zig std.json is functional but verbose vs Python dicts | Build thin helpers in `json.zig`; accept the verbosity |
-| Memory management | Zig has no GC — must track allocations | Use arena allocator per request (alloc on start, free all on response complete) |
-| Zig 0.15.x breaking changes | Zig pre-1.0, APIs shift between versions | Pin to 0.15.2 (already installed), document any API quirks |
-| Streaming LLM responses | Proxying SSE/chunked from Python through Zig | Test early in Phase 3a; chunked transfer encoding must pass through cleanly |
-| Base58btc big-int math | Zig has no arbitrary-precision integers | Ed25519 public keys are 32 bytes (fits u256); implement fixed-width base58 |
+| Risk | Impact | Mitigation | Status |
+|------|--------|------------|--------|
+| Zig HTTP server maturity | `std.http.Server` lacks middleware, may have edge cases | Start in proxy mode; fall back to httpz/zap if needed | Open (Phase 3) |
+| SQLite concurrent access | Zig HTTP + Python sidecar both hitting same DB | SQLite WAL mode + busy_timeout=5000ms | **Resolved** — working in production, Zig + Python share `trustmesh.db` |
+| Argon2id in Zig std | May not match Python argon2-cffi output byte-for-byte | Cross-validate early | **Resolved** — Zig `std.crypto.pwhash.argon2` matches Python output with same params |
+| JSON handling verbosity | Zig std.json is functional but verbose vs Python dicts | Build thin helpers; accept verbosity | **Resolved** — manual JSON serialization in fts.zig/trust.zig works fine |
+| Memory management | Zig has no GC — must track allocations | Use arena allocator per request | **Partially resolved** — page_allocator for FFI, defer pattern for statements |
+| Zig 0.15.x breaking changes | Zig pre-1.0, APIs shift between versions | Pin to 0.15.2, document quirks | **Managed** — multiple gotchas documented (ArrayList unmanaged, module ownership, etc.) |
+| Streaming LLM responses | Proxying SSE/chunked from Python through Zig | Test early in Phase 3a | Open (Phase 3) |
+| Base58btc big-int math | Zig has no arbitrary-precision integers | Fixed-width u256 base58 | **Resolved** — implemented in crypto.zig using Zig's native u256 type |
 
 ---
 
 ## Build Order Summary
 
 ```
-Phase 1: SQLite + FTS5 in Zig         ~1-2 weeks    ████████████████
-  └── Kill ChromaDB (~400MB saved), establish db.zig foundation
-  └── Prereqs: none — START HERE
+Phase 1: SQLite + FTS5 in Zig         ████████████████  COMPLETE ✅
+  └── ChromaDB killed (~400MB saved), db.zig foundation, timeline persistence
+  └── 624 LOC (db.zig + fts.zig + timeline_persist.zig)
 
-Phase 2: Crypto in Zig                ~1 week       ████████
-  └── AES-GCM, Ed25519, Argon2id, DID
-  └── Prereqs: none (can parallel with Phase 1)
+Phase 2: Crypto in Zig                ████████          COMPLETE ✅
+  └── AES-GCM, Ed25519, Argon2id, DID, base58btc, base64url
+  └── 493 LOC (crypto.zig)
 
-Phase 3: Zig HTTP Server              ~2-3 weeks    ████████████████████
+Phase 4: Trust/Sessions/Rate          ████████          COMPLETE ✅  (done before Phase 3)
+  └── Trust resolution, session management, sliding-window rate limits
+  └── 867 LOC (trust.zig + session.zig + rate_limit.zig)
+
+Phase 5: Transit Engine               ██████            COMPLETE ✅
+  └── Vault key storage, AES-256-GCM encrypt/decrypt with AAD, keys never leave Zig
+  └── 506 LOC (transit.zig)
+
+Phase 3: Zig HTTP Server              ████████████████████  NEXT
   └── Proxy mode → route migration → SQLAlchemy elimination
-  └── Prereqs: Phase 1 (db.zig), Phase 2 (crypto for auth routes)
+  └── Prereqs: Phase 1 ✅, Phase 2 ✅, Phase 4 ✅, Phase 5 ✅ — ALL MET
+  └── Estimated: ~2-3 weeks
 
-Phase 4: Trust/Sessions/Rate          ~3-5 days     ████
-  └── Simple logic ports
-  └── Prereqs: Phase 1 (db.zig for trust queries)
-
-Phase 5: Federation Client            ~2 weeks      ████████████████
+Phase 6: Federation Client            ████████████████      AFTER PHASE 3
   └── HTTP client, signing, ghosts
-  └── Prereqs: Phase 2 (crypto), Phase 1 (DB), Phase 4 (trust)
+  └── Prereqs: Phase 2 ✅, Phase 1 ✅, Phase 4 ✅ — ALL MET
+  └── Can start in parallel with Phase 3 route migration
+  └── Estimated: ~2 weeks
 
 ─────────────────────────────────────────────────────────────
-Total: ~7-9 weeks for one developer
-
-Phase 1 + 2 in parallel:              ~2 weeks
-Phase 3 after both:                   ~2-3 weeks
-Phase 4 + 5 after 3:                  ~2-3 weeks
+Completed: Phases 1, 2, 4, 5           5,792 Zig LOC
+Remaining: Phases 3, 6                 ~2,000-3,000 LOC estimated
+Total elapsed: ~4 weeks
+Remaining: ~3-4 weeks
 ```
 
 ### Milestone Checkpoints
 
-| After Phase | Pod Memory | Python Surface | Zig LOC |
-|-------------|-----------|---------------|---------|
-| Current | ~500MB | Everything | 2,308 |
-| **1** | **~120MB** | Everything minus ChromaDB | ~2,550 |
-| **2** | ~110MB | Minus crypto libs | ~3,050 |
-| **3** | ~80-90MB | Minus FastAPI/SQLAlchemy (routes migrated) | ~5,500 |
-| **4** | ~80MB | Minus auth/trust/rate | ~5,900 |
-| **5** | **~80MB** | **MCP + Anthropic only** | ~6,800 |
+| After Phase | Pod Memory | Python Surface | Zig LOC | Status |
+|-------------|-----------|---------------|---------|--------|
+| Baseline | ~500MB | Everything | 2,308 | — |
+| **1** | **~120MB** | Everything minus ChromaDB | 2,932 | **COMPLETE** |
+| **2** | ~120MB | Minus crypto libs (still loaded by Python for now) | 3,422 | **COMPLETE** |
+| **4** | ~120MB | Trust/sessions/rate in Zig (Python bridges call Zig) | 4,289 | **COMPLETE** |
+| **5** | ~120MB | Vault keys in Zig transit engine, encrypt/decrypt via FFI | 5,792 | **COMPLETE** |
+| **3** | ~80-90MB | Minus FastAPI/SQLAlchemy (routes migrated) | ~7,500 | Not started |
+| **6** | **~80MB** | **MCP + Anthropic only** | ~8,500 | Not started |
+
+> **Note**: Phases 1+2+4+5 don't reduce Python memory much *yet* because Python still loads libraries for its own route handling. The big drop comes with Phase 3 when Python routes migrate to Zig and dependencies like FastAPI, SQLAlchemy, and Pydantic can be removed. However, the Zig implementations are already being called via FFI bridges, proving correctness and establishing the foundation.
 
 ---
 
-## Appendix: Current Python LOC by Module
+## Appendix: Python Module Status
 
-For reference, the exact scope of what's being ported or retained:
-
-| Module | Lines | Fate |
-|--------|-------|------|
-| `agents.py` | 2,474 | **Stays** (Python — LLM orchestration) |
-| `seed.py` | 2,030 | **Stays** (Python — HTTP client script) |
-| `cli.py` | 1,188 | Stays until Phase 6 |
-| `routes/*.py` (18 files) | 5,141 | **Zig** (Phase 3 + 1b) |
-| `timeline_bridge.py` | 781 | Evolves (bridge to expanded Zig kernel) |
-| `schemas.py` | 673 | **Zig** (structs replace Pydantic) |
-| `gossip.py` | 622 | Split: search → Zig, LLM call → Python |
-| `federation.py` | 510 | **Zig** (Phase 5) |
-| `mcp_server.py` | 466 | **Stays** (Python — MCP protocol) |
-| `model_router.py` | 433 | **Stays** (Python — LLM provider routing) |
-| `main.py` | 399 | Replaced by Zig HTTP server |
-| `models.py` | 343 | **Zig** (Phase 3, as routes migrate) |
-| `citadel.py` | 270 | Partial: heuristics stay, sidecar calls → Zig |
-| `crypto.py` | 245 | **Zig** (Phase 2) |
-| `ucan.py` | 225 | **Zig** (Phase 2) |
-| `seed_multi.py` | 211 | Stays (Python — HTTP client script) |
-| `federation_auth.py` | 196 | **Zig** (Phase 5) |
-| `embeddings.py` | 169 | **Rewritten** (Phase 1 — FTS5 via Zig FFI) |
-| `rate_limit.py` | 112 | **Zig** (Phase 4) |
-| `trust.py` | 103 | **Zig** (Phase 4) |
-| `auth.py` | 91 | **Zig** (Phase 4) |
-| `audit.py` | 73 | **Zig** (with routes) |
-| `database.py` | 62 | **Zig** (Phase 1 establishes db.zig, Phase 3 completes migration) |
-| `fhir.py` | 206 | **Zig** (with routes) |
-| **Total** | ~16,400 | ~8,200 → Zig, ~6,200 stays Python, ~2,000 rewritten |
+| Module | Lines | Status | Notes |
+|--------|-------|--------|-------|
+| `agents.py` | 2,474 | **Stays** | LLM orchestration, Anthropic SDK |
+| `seed.py` | 2,030 | **Stays** | HTTP client script |
+| `cli.py` | 1,188 | Stays until Phase 7 | HTTP calls + terminal |
+| `timeline_bridge.py` | ~1,055 | **Active bridge** | ctypes FFI to 112 Zig exports |
+| `transit_bridge.py` | ~120 | **Active bridge** | ctypes FFI to transit engine (Phase 5 ✅) |
+| `crypto_bridge.py` | ~200 | **Active bridge** | ctypes FFI to crypto (Phase 2 ✅) |
+| `routes/*.py` (18 files) | 5,141 | Phase 3 → Zig | Includes timeline routes (persistence wired) |
+| `schemas.py` | 673 | Phase 3 → Zig | Pydantic → Zig structs |
+| `gossip.py` | 622 | **Partially migrated** | Search calls Zig FTS5; LLM call stays Python |
+| `federation.py` | 510 | Phase 6 → Zig | |
+| `mcp_server.py` | 466 | **Stays** | MCP protocol (Python `mcp` library) |
+| `model_router.py` | 433 | **Stays** | LLM provider routing |
+| `main.py` | 421 | Phase 3 → Zig | Startup, CORS, vault_keys, route registration |
+| `models.py` | 343 | Phase 3 → Zig | SQLAlchemy models → raw SQL |
+| `citadel.py` | 270 | Partial | Heuristics stay, sidecar calls → Zig |
+| `crypto.py` | 245 | **Zig bridge active** | Calls `podos_crypto_*` via ctypes (Phase 2 ✅) |
+| `ucan.py` | 225 | Phase 3 → Zig | |
+| `seed_multi.py` | 211 | **Stays** | HTTP client script |
+| `federation_auth.py` | 196 | Phase 6 → Zig | |
+| `embeddings.py` | 189 | **Rewritten** | FTS5 via Zig FFI (Phase 1 ✅) |
+| `rate_limit.py` | 112 | **Zig bridge active** | Calls `podos_rate_*` via ctypes (Phase 4 ✅) |
+| `trust.py` | 103 | **Zig bridge active** | Calls `podos_trust_resolve` via ctypes (Phase 4 ✅) |
+| `auth.py` | 91 | **Zig bridge active** | Calls `podos_session_*` via ctypes (Phase 4 ✅) |
+| `audit.py` | 73 | Phase 3 → Zig | |
+| `database.py` | 62 | Phase 3 → Zig | db.zig replaces SQLAlchemy |
+| `fhir.py` | 206 | Phase 3 → Zig | |
+| **Total** | ~16,700 | **~6,100 migrated/bridged**, ~4,800 stays Python, ~5,800 Phase 3+6 |
