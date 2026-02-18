@@ -71,21 +71,21 @@ async def anon_client():
 
 VALID_USER = {
     "username": "testuser1",
-    "display_name": "Test User 1",
+    "display_name": "Test User One",
     "bio": "Testing",
     "password": "SecureTestPass1!",
 }
 
 VALID_USER2 = {
     "username": "testuser2",
-    "display_name": "Test User 2",
+    "display_name": "Test User Two",
     "bio": "Testing 2",
     "password": "SecureTestPass2!",
 }
 
 VALID_USER3 = {
     "username": "testuser3",
-    "display_name": "Test User 3",
+    "display_name": "Test User Three",
     "bio": "Testing 3",
     "password": "SecureTestPass3!",
 }
@@ -371,7 +371,7 @@ async def test_network_discovery_shows_member_count(client):
     data = resp.json()
     net = next(n for n in data if n["name"] == "Count Net")
     assert net["member_count"] == 1
-    assert net["owner_name"] == "Test User 1"
+    assert net["owner_name"] == "Test User One"
 
 
 @pytest.mark.asyncio

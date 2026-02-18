@@ -39,6 +39,7 @@ VALID_USER = {
     "display_name": "Test Pod User",
     "bio": "Testing pod federation",
     "password": "SecureTestPass1!",
+    "is_discoverable": True,
 }
 
 

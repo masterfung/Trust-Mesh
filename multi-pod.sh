@@ -237,6 +237,26 @@ cmd_start() {
   _ensure_dirs
   _ensure_secret
 
+  # Source .env for API keys, but DON'T overwrite keys already in the
+  # shell env (e.g. ANTHROPIC_API_KEY from .zshrc).  We read each line
+  # and only export if the var is currently unset or empty.
+  if [[ -f "$ROOT/.env" ]]; then
+    while IFS='=' read -r key value; do
+      # Skip comments and blank lines
+      [[ "$key" =~ ^[[:space:]]*# ]] && continue
+      [[ -z "$key" ]] && continue
+      key="${key%%[[:space:]]}"
+      value="${value##[[:space:]]}"
+      # Only set if not already in env
+      if [[ -z "${!key:-}" ]]; then
+        export "$key=$value"
+      fi
+    done < "$ROOT/.env"
+  fi
+
+  # Dev mode: cookies work over HTTP, CSRF secure=false
+  export TRUSTMESH_DEV_MODE=1
+
   echo ""
   echo "=== Starting TrustMesh Multi-Pod Federation ==="
   echo ""
@@ -258,8 +278,20 @@ cmd_start() {
   nohup bun dev --port $REGISTRY_PORT > "$LOG_DIR/registry.log" 2>&1 &
   echo $! > "$PID_DIR/registry.pid"
 
-  # 2. Start 19 pods
+  # 2a. Start user's own pod on :8000 (fresh DB — no demo users to avoid registry dupes)
   cd "$BACKEND_DIR"
+  _kill_port 8000
+  TRUSTMESH_POD_NAME="My Pod" \
+  TRUSTMESH_POD_URL="http://localhost:8000" \
+  TRUSTMESH_DB="$DATA_DIR/user.db" \
+  TRUSTMESH_POOL_SYNC_SECRET="$TRUSTMESH_POOL_SYNC_SECRET" \
+  TRUSTMESH_REGISTRY_URL="http://localhost:${REGISTRY_PORT}" \
+  CITADEL_URL="${CITADEL_URL}" \
+  nohup uv run uvicorn src.main:app --reload --port 8000 > "$LOG_DIR/user.log" 2>&1 &
+  echo $! > "$PID_DIR/user.pid"
+  echo "  Started :8000  Your Pod (sign up / login here)"
+
+  # 2b. Start 16 demo pods
   for entry in "${PODS[@]}"; do
     local key="${entry%%:*}"
     local port="${entry##*:}"
@@ -313,7 +345,8 @@ cmd_start() {
     echo "  Citadel:   $CITADEL_URL (ML security scanning)"
   fi
   echo "  Registry:  http://localhost:$REGISTRY_PORT"
-  echo "  Pods:      http://localhost:8001 - http://localhost:8016"
+  echo "  Your Pod:  http://localhost:8000  (sign up / login)"
+  echo "  Demo Pods: http://localhost:8001 - http://localhost:8016"
   echo "  Frontend:  http://localhost:$FRONTEND_PORT"
   echo ""
   echo "  Next: ./multi-pod.sh orchestrate"
@@ -339,7 +372,11 @@ cmd_stop() {
   _kill_pid "$PID_DIR/frontend.pid" "frontend"
   _kill_port $FRONTEND_PORT
 
-  # Stop all pods
+  # Stop user's own pod
+  _kill_pid "$PID_DIR/user.pid" "user pod"
+  _kill_port 8000
+
+  # Stop all demo pods
   for entry in "${PODS[@]}"; do
     local key="${entry%%:*}"
     local port="${entry##*:}"
@@ -376,7 +413,14 @@ cmd_status() {
     printf "  %-8s %-25s %s\n" ":$REGISTRY_PORT" "Registry" "OFFLINE"
   fi
 
-  # Pods
+  # User's own pod
+  if curl -sf "http://localhost:8000/health" > /dev/null 2>&1; then
+    printf "  %-8s %-25s %s\n" ":8000" "Your Pod" "ONLINE"
+  else
+    printf "  %-8s %-25s %s\n" ":8000" "Your Pod" "OFFLINE"
+  fi
+
+  # Demo pods
   local online=0 total=0
   for entry in "${PODS[@]}"; do
     local key="${entry%%:*}"

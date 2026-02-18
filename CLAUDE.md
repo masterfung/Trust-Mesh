@@ -89,14 +89,21 @@ For production multimodal AI security (text, images, PDFs, tool calls), see [Mig
 5. For mutations, verify entity ownership: `entity.owner_id == auth_user_id`
 
 ### Encryption Flow
-- Vault keys stored in-memory dict (`vault_keys` in `main.py`), populated on login
-- Capsule content encrypted server-side with AES-256-GCM before storage
-- Decrypted server-side before API response - encrypted bytes never reach the browser
+- Vault keys stored in Zig transit engine (`transit.zig`) — keys never leave Zig memory after initial store
+- `transit_bridge.py` provides Python ctypes wrappers: `store_key()`, `encrypt()`, `decrypt()`, `has_key()`
+- Capsule content encrypted server-side with AES-256-GCM + AAD before storage
+- Decrypted server-side before API response — encrypted bytes never reach the browser
 - Agent ed25519 private keys encrypted with vault key at rest
+- Legacy `vault_keys` dict in `main.py` is now a `_TransitKeyStore` that delegates to transit_bridge
 
 ### Auth Pattern
-- Session-based auth via httpOnly cookies (no tokens in JS)
-- `get_current_user_id()` dependency extracts user from session cookie
+- Session-based auth via httpOnly secure cookies (no tokens in JS)
+- Session fingerprint binding (SHA-256 of User-Agent + IP) prevents session hijacking
+- Session rotation on login (all prior sessions invalidated)
+- Per-user session cap (10 max, oldest evicted)
+- Sliding inactivity timeout (1 hour)
+- CSRF double-submit cookie on POST/PUT/DELETE (exempt: login, federation)
+- `get_current_user_id()` dependency extracts user from session cookie + verifies fingerprint
 - Emergency endpoints use UCAN token auth instead of session cookies
 - Demo users go through normal login flow
 
@@ -136,14 +143,17 @@ For production multimodal AI security (text, images, PDFs, tool calls), see [Mig
 | `src/trust.py` | Trust level resolution from connections and networks |
 | `src/citadel.py` | Security scanning via [Citadel](https://github.com/TryMightyAI/citadel) sidecar + heuristic fallback |
 | `src/seed.py` | Demo data seeder (Johnson family scenario) |
-| `src/main.py` | App startup, CORS, vault_keys dict, route registration |
+| `src/transit_bridge.py` | Zig transit engine ctypes wrappers — vault key storage, encrypt/decrypt |
+| `src/main.py` | App startup, CORS, security headers, route registration |
 
 ## Common Gotchas
 
-- `vault_keys` dict is populated on login/seed - if a user isn't logged in, their capsules can't be decrypted
+- Vault keys are stored in Zig transit engine on login/seed — if a user isn't logged in, their capsules can't be decrypted
+- Use `transit_bridge.has_key(user_id)` to check, `transit_bridge.encrypt()/decrypt()` for capsule ops
 - Demo password is `DEMO_PASSWORD` constant in `src/seed.py` - only used for `is_demo=True` users
-- The `from src.main import vault_keys` pattern uses lazy import to avoid circular deps
-- ChromaDB runs in-process - no external service needed
-- [Citadel](https://github.com/TryMightyAI/citadel) Go sidecar is optional — Python heuristic fallback handles scanning without it
+- FTS5 search uses SQLite (Zig kernel) — no ChromaDB, no external service needed
+- `tests/conftest.py` sets `TRUSTMESH_DEV_MODE=1` and `TRUSTMESH_DISABLE_CSRF=1` for test environments
+- `drop_db()` calls `close_fts()` to reset the Zig FTS handle — prevents stale connection errors
+- [Citadel](https://github.com/TryMightyAI/citadel) Go sidecar is optional — Python heuristic fallback handles scanning without it (circuit breaker: 3 failures in 60s skips Citadel for 60s)
 - `./dev.sh citadel` does first-time ML setup (HuggingFace model download + ONNX build)
 - `./dev.sh start` auto-starts Citadel if the binary exists in `citadel-ref/`

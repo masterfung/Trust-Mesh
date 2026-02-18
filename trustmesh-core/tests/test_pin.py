@@ -86,12 +86,12 @@ async def signup_user(client: AsyncClient, user_data: dict) -> tuple[dict, dict]
 
 @pytest.mark.asyncio
 async def test_set_pin_success(client):
-    """Set a 4-digit PIN for a user returns has_pin=true."""
+    """Set a 6-digit PIN for a user returns has_pin=true."""
     user, cookies = await signup_user(client, VALID_USER_A)
 
     resp = await client.post(
         f"/api/users/{user['id']}/pin",
-        json={"pin": "1234"},
+        json={"pin": "123456"},
         cookies=cookies,
     )
     assert resp.status_code == 200
@@ -135,7 +135,7 @@ async def test_set_pin_update_existing(client):
     # Set initial PIN
     resp1 = await client.post(
         f"/api/users/{user['id']}/pin",
-        json={"pin": "1234"},
+        json={"pin": "123456"},
         cookies=cookies,
     )
     assert resp1.status_code == 200
@@ -143,7 +143,7 @@ async def test_set_pin_update_existing(client):
     # Update to new PIN
     resp2 = await client.post(
         f"/api/users/{user['id']}/pin",
-        json={"pin": "5678"},
+        json={"pin": "567890"},
         cookies=cookies,
     )
     assert resp2.status_code == 200
@@ -151,7 +151,7 @@ async def test_set_pin_update_existing(client):
     # Verify old PIN no longer works
     verify_old = await client.post(
         f"/api/users/{user['id']}/pin/verify",
-        json={"pin": "1234"},
+        json={"pin": "123456"},
         cookies=cookies,
     )
     assert verify_old.status_code == 403
@@ -159,7 +159,7 @@ async def test_set_pin_update_existing(client):
     # Verify new PIN works
     verify_new = await client.post(
         f"/api/users/{user['id']}/pin/verify",
-        json={"pin": "5678"},
+        json={"pin": "567890"},
         cookies=cookies,
     )
     assert verify_new.status_code == 200
@@ -192,7 +192,7 @@ async def test_pin_status_with_pin(client):
     # Set PIN first
     await client.post(
         f"/api/users/{user['id']}/pin",
-        json={"pin": "1234"},
+        json={"pin": "123456"},
         cookies=cookies,
     )
 
@@ -217,14 +217,14 @@ async def test_verify_correct_pin(client):
     # Set PIN
     await client.post(
         f"/api/users/{user['id']}/pin",
-        json={"pin": "4321"},
+        json={"pin": "654321"},
         cookies=cookies,
     )
 
     # Verify correct PIN
     resp = await client.post(
         f"/api/users/{user['id']}/pin/verify",
-        json={"pin": "4321"},
+        json={"pin": "654321"},
         cookies=cookies,
     )
     assert resp.status_code == 200
@@ -243,14 +243,14 @@ async def test_verify_wrong_pin(client):
     # Set PIN
     await client.post(
         f"/api/users/{user['id']}/pin",
-        json={"pin": "1234"},
+        json={"pin": "123456"},
         cookies=cookies,
     )
 
     # Verify wrong PIN
     resp = await client.post(
         f"/api/users/{user['id']}/pin/verify",
-        json={"pin": "9999"},
+        json={"pin": "999123"},
         cookies=cookies,
     )
     assert resp.status_code == 403
@@ -263,7 +263,7 @@ async def test_verify_pin_not_set(client):
 
     resp = await client.post(
         f"/api/users/{user['id']}/pin/verify",
-        json={"pin": "1234"},
+        json={"pin": "123456"},
         cookies=cookies,
     )
     assert resp.status_code == 400
@@ -277,12 +277,12 @@ async def test_verify_pin_not_set(client):
 
 @pytest.mark.asyncio
 async def test_pin_too_short(client):
-    """PIN with fewer than 4 digits returns 422 validation error."""
+    """PIN with fewer than 6 digits returns 422 validation error."""
     user, cookies = await signup_user(client, VALID_USER_A)
 
     resp = await client.post(
         f"/api/users/{user['id']}/pin",
-        json={"pin": "123"},
+        json={"pin": "12345"},
         cookies=cookies,
     )
     assert resp.status_code == 422
@@ -347,7 +347,7 @@ async def test_verify_pin_validation_too_short(client):
 
     resp = await client.post(
         f"/api/users/{user['id']}/pin/verify",
-        json={"pin": "12"},
+        json={"pin": "12345"},
         cookies=cookies,
     )
     assert resp.status_code == 422
@@ -367,7 +367,7 @@ async def test_set_pin_wrong_user(client):
     # User B tries to set user A's PIN
     resp = await client.post(
         f"/api/users/{user_a['id']}/pin",
-        json={"pin": "1234"},
+        json={"pin": "123456"},
         cookies=cookies_b,
     )
     assert resp.status_code == 403
@@ -382,14 +382,14 @@ async def test_verify_pin_wrong_user(client):
     # Set PIN for user A
     await client.post(
         f"/api/users/{user_a['id']}/pin",
-        json={"pin": "1234"},
+        json={"pin": "123456"},
         cookies=cookies_a,
     )
 
     # User B tries to verify user A's PIN
     resp = await client.post(
         f"/api/users/{user_a['id']}/pin/verify",
-        json={"pin": "1234"},
+        json={"pin": "123456"},
         cookies=cookies_b,
     )
     assert resp.status_code == 403
@@ -415,7 +415,7 @@ async def test_set_pin_no_auth(anon_client, client):
 
     resp = await anon_client.post(
         f"/api/users/{user['id']}/pin",
-        json={"pin": "1234"},
+        json={"pin": "123456"},
     )
     assert resp.status_code == 401
 
@@ -427,7 +427,7 @@ async def test_verify_pin_no_auth(anon_client, client):
 
     resp = await anon_client.post(
         f"/api/users/{user['id']}/pin/verify",
-        json={"pin": "1234"},
+        json={"pin": "123456"},
     )
     assert resp.status_code == 401
 

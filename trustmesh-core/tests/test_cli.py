@@ -1743,3 +1743,324 @@ class TestLoginEdgeCases:
                 result = runner.invoke(app, ["login", "--pod", "http://localhost:8000", "--user", "peter"])
         assert result.exit_code == 1
         assert "No session token" in result.output
+
+
+# ═══════════════════════════════════════════
+#  Timeline CLI tests
+# ═══════════════════════════════════════════
+
+
+TIMELINE_ENTRIES_RESPONSE = [
+    {
+        "id": "aaaa1111-0000-0000-0000-000000000001",
+        "label": "Memory Decay Sweep",
+        "category": "system",
+        "state": 1,
+        "state_name": "PENDING",
+        "salience": 0.1,
+        "visibility": 3,
+        "entry_type": 0,
+        "entry_type_name": "TASK",
+        "visibility_name": "PRIVATE",
+        "trigger_kind": "cron",
+        "trigger_detail": "0 * * * *",
+        "hook_summary": "PIPELINE",
+        "dep_count": 0,
+    },
+    {
+        "id": "aaaa1111-0000-0000-0000-000000000002",
+        "label": "Memory Consolidation",
+        "category": "system",
+        "state": 0,
+        "state_name": "DORMANT",
+        "salience": 0.2,
+        "visibility": 3,
+        "entry_type": 0,
+        "entry_type_name": "TASK",
+        "visibility_name": "PRIVATE",
+        "trigger_kind": "event",
+        "trigger_detail": "memory.sweep_completed",
+        "hook_summary": "AGENT_TASK",
+        "dep_count": 0,
+    },
+    {
+        "id": "aaaa1111-0000-0000-0000-000000000003",
+        "label": "Memory Forgetting",
+        "category": "system",
+        "state": 0,
+        "state_name": "DORMANT",
+        "salience": 0.1,
+        "visibility": 3,
+        "entry_type": 0,
+        "entry_type_name": "TASK",
+        "visibility_name": "PRIVATE",
+        "trigger_kind": None,
+        "trigger_detail": None,
+        "hook_summary": "PIPELINE",
+        "dep_count": 1,
+    },
+    {
+        "id": "aaaa1111-0000-0000-0000-000000000004",
+        "label": "Hospital Health Monitor",
+        "category": "health",
+        "state": 0,
+        "state_name": "DORMANT",
+        "salience": 0.6,
+        "visibility": 1,
+        "entry_type": 4,
+        "entry_type_name": "HOOK",
+        "visibility_name": "INTERNAL",
+        "trigger_kind": "event",
+        "trigger_detail": "capsule.created.health",
+        "hook_summary": "AGENT_TASK",
+        "dep_count": 0,
+    },
+]
+
+TIMELINE_STATE_RESPONSE = {
+    "active_count": 2,
+    "pending_count": 3,
+    "dormant_count": 5,
+    "failed_count": 0,
+    "total_count": 14,
+    "tick_count": 42,
+    "signal_count": 1,
+    "is_running": True,
+    "signals": [{"severity": "warning", "message": "Entry X timed out", "related_entry_id": "abc123"}],
+    "active_ids": ["aaaa1111-0000-0000-0000-000000000001"],
+}
+
+
+def _make_ctx_mock(responses: dict):
+    """Create a mock client that supports context manager protocol and _mock_api_responses."""
+    mock_client = MagicMock()
+    mock_client.__enter__ = MagicMock(return_value=mock_client)
+    mock_client.__exit__ = MagicMock(return_value=False)
+    _mock_api_responses(mock_client, responses)
+    return mock_client
+
+
+class TestTimelineList:
+    """Test `trustmesh timeline list` command."""
+
+    def _mock_session(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / ".trustmesh"
+        session_file = config_dir / "session"
+        monkeypatch.setattr("src.cli.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("src.cli.SESSION_FILE", session_file)
+        # Use wide console to prevent Rich table truncation in tests
+        from rich.console import Console as _Console
+        monkeypatch.setattr("src.cli.console", _Console(width=200))
+        _save_session("http://localhost:8000", "tok123", "user-1", "peter")
+
+    def test_list_all(self, tmp_path, monkeypatch):
+        """Lists all timeline entries with enriched fields."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/entries"): TIMELINE_ENTRIES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "list"])
+        assert result.exit_code == 0
+        assert "Memory Decay Sweep" in result.output
+        assert "PIPELINE" in result.output
+        assert "cron" in result.output
+        assert "0 * * * *" in result.output
+
+    def test_list_filter_state(self, tmp_path, monkeypatch):
+        """Lists entries filtered by state."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/entries"): TIMELINE_ENTRIES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "list", "--state", "dormant"])
+        assert result.exit_code == 0
+        # Should show dormant entries
+        assert "Memory Consolidation" in result.output
+        # Should not show pending entries
+        assert "Memory Decay Sweep" not in result.output
+
+    def test_list_empty(self, tmp_path, monkeypatch):
+        """Shows message when no entries."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/entries"): [],
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "list"])
+        assert result.exit_code == 0
+        assert "No entries found" in result.output
+
+    def test_list_shows_event_trigger(self, tmp_path, monkeypatch):
+        """Event trigger details shown in table."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/entries"): TIMELINE_ENTRIES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "list"])
+        assert "memory.sweep_completed" in result.output
+
+    def test_list_shows_dep_count(self, tmp_path, monkeypatch):
+        """Dependency count shown for entries with deps."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/entries"): TIMELINE_ENTRIES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "list"])
+        # Entry 3 has dep_count=1
+        assert "1" in result.output
+
+    def test_list_shows_hook_summary(self, tmp_path, monkeypatch):
+        """Hook summary shown in table."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/entries"): TIMELINE_ENTRIES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "list"])
+        assert "AGENT_TASK" in result.output
+
+    def test_list_shows_visibility(self, tmp_path, monkeypatch):
+        """Visibility abbreviation shown."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/entries"): TIMELINE_ENTRIES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "list"])
+        assert "intl" in result.output  # INTERNAL → intl
+
+
+class TestTimelineState:
+    """Test `trustmesh timeline state` command."""
+
+    def _mock_session(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / ".trustmesh"
+        session_file = config_dir / "session"
+        monkeypatch.setattr("src.cli.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("src.cli.SESSION_FILE", session_file)
+        _save_session("http://localhost:8000", "tok123", "user-1", "peter")
+
+    def test_state_shows_counts(self, tmp_path, monkeypatch):
+        """Displays engine health counts."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/state"): TIMELINE_STATE_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "state"])
+        assert result.exit_code == 0
+        assert "Running" in result.output
+        assert "42" in result.output  # tick count
+        assert "Active" in result.output
+        assert "14" in result.output  # total
+
+    def test_state_shows_signals(self, tmp_path, monkeypatch):
+        """Displays signals when present."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/state"): TIMELINE_STATE_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "state"])
+        assert "WARNING" in result.output
+        assert "Entry X timed out" in result.output
+
+
+class TestTimelineShow:
+    """Test `trustmesh timeline show` command."""
+
+    def _mock_session(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / ".trustmesh"
+        session_file = config_dir / "session"
+        monkeypatch.setattr("src.cli.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("src.cli.SESSION_FILE", session_file)
+        _save_session("http://localhost:8000", "tok123", "user-1", "peter")
+
+    def test_show_entry_details(self, tmp_path, monkeypatch):
+        """Shows all enriched fields for a single entry."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/entries"): TIMELINE_ENTRIES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "show", "aaaa1111-0000-0000-0000-000000000001"])
+        assert result.exit_code == 0
+        assert "Memory Decay Sweep" in result.output
+        assert "TASK" in result.output
+        assert "PRIVATE" in result.output
+        assert "cron: 0 * * * *" in result.output
+        assert "PIPELINE" in result.output
+
+    def test_show_prefix_match(self, tmp_path, monkeypatch):
+        """Matches by prefix."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/entries"): TIMELINE_ENTRIES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "show", "aaaa1111-0000-0000-0000-000000000004"])
+        assert result.exit_code == 0
+        assert "Hospital Health Monitor" in result.output
+        assert "INTERNAL" in result.output
+
+    def test_show_not_found(self, tmp_path, monkeypatch):
+        """Shows error when no match."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/entries"): TIMELINE_ENTRIES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "show", "zzzz"])
+        assert result.exit_code == 1
+        assert "No entry matching" in result.output
+
+    def test_show_deps_displayed(self, tmp_path, monkeypatch):
+        """Shows dependency count for entries with deps."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("GET", "/api/timeline/entries"): TIMELINE_ENTRIES_RESPONSE,
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "show", "aaaa1111-0000-0000-0000-000000000003"])
+        assert result.exit_code == 0
+        assert "Dependencies: 1" in result.output
+
+
+class TestTimelineTick:
+    """Test `trustmesh timeline tick` command."""
+
+    def _mock_session(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / ".trustmesh"
+        session_file = config_dir / "session"
+        monkeypatch.setattr("src.cli.CONFIG_DIR", config_dir)
+        monkeypatch.setattr("src.cli.SESSION_FILE", session_file)
+        _save_session("http://localhost:8000", "tok123", "user-1", "peter")
+
+    def test_tick(self, tmp_path, monkeypatch):
+        """Tick advances engine and shows tick count."""
+        self._mock_session(tmp_path, monkeypatch)
+        mock_client = _make_ctx_mock({
+            ("POST", "/api/timeline/tick"): {"tick_count": 43, "next_wake_at": 0},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "tick"])
+        assert result.exit_code == 0
+        assert "43" in result.output
+
+    def test_tick_with_next_wake(self, tmp_path, monkeypatch):
+        """Shows next wake time when set."""
+        self._mock_session(tmp_path, monkeypatch)
+        import time as _time
+        future_ms = int(_time.time() * 1000) + 60000  # 60s from now
+        mock_client = _make_ctx_mock({
+            ("POST", "/api/timeline/tick"): {"tick_count": 43, "next_wake_at": future_ms},
+        })
+        with patch("src.cli._client", return_value=mock_client):
+            result = runner.invoke(app, ["timeline", "tick"])
+        assert result.exit_code == 0
+        assert "43" in result.output
+        assert "Next wake" in result.output

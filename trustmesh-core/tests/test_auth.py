@@ -3,6 +3,7 @@
 import time
 
 from src.auth import (
+    MAX_LOGIN_ATTEMPTS,
     SESSION_TTL,
     check_rate_limit,
     create_session,
@@ -82,12 +83,12 @@ def test_unique_tokens():
 
 
 def test_rate_limit_allows_normal_usage():
-    for _ in range(9):
+    for _ in range(MAX_LOGIN_ATTEMPTS - 1):
         check_rate_limit("192.168.1.1")  # Should not raise
 
 
 def test_rate_limit_blocks_excessive_attempts():
-    for _ in range(10):
+    for _ in range(MAX_LOGIN_ATTEMPTS):
         check_rate_limit("192.168.1.2")
     try:
         check_rate_limit("192.168.1.2")
@@ -98,7 +99,7 @@ def test_rate_limit_blocks_excessive_attempts():
 
 def test_rate_limit_per_ip():
     """Different IPs have independent limits."""
-    for _ in range(10):
+    for _ in range(MAX_LOGIN_ATTEMPTS):
         check_rate_limit("10.0.0.1")
     # Different IP should still be fine
     check_rate_limit("10.0.0.2")  # Should not raise

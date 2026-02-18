@@ -225,6 +225,7 @@ cmd_start() {
   # Start backend
   echo "Starting backend on :$BACKEND_PORT..."
   cd "$BACKEND_DIR"
+  export TRUSTMESH_DEV_MODE=1
   nohup uv run uvicorn src.main:app --reload --port $BACKEND_PORT > "$BACKEND_LOG" 2>&1 &
   echo $! > "$BACKEND_PID"
 
