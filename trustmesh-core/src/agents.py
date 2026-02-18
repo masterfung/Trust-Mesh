@@ -437,6 +437,71 @@ AGENT_TOOLS = [
             "properties": {},
         },
     },
+    # Credential tools
+    {
+        "name": "list_credentials",
+        "description": (
+            "List the owner's stored credentials — names, services, and which tools "
+            "they are scoped to. NEVER returns secret values. Use this to help the "
+            "owner review what API keys/tokens/passwords they have stored."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "manage_credential",
+        "description": (
+            "Store, rotate, or deactivate a credential. "
+            "When storing: the secret is encrypted immediately and NEVER echoed back. "
+            "After storing, confirm 'Stored securely' — do not repeat or paraphrase the secret value. "
+            "When deactivating: removes the credential from future use."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["store", "rotate", "deactivate"],
+                    "description": (
+                        "store: save a new credential (name + service + secret + scoped_tools). "
+                        "rotate: replace the secret value for an existing credential (cred_id + new_secret). "
+                        "deactivate: soft-delete a credential (cred_id)."
+                    ),
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Friendly name (e.g. 'Stripe Production Key'). Required for store.",
+                },
+                "service": {
+                    "type": "string",
+                    "description": "Service hostname (e.g. 'stripe.com'). Required for store.",
+                },
+                "secret": {
+                    "type": "string",
+                    "description": (
+                        "The secret value to store or rotate. "
+                        "NEVER include this in any response text — only pass it to this tool."
+                    ),
+                },
+                "scoped_tools": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tool names allowed to use this credential (e.g. ['stripe_checkout']).",
+                },
+                "cred_id": {
+                    "type": "string",
+                    "description": "Credential ID. Required for rotate and deactivate.",
+                },
+                "expires_at": {
+                    "type": "string",
+                    "description": "Optional ISO 8601 expiry (e.g. '2026-12-31T00:00:00Z').",
+                },
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 
