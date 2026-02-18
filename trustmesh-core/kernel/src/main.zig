@@ -15,9 +15,20 @@ pub const log = @import("log.zig");
 pub const timeline = @import("timeline.zig");
 pub const db = @import("db.zig");
 pub const fts = @import("fts.zig");
+pub const timeline_persist = @import("timeline_persist.zig");
+pub const crypto = @import("crypto.zig");
+pub const trust = @import("trust.zig");
+pub const session = @import("session.zig");
+pub const rate_limit = @import("rate_limit.zig");
+pub const transit = @import("transit.zig");
 
 // Page allocator for FFI — simple, no libc dependency
 const ffi_allocator = std.heap.page_allocator;
+
+// ── Global state for session, rate limit, and transit stores ──
+var _session_store: ?*session.SessionStore = null;
+var _rate_limiter: ?*rate_limit.RateLimiter = null;
+var _transit_engine: ?*transit.TransitEngine = null;
 
 // ═══════════════════════════════════════════
 //  VERSION
@@ -69,6 +80,18 @@ export fn podos_engine_tick(ptr: ?*anyopaque) callconv(.c) i32 {
 export fn podos_engine_is_running(ptr: ?*anyopaque) callconv(.c) i32 {
     const eng: *timeline.Engine = @ptrCast(@alignCast(ptr orelse return -1));
     return if (eng.is_running) @as(i32, 1) else @as(i32, 0);
+}
+
+export fn podos_engine_attach_persist_db(engine_ptr: ?*anyopaque, db_handle: ?*anyopaque) callconv(.c) i32 {
+    const eng: *timeline.Engine = @ptrCast(@alignCast(engine_ptr orelse return -1));
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -2));
+    eng.attachPersistDb(database);
+    return 0;
+}
+
+export fn podos_engine_detach_persist_db(engine_ptr: ?*anyopaque) callconv(.c) void {
+    const eng: *timeline.Engine = @ptrCast(@alignCast(engine_ptr orelse return));
+    eng.detachPersistDb();
 }
 
 // ═══════════════════════════════════════════
@@ -506,6 +529,13 @@ export fn podos_db_open(path: [*]const u8, path_len: u32) callconv(.c) ?*anyopaq
         return null;
     };
 
+    // Create timeline persistence tables
+    timeline_persist.initTables(database) catch {
+        database.close();
+        ffi_allocator.destroy(database);
+        return null;
+    };
+
     return @ptrCast(database);
 }
 
@@ -592,4 +622,803 @@ export fn podos_fts_reset(handle: ?*anyopaque) callconv(.c) i32 {
     const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
     fts.resetFts(database) catch return -2;
     return 0;
+}
+
+// ═══════════════════════════════════════════
+//  TIMELINE PERSISTENCE (SQLite)
+// ═══════════════════════════════════════════
+
+/// Upsert an entry spec into timeline_entries.
+/// entry_id and owner_id are UTF-8 strings.
+/// spec_json must be a JSON object (stored verbatim).
+export fn podos_timeline_entry_upsert(
+    handle: ?*anyopaque,
+    entry_id: [*]const u8,
+    entry_id_len: u32,
+    owner_id: [*]const u8,
+    owner_id_len: u32,
+    entry_state: i32,
+    spec_json: [*]const u8,
+    spec_json_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    timeline_persist.upsertEntry(
+        database,
+        entry_id,
+        entry_id_len,
+        owner_id,
+        owner_id_len,
+        entry_state,
+        spec_json,
+        spec_json_len,
+    ) catch return -2;
+    return 0;
+}
+
+/// Update the persisted state for an entry (best-effort mirror).
+export fn podos_timeline_entry_update_state(
+    handle: ?*anyopaque,
+    entry_id: [*]const u8,
+    entry_id_len: u32,
+    entry_state: i32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    timeline_persist.updateEntryState(database, entry_id, entry_id_len, entry_state) catch return -2;
+    return 0;
+}
+
+/// Delete an entry from timeline_entries.
+export fn podos_timeline_entry_delete(
+    handle: ?*anyopaque,
+    entry_id: [*]const u8,
+    entry_id_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    timeline_persist.deleteEntry(database, entry_id, entry_id_len) catch return -2;
+    return 0;
+}
+
+/// Load persisted entry specs as a JSON array written into out_buf.
+/// If owner_id_len == 0, loads all entries.
+/// Returns 0 on success, -3 if buffer too small.
+export fn podos_timeline_entries_load(
+    handle: ?*anyopaque,
+    owner_id: [*]const u8,
+    owner_id_len: u32,
+    out_buf: [*]u8,
+    out_capacity: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    const owner_ptr: ?[*]const u8 = if (owner_id_len > 0) owner_id else null;
+    const written = timeline_persist.loadEntrySpecsJson(
+        database,
+        owner_ptr,
+        owner_id_len,
+        out_buf,
+        out_capacity,
+    ) catch |err| switch (err) {
+        timeline_persist.PersistError.BufferTooSmall => return -3,
+        else => return -2,
+    };
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Lookup persisted owner_id for an entry_id. Writes raw UTF-8 string into out_buf.
+/// Returns 0 on success, -3 if buffer too small.
+export fn podos_timeline_entry_get_owner(
+    handle: ?*anyopaque,
+    entry_id: [*]const u8,
+    entry_id_len: u32,
+    out_buf: [*]u8,
+    out_capacity: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    const written = timeline_persist.getEntryOwner(
+        database,
+        entry_id,
+        entry_id_len,
+        out_buf,
+        out_capacity,
+    ) catch |err| switch (err) {
+        timeline_persist.PersistError.BufferTooSmall => return -3,
+        else => return -2,
+    };
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Append a JSON event to the outbox (for catch-up sync).
+export fn podos_timeline_outbox_append(
+    handle: ?*anyopaque,
+    tick: u64,
+    event_json: [*]const u8,
+    event_json_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    timeline_persist.appendOutboxEvent(database, tick, event_json, event_json_len) catch return -2;
+    return 0;
+}
+
+/// Pull outbox JSON events since a given tick. Writes a JSON array into out_buf.
+/// Returns 0 on success, -3 if buffer too small.
+export fn podos_timeline_outbox_pull(
+    handle: ?*anyopaque,
+    since_tick: u64,
+    out_buf: [*]u8,
+    out_capacity: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    const written = timeline_persist.pullOutboxEventsJson(
+        database,
+        since_tick,
+        out_buf,
+        out_capacity,
+    ) catch |err| switch (err) {
+        timeline_persist.PersistError.BufferTooSmall => return -3,
+        else => return -2,
+    };
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Mark a sync event as seen in the inbox (dedupe). Uses INSERT OR IGNORE.
+export fn podos_timeline_inbox_mark(
+    handle: ?*anyopaque,
+    event_id: [*]const u8,
+    event_id_len: u32,
+    event_json: [*]const u8,
+    event_json_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    timeline_persist.markInboxEvent(database, event_id, event_id_len, event_json, event_json_len) catch return -2;
+    return 0;
+}
+
+// ═══════════════════════════════════════════
+//  CRYPTO
+// ═══════════════════════════════════════════
+
+/// Generate a random 32-byte AES-256 key.
+export fn podos_crypto_generate_key(out_key: [*]u8) callconv(.c) void {
+    const key = crypto.generateKey();
+    @memcpy(out_key[0..32], &key);
+}
+
+/// Encrypt plaintext with AES-256-GCM.
+/// Output: nonce(12) || ciphertext || tag(16). Returns bytes written, or negative on error.
+export fn podos_crypto_encrypt(
+    plaintext: [*]const u8,
+    pt_len: u32,
+    key: [*]const u8,
+    out_buf: [*]u8,
+    out_capacity: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const k: *const [32]u8 = @ptrCast(key);
+    const written = crypto.encrypt(
+        plaintext[0..pt_len],
+        k,
+        out_buf[0..out_capacity],
+    ) catch return -1;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Decrypt AES-256-GCM data. Returns plaintext bytes written, or negative on error.
+export fn podos_crypto_decrypt(
+    data: [*]const u8,
+    data_len: u32,
+    key: [*]const u8,
+    out_buf: [*]u8,
+    out_capacity: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const k: *const [32]u8 = @ptrCast(key);
+    const written = crypto.decrypt(
+        data[0..data_len],
+        k,
+        out_buf[0..out_capacity],
+    ) catch return -1;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Derive vault key from password using Argon2id.
+/// If salt_in is null, generates random salt. Returns 0 on success.
+export fn podos_crypto_derive_vault_key(
+    password: [*]const u8,
+    pw_len: u32,
+    salt_in: ?[*]const u8,
+    salt_len: u32,
+    out_key: [*]u8,
+    out_salt: [*]u8,
+) callconv(.c) i32 {
+    var salt_ptr: ?*const [16]u8 = null;
+    if (salt_in) |s| {
+        if (salt_len >= 16) {
+            salt_ptr = @ptrCast(s);
+        }
+    }
+    var key_buf: [32]u8 = undefined;
+    defer std.crypto.secureZero(u8, &key_buf);
+    var salt_buf: [16]u8 = undefined;
+    crypto.deriveVaultKey(
+        ffi_allocator,
+        password[0..pw_len],
+        salt_ptr,
+        &key_buf,
+        &salt_buf,
+    ) catch return -1;
+    @memcpy(out_key[0..32], &key_buf);
+    @memcpy(out_salt[0..16], &salt_buf);
+    return 0;
+}
+
+/// Hash a PIN with Argon2id. Writes "hex(salt)$hex(hash)" to out_buf.
+/// Returns bytes written, or negative on error.
+export fn podos_crypto_hash_pin(
+    pin: [*]const u8,
+    pin_len: u32,
+    out_buf: [*]u8,
+    out_len: *u32,
+) callconv(.c) i32 {
+    var buf: [128]u8 = undefined;
+    const written = crypto.hashPin(ffi_allocator, pin[0..pin_len], &buf) catch return -1;
+    @memcpy(out_buf[0..written], buf[0..written]);
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Verify a PIN against its Argon2id hash. Returns 1 if match, 0 if not.
+export fn podos_crypto_verify_pin(
+    pin: [*]const u8,
+    pin_len: u32,
+    hash_str: [*]const u8,
+    hash_len: u32,
+) callconv(.c) i32 {
+    return if (crypto.verifyPin(ffi_allocator, pin[0..pin_len], hash_str[0..hash_len])) 1 else 0;
+}
+
+/// Generate an Ed25519 keypair. Writes 32-byte seed + 32-byte public key.
+export fn podos_crypto_ed25519_keygen(
+    out_seed: [*]u8,
+    out_pub: [*]u8,
+) callconv(.c) void {
+    const kp = crypto.ed25519Keygen();
+    @memcpy(out_seed[0..32], &kp.seed);
+    @memcpy(out_pub[0..32], &kp.public_key);
+}
+
+/// Sign a message with Ed25519. Returns 0 on success, writes 64-byte signature.
+export fn podos_crypto_ed25519_sign(
+    msg: [*]const u8,
+    msg_len: u32,
+    seed: [*]const u8,
+    out_sig: [*]u8,
+) callconv(.c) i32 {
+    const s: *const [32]u8 = @ptrCast(seed);
+    const sig = crypto.ed25519Sign(msg[0..msg_len], s) catch return -1;
+    @memcpy(out_sig[0..64], &sig);
+    return 0;
+}
+
+/// Verify an Ed25519 signature. Returns 1 if valid, 0 if not.
+export fn podos_crypto_ed25519_verify(
+    msg: [*]const u8,
+    msg_len: u32,
+    sig: [*]const u8,
+    pub_key: [*]const u8,
+) callconv(.c) i32 {
+    const s: *const [64]u8 = @ptrCast(sig);
+    const p: *const [32]u8 = @ptrCast(pub_key);
+    return if (crypto.ed25519Verify(msg[0..msg_len], s, p)) 1 else 0;
+}
+
+/// SHA-256 hash → 64-char hex string.
+export fn podos_crypto_sha256_hex(
+    data: [*]const u8,
+    data_len: u32,
+    out_hex: [*]u8,
+) callconv(.c) void {
+    var hex: [64]u8 = undefined;
+    crypto.sha256Hex(data[0..data_len], &hex);
+    @memcpy(out_hex[0..64], &hex);
+}
+
+/// Convert ed25519 public key to did:key string. Returns chars written.
+export fn podos_crypto_pubkey_to_did(
+    pub_key: [*]const u8,
+    out_buf: [*]u8,
+    out_capacity: u32,
+) callconv(.c) i32 {
+    const pk: *const [32]u8 = @ptrCast(pub_key);
+    const len = crypto.publicKeyToDid(pk, out_buf[0..out_capacity]);
+    return @intCast(len);
+}
+
+/// Extract raw ed25519 public key from did:key string. Returns 0 on success.
+export fn podos_crypto_did_to_pubkey(
+    did: [*]const u8,
+    did_len: u32,
+    out_key: [*]u8,
+) callconv(.c) i32 {
+    var key: [32]u8 = undefined;
+    crypto.didKeyToPublicKey(did[0..did_len], &key) catch return -1;
+    @memcpy(out_key[0..32], &key);
+    return 0;
+}
+
+/// Base64url encode (no padding). Returns chars written.
+export fn podos_crypto_b64url_encode(
+    data: [*]const u8,
+    data_len: u32,
+    out_buf: [*]u8,
+    out_capacity: u32,
+) callconv(.c) i32 {
+    const len = crypto.base64urlEncode(data[0..data_len], out_buf[0..out_capacity]);
+    return @intCast(len);
+}
+
+/// Base64url decode (no padding). Returns bytes written, or negative on error.
+export fn podos_crypto_b64url_decode(
+    encoded: [*]const u8,
+    enc_len: u32,
+    out_buf: [*]u8,
+    out_capacity: u32,
+) callconv(.c) i32 {
+    const len = crypto.base64urlDecode(encoded[0..enc_len], out_buf[0..out_capacity]) catch return -1;
+    return @intCast(len);
+}
+
+// ═══════════════════════════════════════════
+//  TRUST
+// ═══════════════════════════════════════════
+
+/// Resolve trust level between two users via SQLite queries.
+/// Uses the same db_handle as FTS5. Returns JSON bytes written, or negative on error.
+export fn podos_trust_resolve(
+    handle: ?*anyopaque,
+    from_id: [*]const u8,
+    from_id_len: u32,
+    to_id: [*]const u8,
+    to_id_len: u32,
+    out_buf: [*]u8,
+    out_capacity: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(handle orelse return -1));
+    const written = trust.resolveTrustLevel(
+        database,
+        from_id,
+        from_id_len,
+        to_id,
+        to_id_len,
+        out_buf,
+        out_capacity,
+    ) catch return -2;
+    return @intCast(written);
+}
+
+// ═══════════════════════════════════════════
+//  SESSION MANAGEMENT
+// ═══════════════════════════════════════════
+
+/// Initialize the global session store. Call once on startup.
+export fn podos_session_init() callconv(.c) i32 {
+    if (_session_store != null) return 0; // already initialized
+    const store = ffi_allocator.create(session.SessionStore) catch return -1;
+    store.* = session.SessionStore.init(ffi_allocator);
+    _session_store = store;
+    return 0;
+}
+
+/// Destroy the global session store. Call on shutdown.
+export fn podos_session_deinit() callconv(.c) void {
+    if (_session_store) |store| {
+        store.deinit();
+        ffi_allocator.destroy(store);
+        _session_store = null;
+    }
+}
+
+/// Create a new session (backward compat — no fingerprint binding).
+/// Writes token to out_token. Returns token length, or negative on error.
+export fn podos_session_create(
+    user_id: [*]const u8,
+    user_id_len: u32,
+    out_token: [*]u8,
+    out_capacity: u32,
+) callconv(.c) i32 {
+    const store = _session_store orelse return -1;
+    const len = store.createSession(
+        user_id[0..user_id_len],
+        "", // empty fingerprint for backward compat
+        out_token[0..out_capacity],
+    ) catch return -2;
+    return @intCast(len);
+}
+
+/// Create a new session with fingerprint binding (Phase 2).
+/// Fingerprint = SHA-256(user_agent + "|" + client_ip).
+/// Enforces per-user session cap (evicts oldest on overflow).
+export fn podos_session_create_fp(
+    uid_ptr: [*]const u8,
+    uid_len: usize,
+    fp_ptr: [*]const u8,
+    fp_len: usize,
+    out_token: [*]u8,
+    out_cap: usize,
+) callconv(.c) i32 {
+    const store = _session_store orelse return -1;
+    const len = store.createSession(
+        uid_ptr[0..uid_len],
+        fp_ptr[0..fp_len],
+        out_token[0..out_cap],
+    ) catch return -2;
+    return @intCast(len);
+}
+
+/// Validate a session token (backward compat — no fingerprint check).
+/// Writes user_id to out_user_id. Returns user_id length, or -1 if invalid.
+export fn podos_session_validate(
+    token: [*]const u8,
+    token_len: u32,
+    out_user_id: [*]u8,
+    out_capacity: u32,
+) callconv(.c) i32 {
+    const store = _session_store orelse return -1;
+    const uid = store.validateSession(token[0..token_len], "") orelse return -1;
+    if (uid.len > out_capacity) return -2;
+    @memcpy(out_user_id[0..uid.len], uid);
+    return @intCast(uid.len);
+}
+
+/// Validate a session token with fingerprint verification (Phase 2).
+/// Checks TTL, inactivity timeout, and fingerprint binding.
+/// Returns user_id length, or -1 if invalid/expired/fingerprint mismatch.
+export fn podos_session_validate_fp(
+    tok_ptr: [*]const u8,
+    tok_len: usize,
+    fp_ptr: [*]const u8,
+    fp_len: usize,
+    out_uid: [*]u8,
+    out_cap: usize,
+) callconv(.c) i32 {
+    const store = _session_store orelse return -1;
+    const uid = store.validateSession(tok_ptr[0..tok_len], fp_ptr[0..fp_len]) orelse return -1;
+    if (uid.len > out_cap) return -2;
+    @memcpy(out_uid[0..uid.len], uid);
+    return @intCast(uid.len);
+}
+
+/// Invalidate a session by token.
+export fn podos_session_invalidate(
+    token: [*]const u8,
+    token_len: u32,
+) callconv(.c) void {
+    const store = _session_store orelse return;
+    store.invalidateSession(token[0..token_len]);
+}
+
+/// Invalidate all sessions for a user.
+export fn podos_session_invalidate_user(
+    user_id: [*]const u8,
+    user_id_len: u32,
+) callconv(.c) void {
+    const store = _session_store orelse return;
+    store.invalidateUserSessions(user_id[0..user_id_len]);
+}
+
+/// Check login rate limit. Returns 1 if allowed, 0 if rate limited, -1 on error.
+export fn podos_session_check_login_rate(
+    ip: [*]const u8,
+    ip_len: u32,
+) callconv(.c) i32 {
+    const store = _session_store orelse return -1;
+    const allowed = store.checkLoginRateLimit(ip[0..ip_len]) catch return -1;
+    return if (allowed) 1 else 0;
+}
+
+/// Reset all session state (test helper).
+export fn podos_session_reset() callconv(.c) void {
+    const store = _session_store orelse return;
+    store.reset();
+}
+
+/// Inject a session (test helper, backward compat — no fingerprint). Returns 0 on success.
+export fn podos_session_inject(
+    token: [*]const u8,
+    token_len: u32,
+    user_id: [*]const u8,
+    user_id_len: u32,
+) callconv(.c) i32 {
+    const store = _session_store orelse return -1;
+    store.injectSession(
+        token[0..token_len],
+        user_id[0..user_id_len],
+        "", // empty fingerprint for backward compat (all-zeros hash, skips verification)
+    ) catch return -2;
+    return 0;
+}
+
+/// Count active sessions for a user. Returns count, or -1 on error.
+export fn podos_session_count_user(
+    uid_ptr: [*]const u8,
+    uid_len: usize,
+) callconv(.c) i32 {
+    const store = _session_store orelse return -1;
+    const count = store.countUserSessions(uid_ptr[0..uid_len]);
+    return @intCast(count);
+}
+
+// ═══════════════════════════════════════════
+//  RATE LIMITING
+// ═══════════════════════════════════════════
+
+/// Initialize the global rate limiter. Call once on startup.
+export fn podos_rate_init() callconv(.c) i32 {
+    if (_rate_limiter != null) return 0;
+    const limiter = ffi_allocator.create(rate_limit.RateLimiter) catch return -1;
+    limiter.* = rate_limit.RateLimiter.init(ffi_allocator);
+    _rate_limiter = limiter;
+    return 0;
+}
+
+/// Destroy the global rate limiter. Call on shutdown.
+export fn podos_rate_deinit() callconv(.c) void {
+    if (_rate_limiter) |limiter| {
+        limiter.deinit();
+        ffi_allocator.destroy(limiter);
+        _rate_limiter = null;
+    }
+}
+
+/// Check connection rate limit. Returns 1 if allowed, 0 if denied.
+/// If denied, writes reason to out_msg, sets out_msg_len.
+export fn podos_rate_check_connection(
+    user_id: [*]const u8,
+    user_id_len: u32,
+    out_msg: [*]u8,
+    out_msg_len: *u32,
+) callconv(.c) i32 {
+    const limiter = _rate_limiter orelse return -1;
+    const result = limiter.checkConnection(user_id[0..user_id_len]);
+    const msg = result.getMessage();
+    @memcpy(out_msg[0..msg.len], msg);
+    out_msg_len.* = @intCast(msg.len);
+    return if (result.allowed) 1 else 0;
+}
+
+/// Record a connection request.
+export fn podos_rate_record_connection(
+    user_id: [*]const u8,
+    user_id_len: u32,
+) callconv(.c) i32 {
+    const limiter = _rate_limiter orelse return -1;
+    limiter.recordConnection(user_id[0..user_id_len]) catch return -2;
+    return 0;
+}
+
+/// Check query rate limit. Returns 1 if allowed, 0 if denied.
+/// is_public: 1 for public trust, 0 for trusted.
+export fn podos_rate_check_query(
+    user_id: [*]const u8,
+    user_id_len: u32,
+    target_id: [*]const u8,
+    target_id_len: u32,
+    is_public: i32,
+    out_msg: [*]u8,
+    out_msg_len: *u32,
+) callconv(.c) i32 {
+    const limiter = _rate_limiter orelse return -1;
+    const result = limiter.checkQuery(
+        user_id[0..user_id_len],
+        target_id[0..target_id_len],
+        is_public != 0,
+    );
+    const msg = result.getMessage();
+    @memcpy(out_msg[0..msg.len], msg);
+    out_msg_len.* = @intCast(msg.len);
+    return if (result.allowed) 1 else 0;
+}
+
+/// Record a query.
+export fn podos_rate_record_query(
+    user_id: [*]const u8,
+    user_id_len: u32,
+    target_id: [*]const u8,
+    target_id_len: u32,
+) callconv(.c) i32 {
+    const limiter = _rate_limiter orelse return -1;
+    limiter.recordQuery(
+        user_id[0..user_id_len],
+        target_id[0..target_id_len],
+    ) catch return -2;
+    return 0;
+}
+
+/// Reset all rate limit state (test helper).
+export fn podos_rate_reset() callconv(.c) void {
+    const limiter = _rate_limiter orelse return;
+    limiter.reset();
+}
+
+/// Check PIN attempt rate. Returns 1 if allowed, 0 if denied, -1 on error.
+export fn podos_rate_check_pin(
+    uid_ptr: [*]const u8,
+    uid_len: u32,
+    out_msg: [*]u8,
+    out_msg_len: *u32,
+) callconv(.c) i32 {
+    const limiter = _rate_limiter orelse return -1;
+    const result = limiter.checkPin(uid_ptr[0..uid_len]);
+    const msg = result.getMessage();
+    @memcpy(out_msg[0..msg.len], msg);
+    out_msg_len.* = @intCast(msg.len);
+    return if (result.allowed) 1 else 0;
+}
+
+/// Record a PIN attempt.
+export fn podos_rate_record_pin(uid_ptr: [*]const u8, uid_len: u32) callconv(.c) i32 {
+    const limiter = _rate_limiter orelse return -1;
+    limiter.recordPin(uid_ptr[0..uid_len]) catch return -2;
+    return 0;
+}
+
+/// Check emergency token issuance rate. Returns 1 if allowed, 0 if denied, -1 on error.
+export fn podos_rate_check_emergency_issue(
+    key_ptr: [*]const u8,
+    key_len: u32,
+    out_msg: [*]u8,
+    out_msg_len: *u32,
+) callconv(.c) i32 {
+    const limiter = _rate_limiter orelse return -1;
+    const result = limiter.checkEmergencyIssue(key_ptr[0..key_len]);
+    const msg = result.getMessage();
+    @memcpy(out_msg[0..msg.len], msg);
+    out_msg_len.* = @intCast(msg.len);
+    return if (result.allowed) 1 else 0;
+}
+
+/// Record an emergency token issuance.
+export fn podos_rate_record_emergency_issue(key_ptr: [*]const u8, key_len: u32) callconv(.c) i32 {
+    const limiter = _rate_limiter orelse return -1;
+    limiter.recordEmergencyIssue(key_ptr[0..key_len]) catch return -2;
+    return 0;
+}
+
+/// Check emergency access rate. Returns 1 if allowed, 0 if denied, -1 on error.
+export fn podos_rate_check_emergency_present(
+    key_ptr: [*]const u8,
+    key_len: u32,
+    out_msg: [*]u8,
+    out_msg_len: *u32,
+) callconv(.c) i32 {
+    const limiter = _rate_limiter orelse return -1;
+    const result = limiter.checkEmergencyPresent(key_ptr[0..key_len]);
+    const msg = result.getMessage();
+    @memcpy(out_msg[0..msg.len], msg);
+    out_msg_len.* = @intCast(msg.len);
+    return if (result.allowed) 1 else 0;
+}
+
+/// Record an emergency access attempt.
+export fn podos_rate_record_emergency_present(key_ptr: [*]const u8, key_len: u32) callconv(.c) i32 {
+    const limiter = _rate_limiter orelse return -1;
+    limiter.recordEmergencyPresent(key_ptr[0..key_len]) catch return -2;
+    return 0;
+}
+
+// ═══════════════════════════════════════════
+//  TRANSIT ENGINE (in-memory keyring)
+// ═══════════════════════════════════════════
+
+/// Initialize the global transit engine. Call once on startup.
+export fn podos_transit_init() callconv(.c) i32 {
+    if (_transit_engine != null) return 0;
+    const engine = ffi_allocator.create(transit.TransitEngine) catch return -1;
+    engine.* = transit.TransitEngine.init(ffi_allocator);
+    _transit_engine = engine;
+    return 0;
+}
+
+/// Destroy the global transit engine. secureZero all keys. Call on shutdown.
+export fn podos_transit_deinit() callconv(.c) void {
+    if (_transit_engine) |engine| {
+        engine.deinit();
+        ffi_allocator.destroy(engine);
+        _transit_engine = null;
+    }
+}
+
+/// Store a key for a user. Returns version number, or negative on error.
+export fn podos_transit_store_key(
+    user_id: [*]const u8,
+    uid_len: u32,
+    key_ptr: [*]const u8,
+) callconv(.c) i32 {
+    const engine = _transit_engine orelse return -1;
+    const key: *const [32]u8 = @ptrCast(key_ptr);
+    const version = engine.storeKey(user_id[0..uid_len], key) catch return -2;
+    return @intCast(version);
+}
+
+/// Encrypt plaintext for a user with AAD.
+/// Output: "v{N}.{nonce}{ciphertext}{tag}" written to out_buf.
+/// Returns 0 on success, writes out_len. Negative on error.
+export fn podos_transit_encrypt(
+    user_id: [*]const u8,
+    uid_len: u32,
+    pt: [*]const u8,
+    pt_len: u32,
+    aad: [*]const u8,
+    aad_len: u32,
+    out: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const engine = _transit_engine orelse return -1;
+    const written = engine.encryptForUser(
+        user_id[0..uid_len],
+        pt[0..pt_len],
+        aad[0..aad_len],
+        out[0..out_cap],
+    ) catch return -2;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Decrypt ciphertext for a user with AAD.
+/// Handles versioned and legacy formats. Returns 0 on success. Negative on error.
+export fn podos_transit_decrypt(
+    user_id: [*]const u8,
+    uid_len: u32,
+    ct: [*]const u8,
+    ct_len: u32,
+    aad: [*]const u8,
+    aad_len: u32,
+    out: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const engine = _transit_engine orelse return -1;
+    const written = engine.decryptForUser(
+        user_id[0..uid_len],
+        ct[0..ct_len],
+        aad[0..aad_len],
+        out[0..out_cap],
+    ) catch return -2;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Rotate key for a user. Returns new version, or negative on error.
+export fn podos_transit_rotate(
+    user_id: [*]const u8,
+    uid_len: u32,
+) callconv(.c) i32 {
+    const engine = _transit_engine orelse return -1;
+    const version = engine.rotateKey(user_id[0..uid_len]) catch return -2;
+    return @intCast(version);
+}
+
+/// Remove all keys for a user. secureZero all material.
+export fn podos_transit_remove(
+    user_id: [*]const u8,
+    uid_len: u32,
+) callconv(.c) void {
+    const engine = _transit_engine orelse return;
+    engine.removeUser(user_id[0..uid_len]);
+}
+
+/// Check if a user has a key loaded. Returns 1 if yes, 0 if no.
+export fn podos_transit_has_key(
+    user_id: [*]const u8,
+    uid_len: u32,
+) callconv(.c) i32 {
+    const engine = _transit_engine orelse return 0;
+    return if (engine.hasKey(user_id[0..uid_len])) 1 else 0;
 }

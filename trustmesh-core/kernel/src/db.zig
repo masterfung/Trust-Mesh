@@ -76,6 +76,11 @@ pub const Statement = struct {
         if (rc != c.SQLITE_OK) return SqliteError.BindFailed;
     }
 
+    pub fn bindInt64(self: *Statement, col: c_int, val: i64) SqliteError!void {
+        const rc = c.sqlite3_bind_int64(self.handle, col, val);
+        if (rc != c.SQLITE_OK) return SqliteError.BindFailed;
+    }
+
     /// Step the statement. Returns true if there's a row (SQLITE_ROW), false if done.
     pub fn step(self: *Statement) SqliteError!bool {
         const rc = c.sqlite3_step(self.handle);
@@ -94,6 +99,10 @@ pub const Statement = struct {
 
     pub fn getInt(self: *Statement, col: c_int) c_int {
         return c.sqlite3_column_int(self.handle, col);
+    }
+
+    pub fn getInt64(self: *Statement, col: c_int) i64 {
+        return c.sqlite3_column_int64(self.handle, col);
     }
 
     pub fn reset(self: *Statement) void {

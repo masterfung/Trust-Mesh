@@ -48,6 +48,12 @@ pub fn build(b: *std.Build) void {
         "tests/test_log.zig",
         "tests/test_timeline.zig",
         "tests/test_fts.zig",
+        "tests/test_crypto.zig",
+        "tests/test_trust.zig",
+        "tests/test_session.zig",
+        "tests/test_rate_limit.zig",
+        "tests/test_timeline_persist.zig",
+        "tests/test_transit.zig",
     };
 
     const test_step = b.step("test", "Run all kernel tests");

@@ -11,9 +11,26 @@ const dag_mod = @import("dag.zig");
 const resolution_mod = @import("resolution.zig");
 const state_mod = @import("state.zig");
 const log_mod = @import("log.zig");
+const db_mod = @import("db.zig");
+const persist_mod = @import("timeline_persist.zig");
 
 const Entry = entry_mod.Entry;
 const Event = event_mod.Event;
+
+fn entryIdToUuidString(id: *const types.EntryId, out: *[36]u8) []const u8 {
+    const hex = "0123456789abcdef";
+    var j: usize = 0;
+    for (id.*, 0..) |b, i| {
+        if (i == 4 or i == 6 or i == 8 or i == 10) {
+            out[j] = '-';
+            j += 1;
+        }
+        out[j] = hex[@intCast(b >> 4)];
+        out[j + 1] = hex[@intCast(b & 0x0f)];
+        j += 2;
+    }
+    return out[0..36];
+}
 
 // ── Configuration ──
 
@@ -86,6 +103,9 @@ pub const Engine = struct {
     // Transition log
     tlog: log_mod.TransitionLog = .{},
 
+    // Optional SQLite persistence (attached by host).
+    persist_db: ?*db_mod.Database = null,
+
     // Stats
     hooks_fired_this_tick: u32 = 0,
     conflicts_resolved_this_tick: u32 = 0,
@@ -123,6 +143,14 @@ pub const Engine = struct {
         self.transition_plan.deinit(self.allocator);
         self.tlog.deinit();
         self.allocator.destroy(self);
+    }
+
+    pub fn attachPersistDb(self: *Engine, database: *db_mod.Database) void {
+        self.persist_db = database;
+    }
+
+    pub fn detachPersistDb(self: *Engine) void {
+        self.persist_db = null;
     }
 
     // ── Entry management ──
@@ -210,6 +238,26 @@ pub const Engine = struct {
                     .tick = self.tick_count,
                     .timestamp = now,
                 }) catch {};
+
+                // Durable transition log + authoritative state mirror (SQLite).
+                if (self.persist_db) |pdb| {
+                    var id_buf: [36]u8 = undefined;
+                    const id_str = entryIdToUuidString(&t.entry_id, &id_buf);
+                    const from_i32: i32 = @intCast(@intFromEnum(t.from_state));
+                    const to_i32: i32 = @intCast(@intFromEnum(t.to_state));
+                    const trig_i32: i32 = @intCast(@intFromEnum(t.trigger_kind));
+                    persist_mod.updateEntryState(pdb, id_str.ptr, id_str.len, to_i32) catch {};
+                    persist_mod.appendTransition(
+                        pdb,
+                        self.tick_count,
+                        now,
+                        id_str.ptr,
+                        id_str.len,
+                        from_i32,
+                        to_i32,
+                        trig_i32,
+                    ) catch {};
+                }
             }
         }
 
