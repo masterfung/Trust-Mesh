@@ -789,9 +789,11 @@ export function TrustGraph({
               <p className="text-sm font-semibold">
                 {selectedNode.display_name}
               </p>
-              <p className="text-[11px] text-muted-foreground">
-                @{selectedNode.username}
-              </p>
+              {selectedNode.username && (
+                <p className="text-[11px] text-muted-foreground">
+                  @{selectedNode.username}
+                </p>
+              )}
             </div>
           </div>
           <p className="text-xs text-muted-foreground mb-3">
@@ -885,7 +887,7 @@ function NodeTooltip({
             <p className="text-sm font-semibold text-foreground truncate">
               {node.display_name}
             </p>
-            <p className="text-[11px] text-muted-foreground">@{node.username}</p>
+            {node.username && <p className="text-[11px] text-muted-foreground">@{node.username}</p>}
           </div>
 
           {/* User type badge */}

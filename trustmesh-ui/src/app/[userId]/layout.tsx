@@ -336,7 +336,7 @@ function NotificationBell({ userId }: { userId: string }) {
       {open && (
         <div
           ref={dropdownRef}
-          className="absolute right-0 top-full mt-2 w-96 max-h-[480px] bg-card border border-card-border rounded-2xl shadow-2xl shadow-black/40 overflow-hidden z-50 flex flex-col"
+          className="absolute right-0 top-full mt-2 w-96 max-w-[calc(100vw-2rem)] max-h-[480px] bg-card border border-card-border rounded-2xl shadow-2xl shadow-black/40 overflow-hidden z-50 flex flex-col"
           role="menu"
           aria-label="Notifications"
         >
@@ -426,6 +426,7 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
   const router = useRouter();
   const userId = params.userId as string;
   const { user: authUser, isLoading: authLoading } = useAuth();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const { data: user, isLoading } = useQuery({
     queryKey: ["user", userId],
@@ -467,23 +468,49 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
   }
 
   return (
-    <div className="flex min-h-screen">
-      <Sidebar user={user} />
-      <div className="flex-1 flex flex-col overflow-auto">
+    <div className="flex h-screen overflow-hidden">
+      <Sidebar
+        user={user}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
+
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Top Bar */}
         <header className="sticky top-0 z-40 flex items-center justify-between px-4 md:px-8 h-14 border-b border-card-border bg-background/80 backdrop-blur-md shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Welcome back,</span>
-            <span className="text-sm font-semibold text-foreground">{user.display_name}</span>
-          </div>
           <div className="flex items-center gap-3">
-            <ContextSwitcher userId={userId} currentContext={(user.active_context as ContextMode) || "all"} userType={user.user_type || "person"} />
+            {/* Hamburger — mobile only */}
+            <button
+              className="md:hidden p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-card-hover transition-all focus:outline-none focus:ring-2 focus:ring-accent/50"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open sidebar"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="6" x2="21" y2="6"/>
+                <line x1="3" y1="12" x2="21" y2="12"/>
+                <line x1="3" y1="18" x2="21" y2="18"/>
+              </svg>
+            </button>
+
+            {/* Welcome text — desktop only */}
+            <div className="hidden md:flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Welcome back,</span>
+              <span className="text-sm font-semibold text-foreground">{user.display_name}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <ContextSwitcher
+              userId={userId}
+              currentContext={(user.active_context as ContextMode) || "all"}
+              userType={user.user_type || "person"}
+            />
             <NotificationBell userId={userId} />
           </div>
         </header>
 
         {/* Main Content */}
-        <main className="flex-1 p-4 md:p-8">{children}</main>
+        <main className="flex-1 overflow-y-auto p-4 md:p-8">{children}</main>
       </div>
     </div>
   );

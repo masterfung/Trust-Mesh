@@ -135,7 +135,7 @@ export default function ConnectionsPage() {
                 )}
               </div>
               <p className="text-xs text-muted-foreground truncate">
-                @{c.peer?.username}
+                {c.peer?.username ? `@${c.peer.username}` : c.peer?.display_name || ""}
                 {c.peer?.profile_data?.occupation?.title && <> &middot; {c.peer.profile_data.occupation.title}</>}
                 {c.my_label && <> &middot; {c.my_label}</>}
               </p>
@@ -223,7 +223,7 @@ function PendingRequestCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold">{from?.display_name || "Unknown"}</span>
-            <span className="text-xs text-muted-foreground">@{from?.username}</span>
+            <span className="text-xs text-muted-foreground">{from?.username ? `@${from.username}` : ""}</span>
             {request.relationship_type && <RelationshipBadge type={request.relationship_type} />}
           </div>
           <div className="flex items-center gap-2 mt-0.5">
@@ -348,7 +348,7 @@ function SendConnectionForm({
         >
           <option value="">Select a person...</option>
           {unconnected.map((u) => (
-            <option key={u.id} value={u.id}>{u.display_name} (@{u.username})</option>
+            <option key={u.id} value={u.id}>{u.display_name}{u.username ? ` (@${u.username})` : ""}</option>
           ))}
         </select>
       </div>

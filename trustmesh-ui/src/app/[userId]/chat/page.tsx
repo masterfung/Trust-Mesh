@@ -1,11 +1,52 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type User, type QueryResult, type AgentAction, type Connection } from "@/lib/api";
+import { api, type User, type QueryResult, type AgentAction, type Connection, type RegistryPodAgent, getPodUrl } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { TrustBadge, DecisionBadge } from "@/components/TrustBadge";
 import { Markdown } from "@/components/Markdown";
+
+// Demo scenario suggestions per pod username (shown when chat is empty)
+const DEMO_SCENARIOS: Record<string, { label: string; question: string; icon: string }[]> = {
+  molly: [
+    { label: "Check on Grandma Rose", question: "What medications does Grandma Rose take? Are there any health updates I should know about?", icon: "💊" },
+    { label: "Find a cleaning service", question: "Can you find me a house cleaning service? Ask SparkleClean about their rates.", icon: "🧹" },
+    { label: "SAT prep for the kids", question: "Look into SAT prep tutoring options. Check what AceTutor offers.", icon: "📚" },
+  ],
+  peter: [
+    { label: "Grandma's health update", question: "Check in on Grandma Rose's health. Any recent changes to her care plan?", icon: "❤️" },
+    { label: "Home repair help", question: "I need a handyman for some repairs. Can you check what HandyPro offers?", icon: "🔧" },
+    { label: "Family plans this week", question: "What does our family have planned this week? Check with Molly and Jane.", icon: "📅" },
+  ],
+  grandmarose: [
+    { label: "Find a cleaning service", question: "Can you help me find a home cleaning service nearby? I need someone reliable.", icon: "🏠" },
+    { label: "Check on the family", question: "How is everyone in the family doing? Check in with Peter and Molly.", icon: "👨‍👩‍👧" },
+    { label: "Medical appointment", question: "When is my next medical appointment? Check with Riverside Hospital.", icon: "🏥" },
+  ],
+  dr_lee: [
+    { label: "Patient health update", question: "Check Grandma Rose's recent health updates and medication list.", icon: "📋" },
+    { label: "Hospital resources", question: "What resources does Riverside Hospital have available for elderly care?", icon: "🏥" },
+    { label: "Emergency protocols", question: "What are the current emergency protocols? Check with the ambulance service.", icon: "🚑" },
+  ],
+  jane: [
+    { label: "Check on Grandma", question: "How is Grandma Rose doing? Any health updates I should know about?", icon: "💕" },
+    { label: "Find a tutor", question: "Can you look into tutoring services? What does AceTutor offer for SAT prep?", icon: "📖" },
+    { label: "Family schedule", question: "What's the family schedule looking like this week?", icon: "🗓️" },
+  ],
+  sparkleclean: [
+    { label: "View service requests", question: "Do we have any new service inquiries or quote requests?", icon: "📬" },
+    { label: "Check our listings", question: "What services do we currently have listed? Are our descriptions up to date?", icon: "📋" },
+  ],
+  riverside_hospital: [
+    { label: "Patient referrals", question: "Are there any incoming patient referrals or queries from the community?", icon: "🏥" },
+    { label: "Service availability", question: "What services are we currently offering? Any capacity updates?", icon: "📊" },
+  ],
+  riverside_gov: [
+    { label: "Community inquiries", question: "Are there any community service requests or inquiries pending?", icon: "🏛️" },
+    { label: "Emergency services", question: "What emergency services are currently available in our network?", icon: "🚨" },
+  ],
+};
 
 interface StreamingResult {
   id?: string;
@@ -26,7 +67,6 @@ interface StreamingResult {
 export default function ChatPage() {
   const { userId } = useParams<{ userId: string }>();
   const queryClient = useQueryClient();
-  const [targetId, setTargetId] = useState("");
   const [question, setQuestion] = useState("");
   const [results, setResults] = useState<StreamingResult[]>([]);
   const [isListening, setIsListening] = useState(false);
@@ -52,33 +92,7 @@ export default function ChatPage() {
     queryFn: () => api.listNetworks(userId),
   });
 
-  const [queryMode, setQueryMode] = useState<"self" | "other">("self");
   const [sessionHistory, setSessionHistory] = useState<{ role: string; content: string }[]>([]);
-
-  // Build combined reachable users: discoverable + connected + network members
-  const allReachableUsers = (() => {
-    const byId = new Map<string, User>();
-    // 1. Discoverable users from listUsers API
-    for (const u of users ?? []) {
-      if (u.id !== userId) byId.set(u.id, u);
-    }
-    // 2. Connected peers (may not be discoverable)
-    for (const c of connections ?? []) {
-      if (c.peer && c.peer.id !== userId && !byId.has(c.peer.id)) {
-        byId.set(c.peer.id, c.peer as User);
-      }
-    }
-    // 3. Network members (may not be discoverable)
-    for (const net of networks ?? []) {
-      for (const m of net.members ?? []) {
-        if (m.id !== userId && !byId.has(m.id)) {
-          byId.set(m.id, m as User);
-        }
-      }
-    }
-    return Array.from(byId.values());
-  })();
-  const otherUsers = allReachableUsers;
 
   // Build a set of connected user IDs and a map of user -> shared network names
   const connectedIds = new Set(
@@ -98,14 +112,13 @@ export default function ChatPage() {
   }
 
   const handleStreamQuery = useCallback(async () => {
-    const target = queryMode === "self" ? userId : targetId;
     const q = question.trim();
-    if (!q || (queryMode === "other" && !target)) return;
+    if (!q) return;
 
     setIsStreaming(true);
     const placeholderResult: StreamingResult = {
       from_user_id: userId,
-      to_user_id: target,
+      to_user_id: userId,
       question: q,
       trust_level: "",
       shared_networks: [],
@@ -124,7 +137,7 @@ export default function ChatPage() {
     setSessionHistory((prev) => [...prev, { role: "user", content: q }]);
 
     try {
-      const res = await api.queryStream(userId, target, q, historySnapshot.length > 0 ? historySnapshot : undefined);
+      const res = await api.queryStream(userId, userId, q, historySnapshot.length > 0 ? historySnapshot : undefined);
       if (!res.ok || !res.body) {
         throw new Error("Stream failed");
       }
@@ -234,11 +247,10 @@ export default function ChatPage() {
       setIsStreaming(false);
       queryClient.invalidateQueries({ queryKey: ["queries", userId] });
     }
-  }, [queryMode, userId, targetId, question, queryClient, sessionHistory]);
+  }, [userId, question, queryClient, sessionHistory]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (queryMode === "other" && !targetId) return;
     if (!question.trim()) return;
     handleStreamQuery();
   };
@@ -328,8 +340,6 @@ export default function ChatPage() {
     }
   }, [isListening]);
 
-  const targetUser = otherUsers.find((u: User) => u.id === targetId);
-
   return (
     <div className="max-w-3xl mx-auto">
       {/* Header */}
@@ -337,7 +347,7 @@ export default function ChatPage() {
         <div>
           <h1 className="text-2xl font-bold mb-1">Agent Chat</h1>
           <p className="text-muted-foreground text-sm">
-            Talk to your own agent or query another person&apos;s agent. Trust level determines what knowledge gets shared.
+            Ask your agent anything. Type <span className="text-accent font-medium">@name</span> to reach another person&apos;s agent — trust determines what they share back.
           </p>
         </div>
         {results.length > 0 && (
@@ -358,111 +368,20 @@ export default function ChatPage() {
 
       {/* Query Form */}
       <form onSubmit={handleSubmit} className="bg-card border border-card-border rounded-2xl p-5 mb-8">
-        {/* Mode Toggle */}
-        <div className="flex gap-2 mb-5">
-          <button
-            type="button"
-            onClick={() => setQueryMode("self")}
-            className={`flex-1 py-2.5 px-4 rounded-xl text-sm font-medium transition-all ${
-              queryMode === "self"
-                ? "bg-accent/15 border-2 border-accent text-accent"
-                : "bg-card-hover border-2 border-transparent text-muted-foreground hover:border-card-border"
-            }`}
-          >
-            <span className="flex items-center justify-center gap-2">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
-              </svg>
-              Ask My Agent
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setQueryMode("other")}
-            className={`flex-1 py-2.5 px-4 rounded-xl text-sm font-medium transition-all ${
-              queryMode === "other"
-                ? "bg-accent/15 border-2 border-accent text-accent"
-                : "bg-card-hover border-2 border-transparent text-muted-foreground hover:border-card-border"
-            }`}
-          >
-            <span className="flex items-center justify-center gap-2">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-              </svg>
-              Ask Another Agent
-            </span>
-          </button>
+        {/* Info banner */}
+        <div className="mb-4 p-3 bg-accent/5 border border-accent/15 rounded-xl">
+          <p className="text-xs text-muted-foreground">
+            <span className="font-medium text-accent">Your private agent</span> — sees all your capsules and can save new knowledge to your vault. Type <span className="font-medium text-accent">@name</span> to query another person&apos;s agent directly.
+          </p>
         </div>
-
-        {/* Target Selection (only for "other" mode) */}
-        {queryMode === "other" && (
-          <div className="mb-5">
-            <label className="block text-sm font-medium text-muted-foreground mb-2">Whose agent do you want to ask?</label>
-            <select
-              value={targetId}
-              onChange={(e) => setTargetId(e.target.value)}
-              className="w-full bg-background border border-card-border rounded-xl px-4 py-3 text-sm appearance-none cursor-pointer"
-            >
-              <option value="">Select an agent to query...</option>
-              {(() => {
-                const connected = otherUsers.filter((u: User) => connectedIds.has(u.id) && u.user_type === "person");
-                const orgs = otherUsers.filter((u: User) => u.user_type === "organization" || u.user_type === "government");
-                const others = otherUsers.filter((u: User) => !connectedIds.has(u.id) && u.user_type === "person");
-                return (
-                  <>
-                    {connected.length > 0 && (
-                      <optgroup label="Connected">
-                        {connected.map((u: User) => (
-                          <option key={u.id} value={u.id}>
-                            {u.display_name} (@{u.username})
-                            {userNetworkMap.get(u.id)?.length ? ` — ${userNetworkMap.get(u.id)!.join(", ")}` : ""}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                    {orgs.length > 0 && (
-                      <optgroup label="Organizations">
-                        {orgs.map((u: User) => (
-                          <option key={u.id} value={u.id}>
-                            {u.display_name} (@{u.username})
-                            {userNetworkMap.get(u.id)?.length ? ` — ${userNetworkMap.get(u.id)!.join(", ")}` : ""}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                    {others.length > 0 && (
-                      <optgroup label="Other People">
-                        {others.map((u: User) => (
-                          <option key={u.id} value={u.id}>{u.display_name} (@{u.username})</option>
-                        ))}
-                      </optgroup>
-                    )}
-                  </>
-                );
-              })()}
-            </select>
-          </div>
-        )}
-
-        {/* Self query info banner */}
-        {queryMode === "self" && (
-          <div className="mb-5 p-3 bg-accent/5 border border-accent/15 rounded-xl">
-            <p className="text-xs text-muted-foreground">
-              <span className="font-medium text-accent">Private access</span> — your agent sees all your capsules and can <span className="font-medium text-accent">save new knowledge</span> to your vault. Try: &ldquo;Remember that Peter is allergic to shellfish&rdquo; or &ldquo;Save that my dentist appointment is March 5th&rdquo;
-            </p>
-          </div>
-        )}
 
         {/* Question Input with @-mention */}
         <div className="mb-4">
-          <label className="block text-sm font-medium text-muted-foreground mb-2">Your question</label>
           <div className="relative">
             <MentionInput
               value={question}
               onChange={setQuestion}
               onSubmit={() => {
-                if (queryMode === "other" && !targetId) return;
                 if (!question.trim()) return;
                 handleStreamQuery();
               }}
@@ -470,14 +389,8 @@ export default function ChatPage() {
               connectedIds={connectedIds}
               userNetworkMap={userNetworkMap}
               currentUserId={userId}
-              placeholder={
-                queryMode === "self"
-                  ? `Ask your agent about your knowledge...`
-                  : targetUser
-                    ? `Ask ${targetUser.display_name}'s agent...`
-                    : "Select a person above..."
-              }
-              disabled={(queryMode === "other" && !targetId)}
+              placeholder="Ask your agent anything... (type @ to ask another agent)"
+              disabled={false}
             />
             <div className="absolute right-1.5 top-1.5 flex items-center gap-1">
               <button
@@ -502,7 +415,7 @@ export default function ChatPage() {
               </button>
               <button
                 type="submit"
-                disabled={(queryMode === "other" && !targetId) || !question.trim() || isStreaming}
+                disabled={!question.trim() || isStreaming}
                 className="px-4 py-2 bg-accent hover:bg-accent-hover text-accent-fg text-sm font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-all"
               >
                 {isStreaming ? (
@@ -534,18 +447,47 @@ export default function ChatPage() {
         )}
 
         {/* Trust Context Hint */}
-        {(queryMode === "self" || targetUser) && (
-          <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
-            </svg>
-            {queryMode === "self"
-              ? "Your agent has full access to all your capsules including private ones."
-              : `Your trust level with ${targetUser?.display_name} determines which capsules their agent can access.`
-            }
-          </p>
-        )}
+        <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+          Your agent has full access to all your capsules. Trust level determines what others share back.
+        </p>
       </form>
+
+      {/* Demo Scenario Suggestions (only when empty) */}
+      {results.length === 0 && !isStreaming && (() => {
+        const currentUser = (users ?? []).find(u => u.id === userId);
+        const scenarios = currentUser?.username ? DEMO_SCENARIOS[currentUser.username] : undefined;
+        const podPort = getPodUrl().match(/:(\d+)/)?.[1];
+        const isMultiPod = podPort && podPort !== "8000";
+        if (!scenarios || !isMultiPod) return null;
+        return (
+          <div className="mb-8">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-sm font-semibold text-muted-foreground">Try a demo scenario</span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-400 font-medium border border-violet-500/20">Federation</span>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {scenarios.map((s, i) => (
+                <button
+                  key={i}
+                  onClick={() => {
+                    setQuestion(s.question);
+                  }}
+                  className="group p-3 rounded-xl bg-card border border-card-border hover:border-accent/40 transition-all hover:bg-card-hover text-left"
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-base">{s.icon}</span>
+                    <span className="text-sm font-medium text-foreground group-hover:text-accent transition-colors">{s.label}</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground line-clamp-2 leading-relaxed">{s.question}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Results */}
       {results.length > 0 && (
@@ -578,6 +520,18 @@ export default function ChatPage() {
 // @-Mention Input Component
 // ═══════════════════════════════════════════════════════════════
 
+// A registry result adapted to look like a local user for mention insertion
+interface RegistryMentionItem {
+  id: string; // use DID as id
+  username: string; // public handle
+  display_name: string;
+  user_type: string;
+  isRegistry: true;
+  pod_url: string;
+}
+
+type MentionItem = (User & { isRegistry?: false }) | RegistryMentionItem;
+
 function MentionInput({
   value,
   onChange,
@@ -605,29 +559,72 @@ function MentionInput({
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionStart, setMentionStart] = useState(-1);
   const [selectedIdx, setSelectedIdx] = useState(0);
+  const [registryResults, setRegistryResults] = useState<RegistryMentionItem[]>([]);
+  const registryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const filteredUsers = users
+  // Local user IDs and usernames for deduplication
+  const localIds = useMemo(() => new Set(users.map(u => u.id)), [users]);
+  const localUsernames = useMemo(() => new Set(users.map(u => u.username).filter(Boolean)), [users]);
+
+  // Debounced registry search
+  useEffect(() => {
+    if (!showMentions || mentionQuery.length < 2) {
+      setRegistryResults([]);
+      return;
+    }
+    if (registryTimerRef.current) clearTimeout(registryTimerRef.current);
+    registryTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await api.registrySearchAll(mentionQuery);
+        const items: RegistryMentionItem[] = (res.results || [])
+          .filter((r: RegistryPodAgent) => !localUsernames.has(r.username) && r.did !== currentUserId)
+          .map((r: RegistryPodAgent) => ({
+            id: r.did,
+            username: r.username,
+            display_name: r.display_name,
+            user_type: r.entity_type || "person",
+            isRegistry: true as const,
+            pod_url: r.pod_url,
+          }));
+        setRegistryResults(items);
+      } catch {
+        setRegistryResults([]);
+      }
+    }, 300);
+    return () => { if (registryTimerRef.current) clearTimeout(registryTimerRef.current); };
+  }, [showMentions, mentionQuery, localUsernames, currentUserId]);
+
+  const filteredUsers: MentionItem[] = users
     .filter((u) => {
-      if (u.id === currentUserId) return false; // Don't show yourself
+      if (u.id === currentUserId) return false;
       if (u.username?.startsWith("remote:")) return false; // Exclude ghost users
       if (!mentionQuery) return true;
       const q = mentionQuery.toLowerCase();
       return (
-        u.username.toLowerCase().includes(q) ||
+        (u.username && u.username.toLowerCase().includes(q)) ||
         u.display_name.toLowerCase().includes(q)
       );
     })
     .sort((a, b) => {
-      // Connected users first, then network members, then others
       const aConnected = connectedIds.has(a.id) ? 0 : 1;
       const bConnected = connectedIds.has(b.id) ? 0 : 1;
       if (aConnected !== bConnected) return aConnected - bConnected;
-      // People before orgs
       const aIsOrg = a.user_type !== "person" ? 1 : 0;
       const bIsOrg = b.user_type !== "person" ? 1 : 0;
       if (aIsOrg !== bIsOrg) return aIsOrg - bIsOrg;
       return a.display_name.localeCompare(b.display_name);
     });
+
+  // Combine local + registry results (deduped)
+  const allMentionItems: MentionItem[] = useMemo(() => {
+    const combined: MentionItem[] = [...filteredUsers];
+    for (const r of registryResults) {
+      if (!combined.some(c => c.username === r.username)) {
+        combined.push(r);
+      }
+    }
+    return combined;
+  }, [filteredUsers, registryResults]);
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -665,16 +662,20 @@ function MentionInput({
   );
 
   const insertMention = useCallback(
-    (user: User) => {
+    (item: MentionItem) => {
       const before = value.slice(0, mentionStart);
       const afterCursor = value.slice(
         mentionStart + 1 + mentionQuery.length
       );
-      const newVal = `${before}@${user.display_name} ${afterCursor}`;
+      // Public users get @handle, private users get @Full Name
+      const mention = item.username && !item.username.startsWith("remote:")
+        ? `@${item.username}`
+        : `@${item.display_name}`;
+      const newVal = `${before}${mention} ${afterCursor}`;
       onChange(newVal);
       setShowMentions(false);
       setMentionQuery("");
-      // Re-focus input
+      setRegistryResults([]);
       setTimeout(() => inputRef.current?.focus(), 0);
     },
     [value, mentionStart, mentionQuery, onChange]
@@ -682,10 +683,10 @@ function MentionInput({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (showMentions && filteredUsers.length > 0) {
+      if (showMentions && allMentionItems.length > 0) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
-          setSelectedIdx((i) => Math.min(i + 1, filteredUsers.length - 1));
+          setSelectedIdx((i) => Math.min(i + 1, allMentionItems.length - 1));
           return;
         }
         if (e.key === "ArrowUp") {
@@ -695,7 +696,7 @@ function MentionInput({
         }
         if (e.key === "Tab" || e.key === "Enter") {
           e.preventDefault();
-          insertMention(filteredUsers[selectedIdx]);
+          insertMention(allMentionItems[selectedIdx]);
           return;
         }
         if (e.key === "Escape") {
@@ -710,7 +711,7 @@ function MentionInput({
         onSubmit();
       }
     },
-    [showMentions, filteredUsers, selectedIdx, insertMention, onSubmit]
+    [showMentions, allMentionItems, selectedIdx, insertMention, onSubmit]
   );
 
   // Close dropdown on outside click
@@ -744,72 +745,136 @@ function MentionInput({
       />
 
       {/* @-mention autocomplete dropdown */}
-      {showMentions && filteredUsers.length > 0 && (
+      {showMentions && allMentionItems.length > 0 && (
         <div
           ref={dropdownRef}
-          className="absolute left-0 right-24 bottom-full mb-1 bg-card border border-card-border rounded-xl shadow-lg overflow-hidden z-50"
+          className="absolute left-0 right-24 bottom-full mb-1 bg-card border border-card-border rounded-xl shadow-lg overflow-hidden z-50 max-h-80 overflow-y-auto"
         >
-          <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-card-border bg-card-hover/50">
-            Mention someone
-          </div>
-          {filteredUsers.slice(0, 6).map((u, i) => {
-            const isConnected = connectedIds.has(u.id);
-            const sharedNets = userNetworkMap.get(u.id) ?? [];
-            return (
-              <button
-                key={u.id}
-                type="button"
-                onClick={() => insertMention(u)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors ${
-                  i === selectedIdx
-                    ? "bg-accent/10 text-accent"
-                    : "hover:bg-card-hover text-foreground"
-                }`}
-              >
-                <div className="relative">
-                  <div
-                    className={`w-6 h-6 rounded-md flex items-center justify-center text-white font-bold text-[10px] ${
-                      isConnected ? "bg-accent" : "bg-muted-foreground/60"
+          {/* Local results */}
+          {filteredUsers.length > 0 && (
+            <>
+              <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-card-border bg-card-hover/50">
+                Your Network
+              </div>
+              {filteredUsers.slice(0, 5).map((u, i) => {
+                const isConnected = connectedIds.has(u.id);
+                const sharedNets = userNetworkMap.get(u.id) ?? [];
+                return (
+                  <button
+                    key={u.id}
+                    type="button"
+                    onClick={() => insertMention(u)}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors ${
+                      i === selectedIdx
+                        ? "bg-accent/10 text-accent"
+                        : "hover:bg-card-hover text-foreground"
                     }`}
                   >
-                    {u.display_name[0]}
-                  </div>
-                  {isConnected && (
-                    <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 rounded-full border border-card" />
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className={`text-sm font-medium ${!isConnected ? "text-muted-foreground" : ""}`}>
-                      {u.display_name}
-                    </span>
-                    <span className="text-xs text-muted-foreground">@{u.username}</span>
-                    {u.user_type === "organization" && (
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold uppercase">Org</span>
-                    )}
-                    {u.user_type === "government" && (
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold uppercase">Gov</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1 mt-0.5">
-                    {isConnected ? (
-                      sharedNets.length > 0 ? (
-                        sharedNets.map((net) => (
-                          <span key={net} className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent/80">
-                            {net}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="text-[10px] text-green-400">Connected</span>
-                      )
-                    ) : (
-                      <span className="text-[10px] text-muted-foreground/60">Not connected</span>
-                    )}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
+                    <div className="relative">
+                      <div
+                        className={`w-6 h-6 rounded-md flex items-center justify-center text-white font-bold text-[10px] ${
+                          isConnected ? "bg-accent" : "bg-muted-foreground/60"
+                        }`}
+                      >
+                        {u.display_name[0]}
+                      </div>
+                      {isConnected && (
+                        <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 rounded-full border border-card" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`text-sm font-medium ${!isConnected ? "text-muted-foreground" : ""}`}>
+                          {u.username && !u.username.startsWith("remote:")
+                            ? <><span className="text-accent">@{u.username}</span> <span className="text-muted-foreground text-xs">({u.display_name})</span></>
+                            : u.display_name
+                          }
+                        </span>
+                        {u.user_type === "organization" && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold uppercase">Org</span>
+                        )}
+                        {u.user_type === "government" && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold uppercase">Gov</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        {isConnected ? (
+                          sharedNets.length > 0 ? (
+                            sharedNets.map((net) => (
+                              <span key={net} className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent/80">
+                                {net}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-[10px] text-green-400">Connected</span>
+                          )
+                        ) : (
+                          <span className="text-[10px] text-muted-foreground/60">Not connected</span>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </>
+          )}
+
+          {/* Registry results */}
+          {registryResults.length > 0 && (
+            <>
+              <div className="px-3 py-1.5 text-[10px] font-medium text-violet-400 uppercase tracking-wider border-b border-card-border bg-violet-500/5 flex items-center gap-1.5">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                </svg>
+                Public Registry
+              </div>
+              {registryResults.slice(0, 4).map((r) => {
+                const globalIdx = filteredUsers.length + registryResults.indexOf(r);
+                const podPort = r.pod_url.match(/:(\d+)/)?.[1];
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => insertMention(r)}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors ${
+                      globalIdx === selectedIdx
+                        ? "bg-accent/10 text-accent"
+                        : "hover:bg-card-hover text-foreground"
+                    }`}
+                  >
+                    <div className="w-6 h-6 rounded-md flex items-center justify-center text-white font-bold text-[10px] bg-violet-500/60">
+                      {r.display_name[0]}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm font-medium">
+                          <span className="text-violet-400">@{r.username}</span>{" "}
+                          <span className="text-muted-foreground text-xs">({r.display_name})</span>
+                        </span>
+                        {r.user_type === "organization" && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold uppercase">Org</span>
+                        )}
+                        {r.user_type === "government" && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold uppercase">Gov</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <span className="text-[10px] text-violet-400/70">Public agent</span>
+                        {podPort && <span className="text-[10px] text-muted-foreground/50">Pod :{podPort}</span>}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </>
+          )}
+
+          {/* Search hint when no registry results yet */}
+          {mentionQuery.length >= 2 && registryResults.length === 0 && filteredUsers.length > 0 && (
+            <div className="px-3 py-1.5 text-[10px] text-muted-foreground/50 border-t border-card-border">
+              Searching public registry...
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -976,14 +1041,32 @@ function QueryResultCard({
 
         {/* Metadata */}
         {!streaming && (
-          <div className="flex items-center gap-4 mt-3 text-[11px] text-muted-foreground">
+          <div className="flex items-center gap-4 mt-3 text-[11px] text-muted-foreground flex-wrap">
+            {/* Federation indicator */}
+            {result.agent_actions?.some((a: AgentAction) => a.federated) && (
+              <span className="flex items-center gap-1 text-violet-400">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                </svg>
+                Cross-pod query
+              </span>
+            )}
             {result.shared_networks.length > 0 && (
-              <span className="flex items-center gap-1">
+              <span className="flex items-center gap-1 text-green-400">
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/>
                   <line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/>
                 </svg>
-                {result.shared_networks.join(", ")}
+                via {result.shared_networks.join(", ")}
+              </span>
+            )}
+            {result.trust_level && result.trust_level !== "private" && (
+              <span className={`flex items-center gap-1 ${
+                result.trust_level === "network" ? "text-green-400" :
+                result.trust_level === "connected" ? "text-blue-400" :
+                "text-zinc-400"
+              }`}>
+                {result.trust_level} trust
               </span>
             )}
             {result.latency_ms > 0 && <span>{result.latency_ms}ms</span>}
@@ -1056,19 +1139,55 @@ function AgentActionCard({ action }: { action: AgentAction }) {
   }
 
   if (action.type === "peer_queried") {
+    // Clean display name: prefer target_display_name, fall back to cleaned username
+    const displayName = action.target_display_name || (() => {
+      const un = action.target_username || "unknown";
+      if (un.startsWith("remote:")) {
+        const name = un.slice(7).split("@")[0];
+        return name.charAt(0).toUpperCase() + name.slice(1);
+      }
+      return un;
+    })();
+    const podLabel = action.remote_pod ? (() => {
+      const match = action.remote_pod.match(/:(\d+)/);
+      return match ? `Pod :${match[1]}` : "Remote Pod";
+    })() : null;
+
     return (
-      <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium bg-sky-500/10 border border-sky-500/15 text-sky-400">
-        {/* Chat bubble icon */}
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-        </svg>
+      <div className={`inline-flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium ${
+        action.federated
+          ? "bg-violet-500/10 border border-violet-500/15 text-violet-400"
+          : "bg-sky-500/10 border border-sky-500/15 text-sky-400"
+      }`}>
+        {action.federated ? (
+          /* Globe/federation icon */
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+            <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+        ) : (
+          /* Chat bubble icon */
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+        )}
         <span className="truncate max-w-[280px]">
-          Asked{" "}
-          <span className="font-semibold text-sky-300">@{action.target_username}</span>
-          {action.question && (
-            <span className="text-sky-400/70">: {action.question}</span>
+          {action.federated ? "Queried" : "Asked"}{" "}
+          <span className={`font-semibold ${action.federated ? "text-violet-300" : "text-sky-300"}`}>
+            {displayName}
+          </span>
+          {podLabel && (
+            <span className="opacity-60 ml-1">({podLabel})</span>
           )}
         </span>
+        {action.trust_level && (
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
+            action.trust_level === "network" ? "bg-green-500/15 text-green-400" :
+            action.trust_level === "private" ? "bg-blue-500/15 text-blue-400" :
+            "bg-zinc-500/15 text-zinc-400"
+          }`}>
+            {action.trust_level}
+          </span>
+        )}
       </div>
     );
   }

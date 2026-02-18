@@ -1,33 +1,36 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { getPodUrl, setPodUrl } from "@/lib/api";
+import { getPodUrl, setPodUrl, api } from "@/lib/api";
+
+const DEMO_PASSWORD = "TrustMesh-demo-2026";
 
 interface PodEntry {
   key: string;
   port: number;
   name: string;
   type: "person" | "organization" | "government";
+  username: string;
   online: boolean;
 }
 
 const PODS: Omit<PodEntry, "online">[] = [
-  { key: "molly",               port: 8001, name: "Molly Johnson",            type: "person" },
-  { key: "peter",               port: 8002, name: "Peter Johnson",            type: "person" },
-  { key: "jane",                port: 8003, name: "Jane Johnson",             type: "person" },
-  { key: "grandmarose",         port: 8004, name: "Grandma Rose",             type: "person" },
-  { key: "dr_lee",              port: 8005, name: "Dr. Sarah Lee",            type: "person" },
-  { key: "kyle",                port: 8006, name: "Kyle Rivera",              type: "person" },
-  { key: "amy",                 port: 8007, name: "Amy Torres",               type: "person" },
-  { key: "dorothy",             port: 8008, name: "Dorothy Park",             type: "person" },
-  { key: "nurse_davis",         port: 8009, name: "Nurse Rachel Davis",       type: "person" },
-  { key: "emt_johnson",         port: 8010, name: "EMT Mike Johnson",         type: "person" },
-  { key: "sparkleclean",        port: 8011, name: "SparkleClean",             type: "organization" },
-  { key: "riverside_hospital",  port: 8012, name: "Riverside Hospital",       type: "organization" },
-  { key: "acetutor",            port: 8013, name: "AceTutor SAT Prep",        type: "organization" },
-  { key: "riverside_gov",       port: 8014, name: "City of Riverside",        type: "government" },
-  { key: "handypro",            port: 8015, name: "HandyPro",                 type: "organization" },
-  { key: "riverside_ambulance", port: 8016, name: "Riverside Ambulance",      type: "organization" },
+  { key: "molly",               port: 8001, name: "Molly Johnson",            type: "person",       username: "molly" },
+  { key: "peter",               port: 8002, name: "Peter Johnson",            type: "person",       username: "peter" },
+  { key: "jane",                port: 8003, name: "Jane Johnson",             type: "person",       username: "jane" },
+  { key: "grandmarose",         port: 8004, name: "Grandma Rose",             type: "person",       username: "grandmarose" },
+  { key: "dr_lee",              port: 8005, name: "Dr. Sarah Lee",            type: "person",       username: "dr_lee" },
+  { key: "kyle",                port: 8006, name: "Kyle Rivera",              type: "person",       username: "kyle" },
+  { key: "amy",                 port: 8007, name: "Amy Torres",               type: "person",       username: "amy" },
+  { key: "dorothy",             port: 8008, name: "Dorothy Park",             type: "person",       username: "dorothy" },
+  { key: "nurse_davis",         port: 8009, name: "Nurse Rachel Davis",       type: "person",       username: "nurse_davis" },
+  { key: "emt_johnson",         port: 8010, name: "EMT Mike Johnson",         type: "person",       username: "emt_johnson" },
+  { key: "sparkleclean",        port: 8011, name: "SparkleClean",             type: "organization", username: "sparkleclean" },
+  { key: "riverside_hospital",  port: 8012, name: "Riverside Hospital",       type: "organization", username: "riverside_hospital" },
+  { key: "acetutor",            port: 8013, name: "AceTutor SAT Prep",        type: "organization", username: "acetutor" },
+  { key: "riverside_gov",       port: 8014, name: "City of Riverside",        type: "government",   username: "riverside_gov" },
+  { key: "handypro",            port: 8015, name: "HandyPro",                 type: "organization", username: "handypro" },
+  { key: "riverside_ambulance", port: 8016, name: "Riverside Ambulance",      type: "organization", username: "riverside_ambulance" },
 ];
 
 const TYPE_BADGE: Record<string, { label: string; className: string }> = {
@@ -71,12 +74,26 @@ export function PodSwitcher({ userName }: { userName?: string }) {
     if (open && isMultiPod) checkStatuses();
   }, [open, isMultiPod, checkStatuses]);
 
-  const switchPod = (port: number) => {
+  const [switching, setSwitching] = useState<number | null>(null);
+
+  const switchPod = async (port: number) => {
+    const pod = PODS.find(p => p.port === port);
+    if (!pod) return;
+
+    setSwitching(port);
+    setOpen(false);
     const url = `http://localhost:${port}`;
     setPodUrl(url);
     setCurrent(url);
-    setOpen(false);
-    window.location.reload();
+
+    // Auto-login with demo credentials and redirect to dashboard
+    try {
+      const user = await api.login(pod.username, DEMO_PASSWORD);
+      window.location.href = `/${user.id}`;
+    } catch {
+      // Login failed — fall back to reload (lands on home/login page)
+      window.location.reload();
+    }
   };
 
   // Single-pod mode: just show a static label, no dropdown, no health checks
@@ -96,11 +113,12 @@ export function PodSwitcher({ userName }: { userName?: string }) {
     <div className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-card-hover border border-card-border hover:border-accent/30 transition-colors"
+        disabled={switching !== null}
+        className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-card-hover border border-card-border hover:border-accent/30 transition-colors disabled:opacity-60"
       >
-        <span className={`w-2 h-2 rounded-full ${statuses[Number(currentPort)] !== false ? "bg-green-400" : "bg-red-400"}`} />
+        <span className={`w-2 h-2 rounded-full ${switching ? "bg-amber-400 animate-pulse" : statuses[Number(currentPort)] !== false ? "bg-green-400" : "bg-red-400"}`} />
         <span className="truncate font-medium">
-          {currentPod?.name || "Pod"} (:${currentPort})
+          {switching ? "Switching..." : `${currentPod?.name || "Pod"} (:${currentPort})`}
         </span>
         <svg className={`w-3 h-3 ml-auto transition-transform ${open ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <polyline points="6 9 12 15 18 9" />

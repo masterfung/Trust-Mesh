@@ -48,7 +48,7 @@ function LocalAgentCard({ agent, userId }: { agent: RegistryAgent; userId: strin
             <h3 className="text-sm font-semibold truncate">{agent.display_name}</h3>
             <EntityBadge type={agent.user_type} />
           </div>
-          <p className="text-xs text-muted-foreground truncate">@{agent.username}</p>
+          {agent.username && <p className="text-xs text-muted-foreground truncate">@{agent.username}</p>}
         </div>
       </div>
 

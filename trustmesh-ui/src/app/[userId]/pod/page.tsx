@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type PeerPod, type Network, type User } from "@/lib/api";
 import { useParams } from "next/navigation";
@@ -140,7 +140,7 @@ function PodIdentityCard({ podInfo }: { podInfo?: { pod_name: string; pod_url: s
 
 function AgentIdentityCard({ userId, currentUser, agentCard, podInfo }: {
   userId: string;
-  currentUser?: { display_name: string; user_type?: string; bio: string; username?: string };
+  currentUser?: { display_name: string; user_type?: string; bio: string; username?: string | null };
   agentCard?: { name: string; description: string; skills: { id: string; name: string; description: string }[] } | null;
   podInfo?: { agents?: { owner_username: string; did: string }[] };
 }) {
@@ -204,18 +204,61 @@ function AgentIdentityCard({ userId, currentUser, agentCard, podInfo }: {
 
 function DiscoverableToggle({ userId, currentUser, queryClient }: {
   userId: string;
-  currentUser?: { is_discoverable?: boolean };
+  currentUser?: { is_discoverable?: boolean; username?: string | null };
   queryClient: ReturnType<typeof useQueryClient>;
 }) {
   const isDiscoverable = currentUser?.is_discoverable ?? false;
+  const currentHandle = currentUser?.username || null;
   const [showConfirm, setShowConfirm] = useState(false);
-  const toggle = useMutation({
-    mutationFn: () => api.updateUser(userId, { is_discoverable: !isDiscoverable }),
+  const [handle, setHandle] = useState("");
+  const [handleStatus, setHandleStatus] = useState<{ available?: boolean; reason?: string; checking?: boolean } | null>(null);
+  const checkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Validate handle format locally
+  const formatError = handle.length > 0 && !/^[a-z0-9_-]{2,50}$/.test(handle)
+    ? handle.length < 2 ? "At least 2 characters" : "Only lowercase letters, numbers, _ and -"
+    : null;
+
+  // Debounced handle availability check
+  useEffect(() => {
+    if (!handle || handle.length < 2 || formatError) {
+      setHandleStatus(null);
+      return;
+    }
+    setHandleStatus({ checking: true });
+    if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
+    checkTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await api.checkHandle(userId, handle);
+        setHandleStatus({ available: res.available, reason: res.reason });
+      } catch {
+        setHandleStatus({ available: false, reason: "Could not check availability" });
+      }
+    }, 400);
+    return () => { if (checkTimerRef.current) clearTimeout(checkTimerRef.current); };
+  }, [handle, userId, formatError]);
+
+  // Go private mutation (existing flow)
+  const goPrivate = useMutation({
+    mutationFn: () => api.updateUser(userId, { is_discoverable: false }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["user", userId] });
       setShowConfirm(false);
     },
   });
+
+  // Claim handle mutation (Go Live)
+  const claimHandle = useMutation({
+    mutationFn: () => api.claimHandle(userId, handle),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["user", userId] });
+      setShowConfirm(false);
+      setHandle("");
+      setHandleStatus(null);
+    },
+  });
+
+  const isPending = goPrivate.isPending || claimHandle.isPending;
 
   return (
     <Card>
@@ -224,51 +267,121 @@ function DiscoverableToggle({ userId, currentUser, queryClient }: {
           <div className="flex items-center gap-3">
             {isDiscoverable ? <Globe className="size-5 text-success" /> : <Lock className="size-5 text-muted-foreground" />}
             <div>
-              <p className="text-sm font-medium">{isDiscoverable ? "Public — Go Live" : "Private Mode"}</p>
+              <p className="text-sm font-medium">
+                {isDiscoverable ? (
+                  <>Public{currentHandle && <span className="text-accent ml-1.5">@{currentHandle}</span>}</>
+                ) : "Private Mode"}
+              </p>
               <p className="text-xs text-muted-foreground">
                 {isDiscoverable ? "Visible in the public registry" : "Only visible to connections and pool members"}
               </p>
             </div>
           </div>
           <label className="relative cursor-pointer">
-            <input type="checkbox" checked={isDiscoverable} onChange={() => setShowConfirm(true)} disabled={toggle.isPending} className="sr-only peer" />
+            <input type="checkbox" checked={isDiscoverable} onChange={() => setShowConfirm(true)} disabled={isPending} className="sr-only peer" />
             <div className="w-11 h-6 bg-muted rounded-full peer-checked:bg-success transition-colors" />
             <div className="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-transform peer-checked:translate-x-5" />
           </label>
         </div>
-        {/* Confirmation dialog */}
-        {showConfirm && (
+
+        {/* Go Private confirmation */}
+        {showConfirm && isDiscoverable && (
           <div className="mt-4 rounded-lg border border-warning/30 bg-warning/5 p-4 space-y-3">
-            <p className="text-sm font-medium">
-              {isDiscoverable
-                ? "Go private? Your agent will be removed from the public registry."
-                : "Go live? Your agent will be listed in the public registry for anyone to discover."}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {isDiscoverable
-                ? "Only your connections and pool members will be able to find you."
-                : "Your name, DID, and pod URL will be publicly visible. You can go private again at any time."}
-            </p>
+            <p className="text-sm font-medium">Go private? Your agent will be removed from the public registry.</p>
+            <p className="text-xs text-muted-foreground">Only your connections and pool members will be able to find you.</p>
+            <div className="flex gap-2">
+              <button onClick={() => goPrivate.mutate()} disabled={isPending}
+                className="px-3 py-1.5 text-sm font-medium rounded-md bg-muted hover:bg-muted/80 text-foreground transition-colors">
+                {goPrivate.isPending ? "Updating..." : "Go Private"}
+              </button>
+              <button onClick={() => setShowConfirm(false)}
+                className="px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Go Live — claim a handle */}
+        {showConfirm && !isDiscoverable && (
+          <div className="mt-4 rounded-lg border border-accent/30 bg-accent/5 p-4 space-y-4">
+            <div>
+              <p className="text-sm font-medium">Go Live — Pick Your Handle</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Choose a unique public handle. People will find you as <span className="text-accent font-medium">@{handle || "yourname"}</span> in the registry.
+              </p>
+            </div>
+
+            {/* Handle input */}
+            <div>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-accent font-medium text-sm">@</span>
+                <input
+                  type="text"
+                  value={handle}
+                  onChange={(e) => setHandle(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+                  placeholder="yourname"
+                  maxLength={50}
+                  className={cn(
+                    "w-full bg-background border rounded-lg pl-7 pr-10 py-2.5 text-sm font-mono transition-colors",
+                    formatError ? "border-danger/50" :
+                    handleStatus?.available === true ? "border-success/50" :
+                    handleStatus?.available === false ? "border-danger/50" :
+                    "border-border"
+                  )}
+                  autoFocus
+                />
+                {/* Status indicator */}
+                <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                  {handleStatus?.checking && (
+                    <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                  )}
+                  {handleStatus?.available === true && !handleStatus.checking && (
+                    <Check className="size-4 text-success" />
+                  )}
+                  {handleStatus?.available === false && !handleStatus.checking && (
+                    <X className="size-4 text-danger" />
+                  )}
+                </div>
+              </div>
+              {/* Feedback text */}
+              <div className="mt-1.5 min-h-[18px]">
+                {formatError && <p className="text-[11px] text-danger">{formatError}</p>}
+                {!formatError && handleStatus?.available === true && (
+                  <p className="text-[11px] text-success">@{handle} is available</p>
+                )}
+                {!formatError && handleStatus?.available === false && (
+                  <p className="text-[11px] text-danger">{handleStatus.reason || "Not available"}</p>
+                )}
+                {!formatError && !handleStatus && handle.length >= 2 && (
+                  <p className="text-[11px] text-muted-foreground">Checking availability...</p>
+                )}
+              </div>
+            </div>
+
+            {/* Actions */}
             <div className="flex gap-2">
               <button
-                onClick={() => toggle.mutate()}
-                disabled={toggle.isPending}
-                className={cn(
-                  "px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
-                  isDiscoverable
-                    ? "bg-muted hover:bg-muted/80 text-foreground"
-                    : "bg-success hover:bg-success/90 text-white",
-                )}
+                onClick={() => claimHandle.mutate()}
+                disabled={isPending || !handleStatus?.available || !!formatError}
+                className="px-4 py-2 text-sm font-medium rounded-md bg-accent hover:bg-accent-hover text-accent-fg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {toggle.isPending ? "Updating..." : isDiscoverable ? "Go Private" : "Confirm — Go Live"}
+                {claimHandle.isPending ? "Claiming..." : "Claim @" + (handle || "...")}
               </button>
               <button
-                onClick={() => setShowConfirm(false)}
+                onClick={() => { setShowConfirm(false); setHandle(""); setHandleStatus(null); }}
                 className="px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
               >
                 Cancel
               </button>
             </div>
+            {claimHandle.isError && (
+              <p className="text-xs text-danger">{(claimHandle.error as Error).message}</p>
+            )}
+
+            <p className="text-[11px] text-muted-foreground">
+              Your name, handle, and pod URL will be publicly visible. You can go private again at any time.
+            </p>
           </div>
         )}
       </CardContent>

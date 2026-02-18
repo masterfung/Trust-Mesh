@@ -21,11 +21,25 @@ function getApiBase(): string {
   return getPodUrl();
 }
 
+/** Read the CSRF cookie value (set by backend, httpOnly=false so JS can read it). */
+function getCsrfToken(): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(/(?:^|;\s*)trustmesh_csrf=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  // Attach CSRF token on state-mutating requests
+  const csrfHeaders: Record<string, string> = {};
+  if (init?.method && ["POST", "PUT", "DELETE", "PATCH"].includes(init.method)) {
+    const token = getCsrfToken();
+    if (token) csrfHeaders["x-csrf-token"] = token;
+  }
+
   const res = await fetch(`${getApiBase()}${path}`, {
     ...init,
     credentials: "include", // Send httpOnly cookies with every request
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: { "Content-Type": "application/json", ...csrfHeaders, ...init?.headers },
   });
   if (!res.ok) {
     const body = await res.text();
@@ -53,7 +67,8 @@ export type ContextMode = "work" | "personal" | "all";
 
 export interface User {
   id: string;
-  username: string;
+  username: string | null;
+  email: string | null;
   display_name: string;
   bio: string;
   user_type?: string;
@@ -61,6 +76,7 @@ export interface User {
   is_discoverable?: boolean;
   is_demo?: boolean;
   active_context?: ContextMode;
+  avatar_url?: string | null;
   created_at?: string;
 }
 
@@ -186,9 +202,13 @@ export interface AgentAction {
   category?: string;
   networks?: string[];
   target_username?: string;
+  target_display_name?: string;
   question?: string;
   service_type?: string;
   providers_queried?: number;
+  federated?: boolean;
+  remote_pod?: string;
+  trust_level?: string;
 }
 
 export interface QueryResult {
@@ -391,16 +411,26 @@ export interface FhirBundle {
 
 export const api = {
   // Auth (session managed via httpOnly cookies — no tokens in JS)
-  login: (username: string, password: string) =>
+  // Login accepts name (display_name) or username (public handle)
+  login: (name: string, password: string) =>
     apiFetch<User>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ name, password }),
     }),
   logout: () =>
     apiFetch<{ status: string }>("/api/auth/logout", { method: "POST" }),
   getMe: () => apiFetch<User>("/api/auth/me"),
-  createUser: (data: { username: string; display_name: string; bio: string; password: string; user_type?: string }) =>
+  // Signup: name + password + optional email/avatar. Username (public handle) is optional.
+  createUser: (data: { display_name: string; bio: string; password: string; email?: string; avatar_url?: string; user_type?: string; username?: string }) =>
     apiFetch<User>("/api/users", { method: "POST", body: JSON.stringify(data) }),
+  // Claim a public handle (Go Live)
+  claimHandle: (userId: string, handle: string) =>
+    apiFetch<User>(`/api/users/${userId}/claim-handle`, {
+      method: "POST",
+      body: JSON.stringify({ handle }),
+    }),
+  checkHandle: (userId: string, handle: string) =>
+    apiFetch<{ available: boolean; reason?: string }>(`/api/users/${userId}/check-handle?handle=${encodeURIComponent(handle)}`),
 
   // Users
   listUsers: () => apiFetch<User[]>("/api/users"),
@@ -538,10 +568,13 @@ export const api = {
 
   // Streaming query
   queryStream: (fromUserId: string, toUserId: string, question: string, conversationHistory?: { role: string; content: string }[]) => {
+    const csrf = getCsrfToken();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (csrf) headers["x-csrf-token"] = csrf;
     return fetch(`${getApiBase()}/api/query/stream`, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         from_user_id: fromUserId,
         to_user_id: toUserId,
@@ -553,10 +586,13 @@ export const api = {
 
   // Intake onboarding
   intakeStep: (userId: string, message: string, conversationHistory: { role: string; content: string }[]) => {
+    const csrf = getCsrfToken();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (csrf) headers["x-csrf-token"] = csrf;
     return fetch(`${getApiBase()}/api/users/${userId}/intake`, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ message, conversation_history: conversationHistory }),
     });
   },
@@ -618,7 +654,7 @@ export const api = {
     apiFetch<{ status: string; info: Record<string, unknown> | null }>(`/api/pod/peers/${peerId}/ping`, { method: "POST" }),
 
   // User profile update
-  updateUser: (userId: string, data: { is_discoverable?: boolean; bio?: string; display_name?: string }) =>
+  updateUser: (userId: string, data: { is_discoverable?: boolean; bio?: string; display_name?: string; email?: string; avatar_url?: string }) =>
     apiFetch<User>(`/api/users/${userId}`, { method: "PUT", body: JSON.stringify(data) }),
 
   // Demo
@@ -686,4 +722,11 @@ export interface TimelineEntry {
   state_name: string;
   salience: number;
   visibility: number;
+  entry_type: number;
+  entry_type_name: string;
+  visibility_name: string;
+  trigger_kind: string | null;
+  trigger_detail: string | null;
+  hook_summary: string | null;
+  dep_count: number;
 }

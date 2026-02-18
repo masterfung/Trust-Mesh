@@ -234,7 +234,7 @@ function NetworkForm({ userId, connections, onDone }: { userId: string; connecti
 
   // Filter out ghost users from eligible members
   const eligibleMembers = connections
-    .filter((c) => c.peer && !c.peer.username.startsWith("remote:"))
+    .filter((c) => c.peer && !c.peer.username?.startsWith("remote:"))
     .map((c) => c.peer!);
 
   const mutation = useMutation({
@@ -506,24 +506,44 @@ function NetworkMemberRow({
     onSuccess: onRemoved,
   });
 
+  const isGhost = member.username?.startsWith("remote:");
+  const podLabel = isGhost ? (() => {
+    const match = member.username?.match(/:(\d+)/);
+    return match ? `Pod :${match[1]}` : "Remote";
+  })() : null;
+
   return (
     <>
       <div className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-card-hover transition-colors group">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-xl bg-accent flex items-center justify-center text-accent-fg text-xs font-bold">
+          <div className={`w-8 h-8 rounded-xl flex items-center justify-center text-xs font-bold ${
+            isGhost
+              ? "bg-violet-500/20 text-violet-400 border border-dashed border-violet-500/40"
+              : "bg-accent text-accent-fg"
+          }`}>
             {member.display_name[0]}
           </div>
           <div>
             <div className="flex items-center gap-1.5">
               <span className="text-sm font-medium">{member.display_name}</span>
-              {member.user_type === "organization" && (
+              {isGhost && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400 font-semibold uppercase flex items-center gap-1">
+                  <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                  </svg>
+                  {podLabel}
+                </span>
+              )}
+              {!isGhost && member.user_type === "organization" && (
                 <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold uppercase">Org</span>
               )}
-              {member.user_type === "government" && (
+              {!isGhost && member.user_type === "government" && (
                 <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold uppercase">Gov</span>
               )}
             </div>
-            <span className="text-[11px] text-muted-foreground block">@{member.username}</span>
+            <span className="text-[11px] text-muted-foreground block">
+              {isGhost ? "Remote member" : member.username ? `@${member.username}` : member.display_name}
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-2">

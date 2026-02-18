@@ -6,9 +6,9 @@ import { api, type User } from "./api";
 interface AuthContextValue {
   user: User | null;
   isLoading: boolean;
-  login: (username: string, password: string) => Promise<User>;
+  login: (name: string, password: string) => Promise<User>;
   loginAsDemo: (username: string, password: string) => Promise<User>;
-  signup: (data: { username: string; display_name: string; bio: string; password: string }) => Promise<User>;
+  signup: (data: { display_name: string; bio: string; password: string; email?: string; avatar_url?: string }) => Promise<User>;
   logout: () => Promise<void>;
 }
 
@@ -26,20 +26,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setIsLoading(false));
   }, []);
 
-  const login = useCallback(async (username: string, password: string): Promise<User> => {
-    const loggedIn = await api.login(username, password);
+  const login = useCallback(async (name: string, password: string): Promise<User> => {
+    const loggedIn = await api.login(name, password);
     setUser(loggedIn);
     return loggedIn;
   }, []);
 
   const loginAsDemo = useCallback(async (username: string, password: string): Promise<User> => {
-    // Demo login uses the same server-side auth — cookie is set by the backend
+    // Demo login sends username field for backward compat with demo pods
     const loggedIn = await api.login(username, password);
     setUser(loggedIn);
     return loggedIn;
   }, []);
 
-  const signup = useCallback(async (data: { username: string; display_name: string; bio: string; password: string }): Promise<User> => {
+  const signup = useCallback(async (data: { display_name: string; bio: string; password: string; email?: string; avatar_url?: string }): Promise<User> => {
     const newUser = await api.createUser(data);
     setUser(newUser);
     return newUser;

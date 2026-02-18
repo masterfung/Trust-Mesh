@@ -135,6 +135,8 @@ export default function Dashboard() {
     }
   };
 
+  const isNewUser = (capsules?.length ?? 0) === 0 && (connections?.length ?? 0) === 0;
+
   return (
     <div className="max-w-5xl mx-auto">
       {/* Header */}
@@ -143,8 +145,79 @@ export default function Dashboard() {
         <p className="text-muted-foreground text-sm">{user?.bio}</p>
       </div>
 
-      {/* Agent Card */}
-      {agent && (
+      {/* Getting Started — shown for new users with no capsules */}
+      {isNewUser && (
+        <div className="mb-8">
+          <div className="bg-gradient-to-br from-accent/8 via-accent-dim/5 to-transparent border border-accent/20 rounded-2xl p-6 mb-4">
+            <div className="flex items-start gap-4">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-accent to-accent-dim flex items-center justify-center shrink-0 shadow-lg shadow-accent/20">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#09090b" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.27A7 7 0 0 1 14 22h-4a7 7 0 0 1-6.73-3H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/>
+                  <circle cx="10" cy="16" r="1"/><circle cx="14" cy="16" r="1"/>
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h2 className="text-lg font-bold mb-1">Welcome to your pod!</h2>
+                <p className="text-sm text-muted-foreground mb-4">
+                  Your AI agent is ready but doesn&apos;t know you yet. Let&apos;s fix that — it only takes a couple minutes.
+                </p>
+                <Link
+                  href={`/${userId}/onboard`}
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover text-accent-fg font-semibold rounded-xl text-sm transition-all hover:shadow-lg hover:shadow-accent/20"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </svg>
+                  Set Up Your Agent
+                </Link>
+              </div>
+            </div>
+          </div>
+
+          {/* Quick start cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Link
+              href={`/${userId}/onboard`}
+              className="group p-4 bg-card border border-card-border rounded-xl hover:border-accent/30 hover:bg-card-hover transition-all"
+            >
+              <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400 mb-3">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                </svg>
+              </div>
+              <p className="text-sm font-medium mb-0.5">Tell your agent about you</p>
+              <p className="text-xs text-muted-foreground">Quick conversation to set up your profile</p>
+            </Link>
+            <Link
+              href={`/${userId}/vault`}
+              className="group p-4 bg-card border border-card-border rounded-xl hover:border-accent/30 hover:bg-card-hover transition-all"
+            >
+              <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-400 mb-3">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+                </svg>
+              </div>
+              <p className="text-sm font-medium mb-0.5">Add knowledge manually</p>
+              <p className="text-xs text-muted-foreground">Store info in your encrypted vault</p>
+            </Link>
+            <Link
+              href={`/${userId}/discover`}
+              className="group p-4 bg-card border border-card-border rounded-xl hover:border-accent/30 hover:bg-card-hover transition-all"
+            >
+              <div className="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center text-green-400 mb-3">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+              </div>
+              <p className="text-sm font-medium mb-0.5">Discover services</p>
+              <p className="text-xs text-muted-foreground">Find and connect with other pods</p>
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {/* ── Everything below is hidden for brand-new users ── */}
+      {!isNewUser && agent && (
         <div className="bg-gradient-to-r from-accent/5 to-accent-dim/5 border border-accent/20 rounded-2xl p-5 mb-6">
           <div className="flex items-start gap-4">
             <div className="w-11 h-11 rounded-xl bg-accent flex items-center justify-center shrink-0">
@@ -176,8 +249,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* System Status Bar */}
-      {health && (
+      {!isNewUser && health && (
         <div className="flex flex-wrap items-center gap-3 mb-6 px-1">
           {[
             { label: "Anthropic", ok: health.providers.anthropic, detail: "Claude Opus 4.6" },
@@ -202,10 +274,10 @@ export default function Dashboard() {
       )}
 
       {/* Dynamic Briefing Card */}
-      <BriefingCard userId={userId} briefing={briefing} briefingLoading={briefingLoading} briefingError={briefingError} queryClient={queryClient} />
+      {!isNewUser && <BriefingCard userId={userId} briefing={briefing} briefingLoading={briefingLoading} briefingError={briefingError} queryClient={queryClient} />}
 
       {/* Pending Tasks Card */}
-      <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
+      {!isNewUser && <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold">Agent Tasks</h2>
           <span className="text-xs text-muted-foreground">
@@ -243,9 +315,10 @@ export default function Dashboard() {
         ) : (
           <p className="text-sm text-muted-foreground text-center py-6">No tasks yet. Your agent will create tasks from conversations.</p>
         )}
-      </div>
+      </div>}
 
-      {/* Stats Grid */}
+      {/* Stats Grid — hidden for new users */}
+      {!isNewUser && <>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         {stats.map((s) => (
           <Link
@@ -400,6 +473,7 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      </>}
     </div>
   );
 }

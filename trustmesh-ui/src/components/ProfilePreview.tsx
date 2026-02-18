@@ -1,6 +1,7 @@
 "use client";
 
 import type { User, Connection, Network } from "@/lib/api";
+import { UserAvatar } from "./UserAvatar";
 
 const TYPE_BADGES: Record<string, { label: string; color: string }> = {
   organization: { label: "Org", color: "bg-amber-500/15 text-amber-400" },
@@ -41,9 +42,7 @@ export function ProfilePreview({ user, connections, networks, compact }: Profile
   if (compact) {
     return (
       <div className="flex items-center gap-2 min-w-0">
-        <div className="w-8 h-8 rounded-lg bg-accent/15 flex items-center justify-center text-accent font-bold text-xs shrink-0">
-          {user.display_name?.[0] || "?"}
-        </div>
+        <UserAvatar user={user} size="sm" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium truncate">{user.display_name}</span>
@@ -54,7 +53,7 @@ export function ProfilePreview({ user, connections, networks, compact }: Profile
             )}
           </div>
           <p className="text-[11px] text-muted-foreground truncate">
-            @{user.username}
+            {user.username ? `@${user.username}` : "Private"}
             {occupation?.title && <> &middot; {occupation.title}</>}
           </p>
         </div>
@@ -65,9 +64,7 @@ export function ProfilePreview({ user, connections, networks, compact }: Profile
   return (
     <div className="p-4 bg-card-hover/50 rounded-xl border border-card-border">
       <div className="flex items-start gap-3">
-        <div className="w-11 h-11 rounded-xl bg-accent/15 flex items-center justify-center text-accent font-bold shrink-0">
-          {user.display_name?.[0] || "?"}
-        </div>
+        <UserAvatar user={user} size="md" />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold">{user.display_name}</span>
@@ -77,7 +74,7 @@ export function ProfilePreview({ user, connections, networks, compact }: Profile
               </span>
             )}
           </div>
-          <p className="text-xs text-muted-foreground">@{user.username}</p>
+          <p className="text-xs text-muted-foreground">{user.username ? `@${user.username}` : "Private"}</p>
           {user.bio && <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{user.bio}</p>}
         </div>
       </div>
