@@ -1,6 +1,7 @@
 """User signup, profile, discovery, and auth routes."""
 
 import json
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -8,14 +9,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents import extract_profile
+from src import transit_bridge
 from src.auth import (
     COOKIE_NAME,
+    _compute_fingerprint,
     check_rate_limit,
     create_session,
     get_current_user_id,
     get_session_token,
     invalidate_session,
     invalidate_user_sessions,
+    record_failed_login,
 )
 from src.crypto import decrypt, derive_vault_key, encrypt, generate_key, generate_ed25519_keypair, public_key_to_did, public_key_to_b64
 from src.database import get_db
@@ -41,7 +45,7 @@ def _set_session_cookie(response: JSONResponse, token: str) -> None:
         value=token,
         httponly=True,  # Not accessible to JavaScript — prevents XSS token theft
         samesite="lax",  # CSRF protection — cookie not sent on cross-site POST
-        secure=False,  # Set True in production with HTTPS
+        secure=not os.getenv("TRUSTMESH_DEV_MODE"),  # Secure in prod, insecure in dev mode
         max_age=86400,  # 24 hours, matches server-side TTL
         path="/",
     )
@@ -53,11 +57,25 @@ def _clear_session_cookie(response: JSONResponse) -> None:
 
 
 @router.post("/users")
-async def create_user(data: UserCreate, db: AsyncSession = Depends(get_db)):
-    """Create a new user with vault and personal agent. Sets httpOnly session cookie."""
-    existing = await db.execute(select(User).where(User.username == data.username))
-    if existing.scalar_one_or_none():
-        raise HTTPException(400, "Username already taken")
+async def create_user(data: UserCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    """Create a new user with vault and personal agent. Sets httpOnly session cookie.
+
+    Username is optional at signup. If not provided, it stays NULL (private user).
+    Public handle is claimed later via Go Live / claim-handle endpoint.
+    """
+    # If username provided (backward compat / demo pods), check uniqueness
+    username = data.username
+    if username:
+        existing = await db.execute(select(User).where(User.username == username))
+        if existing.scalar_one_or_none():
+            raise HTTPException(400, "Username already taken")
+
+    # If email provided, check uniqueness
+    email = data.email
+    if email:
+        existing = await db.execute(select(User).where(User.email == email))
+        if existing.scalar_one_or_none():
+            raise HTTPException(400, "Email already in use")
 
     vault_master_key = generate_key()
     derived_key, salt = derive_vault_key(data.password)
@@ -72,7 +90,8 @@ async def create_user(data: UserCreate, db: AsyncSession = Depends(get_db)):
         is_discoverable = True
 
     user = User(
-        username=data.username,
+        username=username,  # NULL for private users, set on Go Live
+        email=email,
         display_name=data.display_name,
         bio=data.bio,
         user_type=data.user_type,
@@ -102,11 +121,11 @@ async def create_user(data: UserCreate, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(user)
 
-    # Store vault key in memory so capsule encryption works immediately
-    from src.main import vault_keys
-    vault_keys[user.id] = vault_master_key
+    # Store vault key in transit engine (key stays in Zig, zeroed in Python)
+    transit_bridge.store_key(user.id, vault_master_key)
+    transit_bridge._zero_bytes(vault_master_key)
 
-    token = create_session(user.id)
+    token = create_session(user.id, fingerprint=_compute_fingerprint(request))
     user_data = UserResponse.model_validate(user).model_dump(mode="json")
     response = JSONResponse(content=user_data)
     _set_session_cookie(response, token)
@@ -115,14 +134,37 @@ async def create_user(data: UserCreate, db: AsyncSession = Depends(get_db)):
 
 @router.post("/auth/login")
 async def login(data: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
-    """Authenticate user. Sets httpOnly session cookie (XSS-safe)."""
+    """Authenticate user. Sets httpOnly session cookie (XSS-safe).
+
+    Accepts login by display_name (field: name) or username (field: username).
+    Private users who haven't claimed a handle login by name.
+    """
     client_ip = request.client.host if request.client else "unknown"
     check_rate_limit(client_ip)
 
-    result = await db.execute(select(User).where(User.username == data.username))
+    login_id: str = data.email or data.name or data.username or ""
+    if not login_id:
+        raise HTTPException(401, "Name, email, or username required")
+
+    # Try username first (exact match), then email (exact, case-insensitive), then display_name (case-insensitive)
+    user = None
+    result = await db.execute(select(User).where(User.username == login_id))
     user = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(401, "Invalid username or password")
+        from sqlalchemy import func
+        result = await db.execute(
+            select(User).where(func.lower(User.email) == login_id.strip().lower())
+        )
+        user = result.scalar_one_or_none()
+    if not user:
+        from sqlalchemy import func
+        result = await db.execute(
+            select(User).where(func.lower(User.display_name) == login_id.lower())
+        )
+        user = result.scalar_one_or_none()
+    if not user:
+        record_failed_login(client_ip, login_id)
+        raise HTTPException(401, "Invalid credentials")
 
     if user.is_remote:
         raise HTTPException(403, "Remote ghost users cannot log in")
@@ -134,13 +176,17 @@ async def login(data: LoginRequest, request: Request, db: AsyncSession = Depends
         derived_key, _ = derive_vault_key(data.password, user.vault_key_salt)
         vault_master_key = decrypt(user.encrypted_vault_key, derived_key)
     except Exception:
-        raise HTTPException(401, "Invalid username or password")
+        record_failed_login(client_ip, login_id)
+        raise HTTPException(401, "Invalid name or password")
 
-    # Load vault key into memory so capsule operations work
-    from src.main import vault_keys
-    vault_keys[user.id] = vault_master_key
+    # Store vault key in transit engine (key stays in Zig, zeroed in Python)
+    transit_bridge.store_key(user.id, vault_master_key)
+    transit_bridge._zero_bytes(vault_master_key)
 
-    token = create_session(user.id)
+    # Session rotation: invalidate all existing sessions before creating new one
+    invalidate_user_sessions(user.id)
+
+    token = create_session(user.id, fingerprint=_compute_fingerprint(request))
     user_data = UserResponse.model_validate(user).model_dump(mode="json")
     response = JSONResponse(content=user_data)
     _set_session_cookie(response, token)
@@ -150,13 +196,11 @@ async def login(data: LoginRequest, request: Request, db: AsyncSession = Depends
 @router.post("/auth/logout")
 async def logout(request: Request, user_id: str = Depends(get_current_user_id)):
     """Invalidate session, clear vault key from memory, and clear httpOnly cookie."""
-    from src.main import vault_keys
-
     token = get_session_token(request)
     if token:
         invalidate_session(token)
     invalidate_user_sessions(user_id)
-    vault_keys.pop(user_id, None)  # Clear decrypted vault key from memory
+    transit_bridge.remove_user(user_id)  # secureZero all key material
     response = JSONResponse(content={"status": "ok"})
     _clear_session_cookie(response)
     return response
@@ -264,6 +308,20 @@ async def update_user_profile(user_id: str, request: Request, db: AsyncSession =
         user.bio = body["bio"]
     if "display_name" in body and isinstance(body["display_name"], str):
         user.display_name = body["display_name"]
+    if "email" in body:
+        email_val = (body["email"] or "").strip().lower() or None
+        if email_val:
+            existing = await db.execute(select(User).where(User.email == email_val))
+            existing_user = existing.scalar_one_or_none()
+            if existing_user and existing_user.id != user_id:
+                raise HTTPException(400, "Email already in use")
+        user.email = email_val
+    if "avatar_url" in body and isinstance(body["avatar_url"], str):
+        # Accept base64 data URIs (max ~500KB) or external URLs
+        avatar = body["avatar_url"]
+        if avatar and len(avatar) > 512_000:
+            raise HTTPException(400, "Avatar too large (max 500KB)")
+        user.avatar_url = avatar or None
 
     await db.commit()
     await db.refresh(user)
@@ -278,11 +336,9 @@ async def update_user_profile(user_id: str, request: Request, db: AsyncSession =
         if agent:
             # Try to get private key for signed registration
             private_key = None
-            from src.main import vault_keys
-            vk = vault_keys.get(user_id)
-            if vk and agent.encrypted_private_key:
+            if transit_bridge.has_key(user_id) and agent.encrypted_private_key:
                 try:
-                    private_key = decrypt(agent.encrypted_private_key, vk)
+                    private_key = transit_bridge.decrypt(user_id, agent.encrypted_private_key)
                 except Exception:
                     pass
 
@@ -304,6 +360,111 @@ async def update_user_profile(user_id: str, request: Request, db: AsyncSession =
                 ))
 
     return UserResponse.model_validate(user).model_dump(mode="json")
+
+
+@router.post("/users/{user_id}/claim-handle")
+async def claim_handle(user_id: str, request: Request, db: AsyncSession = Depends(get_db),
+                       auth_user_id: str = Depends(get_current_user_id)):
+    """Claim a public handle (username) for Go Live. Checks registry uniqueness."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    body = await request.json()
+    handle = body.get("handle", "").strip().lower()
+
+    import re
+    if not handle or not re.match(r'^[a-z0-9_-]{2,50}$', handle):
+        raise HTTPException(400, "Handle must be 2-50 characters: lowercase letters, numbers, _ or -")
+    if handle.startswith("remote:"):
+        raise HTTPException(400, "Invalid handle")
+
+    # Check local uniqueness
+    existing = await db.execute(select(User).where(User.username == handle))
+    existing_user = existing.scalar_one_or_none()
+    if existing_user and existing_user.id != user_id:
+        raise HTTPException(409, "Handle already taken")
+
+    # Check registry uniqueness
+    registry_url = os.getenv("TRUSTMESH_REGISTRY_URL", "")
+    if registry_url:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{registry_url.rstrip('/')}/api/search?q={handle}")
+                if r.status_code == 200:
+                    results = r.json().get("results", [])
+                    for agent in results:
+                        if agent.get("username") == handle:
+                            raise HTTPException(409, "Handle already taken in the public registry")
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Registry unreachable — allow local claim
+
+    user.username = handle
+    user.is_discoverable = True
+    await db.commit()
+    await db.refresh(user)
+
+    # Register with public registry
+    import asyncio
+    from src.federation import register_with_registry, POD_URL
+
+    result = await db.execute(select(Agent).where(Agent.owner_id == user_id))
+    agent = result.scalar_one_or_none()
+    if agent:
+        private_key = None
+        if transit_bridge.has_key(user_id) and agent.encrypted_private_key:
+            try:
+                private_key = transit_bridge.decrypt(user_id, agent.encrypted_private_key)
+            except Exception:
+                pass
+        asyncio.create_task(register_with_registry(
+            agent_did=agent.did,
+            agent_name=agent.name,
+            pod_url=POD_URL,
+            entity_type=user.user_type or "person",
+            username=handle,
+            display_name=user.display_name or "",
+            bio=user.bio or "",
+            private_key_bytes=private_key,
+        ))
+
+    return UserResponse.model_validate(user).model_dump(mode="json")
+
+
+@router.get("/users/{user_id}/check-handle")
+async def check_handle(user_id: str, handle: str, db: AsyncSession = Depends(get_db)):
+    """Check if a handle is available (local + registry)."""
+    import re
+    handle = handle.strip().lower()
+    if not handle or not re.match(r'^[a-z0-9_-]{2,50}$', handle):
+        return {"available": False, "reason": "Invalid format"}
+
+    # Check local
+    existing = await db.execute(select(User).where(User.username == handle))
+    existing_user = existing.scalar_one_or_none()
+    if existing_user and existing_user.id != user_id:
+        return {"available": False, "reason": "Taken locally"}
+
+    # Check registry
+    registry_url = os.getenv("TRUSTMESH_REGISTRY_URL", "")
+    if registry_url:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{registry_url.rstrip('/')}/api/search?q={handle}")
+                if r.status_code == 200:
+                    for agent in r.json().get("results", []):
+                        if agent.get("username") == handle:
+                            return {"available": False, "reason": "Taken in registry"}
+        except Exception:
+            pass
+
+    return {"available": True}
 
 
 @router.put("/users/{user_id}/context")

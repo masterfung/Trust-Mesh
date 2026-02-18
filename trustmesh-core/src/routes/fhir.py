@@ -50,9 +50,8 @@ async def fhir_bundle(
     if not user:
         raise HTTPException(404, "User not found")
 
-    from src.main import vault_keys
-    vault_key = vault_keys.get(user_id)
-    if not vault_key:
+    from src import transit_bridge
+    if not transit_bridge.has_key(user_id):
         raise HTTPException(500, "Vault key not loaded")
 
     # Get all health-category capsules
@@ -64,7 +63,7 @@ async def fhir_bundle(
         )
     )
     capsule_ids = list(result.scalars().all())
-    capsules = await load_capsules_decrypted(db, capsule_ids, vault_key)
+    capsules = await load_capsules_decrypted(db, capsule_ids, user_id)
 
     # Convert to FHIR resources
     patient = patient_to_fhir({
@@ -100,9 +99,8 @@ async def emergency_fhir_bundle(
     if not patient:
         raise HTTPException(404, "Patient not found")
 
-    from src.main import vault_keys
-    vault_key = vault_keys.get(patient.id)
-    if not vault_key:
+    from src import transit_bridge
+    if not transit_bridge.has_key(patient.id):
         raise HTTPException(500, "Patient vault key not loaded")
 
     # Get the capsule IDs from the audit record
@@ -119,7 +117,7 @@ async def emergency_fhir_bundle(
         )
         capsule_ids = list(result.scalars().all())
 
-    capsules = await load_capsules_decrypted(db, capsule_ids, vault_key)
+    capsules = await load_capsules_decrypted(db, capsule_ids, patient.id)
 
     # Build FHIR bundle
     patient_resource = patient_to_fhir({

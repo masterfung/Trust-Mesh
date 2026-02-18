@@ -222,3 +222,15 @@ def capsule_matches_scope(capsule_dict: dict, role: str) -> bool:
 def token_hash(token: str) -> str:
     """Hash a token for audit logging (don't store raw tokens)."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def is_token_revoked(db, token: str) -> bool:
+    """Check if a UCAN token has been revoked."""
+    from sqlalchemy import select
+    from src.models import UCANRevocation
+
+    t_hash = token_hash(token)
+    result = await db.execute(
+        select(UCANRevocation.id).where(UCANRevocation.token_hash == t_hash).limit(1)
+    )
+    return result.scalar_one_or_none() is not None

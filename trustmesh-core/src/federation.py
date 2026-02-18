@@ -137,9 +137,35 @@ async def _validate_agent_card(peer_url: str) -> bool:
                         f"Agent card URL mismatch: fetched from {peer_url} but card claims {card_url}"
                     )
                     return False
+                # Log warning if card has no timestamp or seems stale
+                card_ts = card.get("trustmesh", {}).get("updated_at", "")
+                if not card_ts:
+                    logger.info(f"Agent card from {peer_url} has no timestamp")
                 return True
     except (httpx.RequestError, httpx.HTTPStatusError):
         pass
+    return False
+
+
+async def _verify_did_on_pod(did: str, pod_url: str) -> bool:
+    """Verify a DID is listed in a pod's agent card (ghost DID ownership check)."""
+    try:
+        async with httpx.AsyncClient(timeout=FEDERATION_TIMEOUT) as client:
+            r = await client.get(f"{pod_url.rstrip('/')}/.well-known/agent-card.json")
+            if r.status_code == 200:
+                card = r.json()
+                # Check trustmesh.did field
+                card_did = card.get("trustmesh", {}).get("did", "")
+                if card_did == did:
+                    return True
+                # Check if DID appears in any agent description
+                for skill in card.get("skills", []):
+                    if did in str(skill):
+                        return True
+                logger.info(f"DID {did[:20]}... not found in agent card from {pod_url}")
+                return False
+    except (httpx.RequestError, httpx.HTTPStatusError) as e:
+        logger.warning(f"Could not verify DID on pod {pod_url}: {e}")
     return False
 
 
@@ -256,6 +282,11 @@ async def get_or_create_ghost_user(
     ghost = existing.scalar_one_or_none()
     if ghost:
         return ghost
+
+    # Verify the DID is actually listed in the remote pod's agent card
+    verified_did = await _verify_did_on_pod(remote_did, remote_pod_url)
+    if not verified_did:
+        logger.warning(f"Ghost DID {remote_did[:20]}... not found on {remote_pod_url} agent card — proceeding with caution")
 
     # Extract hostname from pod URL for username
     from urllib.parse import urlparse
@@ -476,8 +507,7 @@ async def sync_discoverable_agents_to_registry() -> None:
 
     from src.database import async_session
     from src.models import Agent, User
-    from src.crypto import decrypt
-    from src.main import vault_keys
+    from src import transit_bridge
 
     try:
         async with async_session() as db:
@@ -488,10 +518,9 @@ async def sync_discoverable_agents_to_registry() -> None:
             for agent, user in result.all():
                 # Try to decrypt private key for signed registration
                 private_key = None
-                vk = vault_keys.get(user.id)
-                if vk and agent.encrypted_private_key:
+                if transit_bridge.has_key(user.id) and agent.encrypted_private_key:
                     try:
-                        private_key = decrypt(agent.encrypted_private_key, vk)
+                        private_key = transit_bridge.decrypt(user.id, agent.encrypted_private_key)
                     except Exception:
                         pass
 

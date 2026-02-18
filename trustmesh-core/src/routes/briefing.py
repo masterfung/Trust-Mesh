@@ -8,7 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents import generate_briefing
-from src.crypto import decrypt_text
 from src.auth import get_current_user_id
 from src.database import get_db
 from src.models import (
@@ -36,7 +35,7 @@ async def get_briefing(user_id: str, db: AsyncSession = Depends(get_db),
     """Generate a morning briefing for the user."""
     if auth_user_id != user_id:
         raise HTTPException(403, "Access denied")
-    from src.main import vault_keys
+    from src import transit_bridge
 
     user = await db.get(User, user_id)
     if not user:
@@ -52,8 +51,7 @@ async def get_briefing(user_id: str, db: AsyncSession = Depends(get_db),
                 generated_at=cached_at,
             )
 
-    vault_key = vault_keys.get(user_id)
-    if not vault_key:
+    if not transit_bridge.has_key(user_id):
         raise HTTPException(400, "Vault key not available")
 
     # 1. Load user's schedule/temporary capsules
@@ -67,7 +65,7 @@ async def get_briefing(user_id: str, db: AsyncSession = Depends(get_db),
     user_capsules = []
     for c in result.scalars().all():
         try:
-            content = decrypt_text(c.content_encrypted, vault_key)
+            content = transit_bridge.decrypt_text(user_id, c.content_encrypted)
         except Exception:
             content = "(encrypted — vault key refresh needed)"
         user_capsules.append({
@@ -117,10 +115,9 @@ async def get_briefing(user_id: str, db: AsyncSession = Depends(get_db),
         for c in net_capsule_result.scalars().all():
             owner = await db.get(User, c.owner_id)
             # Use the capsule OWNER's vault key, not the requesting user's
-            owner_vault_key = vault_keys.get(c.owner_id)
-            if owner_vault_key:
+            if transit_bridge.has_key(c.owner_id):
                 try:
-                    content = decrypt_text(c.content_encrypted, owner_vault_key)
+                    content = transit_bridge.decrypt_text(c.owner_id, c.content_encrypted)
                 except Exception:
                     content = f"[Shared by {owner.display_name if owner else 'a network member'}]"
             else:

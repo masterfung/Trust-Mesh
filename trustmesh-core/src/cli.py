@@ -34,6 +34,7 @@ net_app = typer.Typer(help="Manage trust networks/pools.")
 pod_app = typer.Typer(help="Pod federation management.")
 reg_app = typer.Typer(help="Public registry operations.")
 mcp_app = typer.Typer(help="MCP server for Claude Desktop / Cursor integration.")
+tl_app = typer.Typer(help="Timeline engine — view and manage entries.")
 
 app.add_typer(vault_app, name="vault")
 app.add_typer(agent_app, name="agent")
@@ -42,6 +43,7 @@ app.add_typer(net_app, name="networks")
 app.add_typer(pod_app, name="pod")
 app.add_typer(reg_app, name="registry")
 app.add_typer(mcp_app, name="mcp")
+app.add_typer(tl_app, name="timeline")
 
 console = Console()
 
@@ -1162,6 +1164,153 @@ def registry_search(query: str = typer.Argument(..., help="Search query")):
             r.get("pod_url", ""),
         )
     console.print(table)
+
+
+# ── Timeline commands ──
+
+TRIGGER_DISPLAY = {
+    "cron": "cron",
+    "event": "event",
+    "absence": "absence",
+    "time": "time",
+}
+
+
+@tl_app.command("list")
+def timeline_list(
+    state: str = typer.Option(None, "--state", "-s", help="Filter by state (active, pending, dormant, etc.)"),
+):
+    """List all timeline entries with trigger, hook, and dependency info."""
+    session = _require_session()
+    entries = _api("GET", "/api/timeline/entries", session=session)
+
+    if state:
+        entries = [e for e in entries if e.get("state_name", "").lower() == state.lower()]
+
+    if not entries:
+        console.print("[dim]No entries found.[/dim]")
+        return
+
+    # Sort by salience descending
+    entries.sort(key=lambda e: e.get("salience", 0), reverse=True)
+
+    table = Table(title=f"Timeline ({len(entries)} entries)")
+    table.add_column("Label", style="bold", max_width=30)
+    table.add_column("State")
+    table.add_column("Type", style="dim")
+    table.add_column("Category")
+    table.add_column("Trigger", style="cyan")
+    table.add_column("Hook", style="magenta")
+    table.add_column("Deps", style="dim")
+    table.add_column("Sal", justify="right")
+    table.add_column("Vis")
+
+    for e in entries:
+        state_name = e.get("state_name", "?")
+        state_colors = {"ACTIVE": "green", "PENDING": "yellow", "DORMANT": "dim", "FAILED": "red", "COMPLETED": "green"}
+        sc = state_colors.get(state_name, "")
+
+        trigger = ""
+        if e.get("trigger_kind"):
+            trigger = e["trigger_kind"]
+            if e.get("trigger_detail"):
+                trigger += f": {e['trigger_detail']}"
+
+        hook = e.get("hook_summary") or ""
+        deps = str(e.get("dep_count", 0)) if e.get("dep_count", 0) > 0 else ""
+        sal = f"{round(e.get('salience', 0) * 100)}%"
+        vis_names = {"PRIVATE": "priv", "INTERNAL": "intl", "OPEN": "open"}
+        vis = vis_names.get(e.get("visibility_name", ""), "?")
+
+        table.add_row(
+            e.get("label", "?"),
+            f"[{sc}]{state_name}[/{sc}]" if sc else state_name,
+            e.get("entry_type_name", "?"),
+            e.get("category", ""),
+            trigger,
+            hook,
+            deps,
+            sal,
+            vis,
+        )
+    console.print(table)
+
+
+@tl_app.command("state")
+def timeline_state():
+    """Show the timeline engine's current state and health."""
+    session = _require_session()
+    state = _api("GET", "/api/timeline/state", session=session)
+
+    running = state.get("is_running", False)
+    status_str = "[green]Running[/green]" if running else "[red]Stopped[/red]"
+    console.print(f"[bold]Engine Status:[/bold] {status_str}")
+    console.print(f"[bold]Tick:[/bold] #{state.get('tick_count', 0)}")
+    console.print()
+
+    console.print("[bold]Entry Counts:[/bold]")
+    console.print(f"  Active:    {state.get('active_count', 0)}")
+    console.print(f"  Pending:   {state.get('pending_count', 0)}")
+    console.print(f"  Dormant:   {state.get('dormant_count', 0)}")
+    console.print(f"  Failed:    {state.get('failed_count', 0)}")
+    console.print(f"  Total:     {state.get('total_count', 0)}")
+
+    signals = state.get("signals", [])
+    if signals:
+        console.print(f"\n[bold]Signals ({len(signals)}):[/bold]")
+        for s in signals:
+            sev = s.get("severity", "info")
+            color = "yellow" if sev == "warning" else "red" if sev == "error" else "blue"
+            console.print(f"  [{color}]{sev.upper()}[/{color}]: {s.get('message', '')}")
+
+
+@tl_app.command("show")
+def timeline_show(entry_id: str = typer.Argument(..., help="Entry ID (or prefix)")):
+    """Show detailed info for a single timeline entry."""
+    session = _require_session()
+    # Fetch all entries and prefix-match
+    entries = _api("GET", "/api/timeline/entries", session=session)
+    matches = [e for e in entries if e["id"].startswith(entry_id)]
+    if not matches:
+        console.print(f"[red]No entry matching '{entry_id}'[/red]")
+        raise typer.Exit(1)
+    if len(matches) > 1:
+        console.print(f"[yellow]Ambiguous prefix — {len(matches)} matches. Be more specific.[/yellow]")
+        raise typer.Exit(1)
+
+    e = matches[0]
+    console.print(f"[bold]{e['label']}[/bold]")
+    console.print(f"ID: {e['id']}")
+    console.print(f"State: {e.get('state_name', '?')}  ({e.get('state', '?')})")
+    console.print(f"Type: {e.get('entry_type_name', '?')}")
+    console.print(f"Category: {e.get('category', '?')}")
+    console.print(f"Visibility: {e.get('visibility_name', '?')}")
+    console.print(f"Salience: {round(e.get('salience', 0) * 100)}%")
+
+    if e.get("trigger_kind"):
+        trigger_str = e["trigger_kind"]
+        if e.get("trigger_detail"):
+            trigger_str += f": {e['trigger_detail']}"
+        console.print(f"Trigger: {trigger_str}")
+
+    if e.get("hook_summary"):
+        console.print(f"Hook: {e['hook_summary']}")
+
+    if e.get("dep_count", 0) > 0:
+        console.print(f"Dependencies: {e['dep_count']}")
+
+
+@tl_app.command("tick")
+def timeline_tick():
+    """Manually advance the timeline engine by one tick."""
+    session = _require_session()
+    result = _api("POST", "/api/timeline/tick", session=session)
+    console.print(f"[green]Tick #{result.get('tick_count', '?')}[/green]")
+    next_wake = result.get("next_wake_at", 0)
+    if next_wake > 0:
+        import time as _time
+        delta_sec = max(0, (next_wake - int(_time.time() * 1000)) // 1000)
+        console.print(f"Next wake: in {delta_sec}s")
 
 
 # ── MCP serve ──

@@ -9,13 +9,36 @@ from pydantic import BaseModel, Field, field_validator
 # ── Users ──────────────────────────────────────────
 
 class UserCreate(BaseModel):
-    username: str = Field(min_length=2, max_length=50)
     display_name: str = Field(min_length=1, max_length=100)
+    email: str | None = Field(default=None, max_length=254)
     bio: str = Field(default="", max_length=5000)
     user_type: str = "person"  # "person" | "organization" | "government"
-    is_discoverable: bool = True
+    is_discoverable: bool = False
     password: str = Field(min_length=16, max_length=128)
     agent_personality: str | None = Field(default=None, max_length=1000)
+    # Username is optional at signup — auto-generated if not provided.
+    # Public handle is claimed later via Go Live.
+    username: str | None = Field(default=None, min_length=2, max_length=50)
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_display_name(cls, v: str) -> str:
+        """Names must be alphabetic (letters, spaces, hyphens, apostrophes, periods)."""
+        import re
+        if not re.match(r"^[A-Za-z][A-Za-z \-'.]+$", v.strip()):
+            raise ValueError("Name must contain only letters, spaces, hyphens, and apostrophes")
+        return v.strip()
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        import re
+        v = v.strip().lower()
+        if not re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', v):
+            raise ValueError("Invalid email address")
+        return v
 
     @field_validator("user_type")
     @classmethod
@@ -55,7 +78,8 @@ class ContextSwitch(BaseModel):
 
 class UserResponse(BaseModel):
     id: str
-    username: str
+    username: str | None = None  # NULL for private users, set on Go Live
+    email: str | None = None
     display_name: str
     bio: str
     user_type: str = "person"
@@ -63,6 +87,7 @@ class UserResponse(BaseModel):
     is_discoverable: bool
     is_demo: bool = False
     active_context: str = "all"
+    avatar_url: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -80,11 +105,12 @@ class UserResponse(BaseModel):
 
 class UserPublic(BaseModel):
     id: str
-    username: str
+    username: str | None = None
     display_name: str
     bio: str
     user_type: str = "person"
     profile_data: dict | None = None
+    avatar_url: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -100,7 +126,10 @@ class UserPublic(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    username: str = Field(max_length=50)
+    # Accepts display_name, username, or email
+    username: str | None = Field(default=None, max_length=50)
+    name: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=254)
     password: str = Field(max_length=128)
 
 
@@ -423,10 +452,10 @@ class DelegateResponse(BaseModel):
 # ── PIN ──────────────────────────────────────────
 
 class PinSetRequest(BaseModel):
-    pin: str = Field(pattern=r"^\d{4,8}$")
+    pin: str = Field(pattern=r"^\d{6,8}$")
 
 class PinVerifyRequest(BaseModel):
-    pin: str = Field(pattern=r"^\d{4,8}$")
+    pin: str = Field(pattern=r"^\d{6,8}$")
 
 class PinVerifyResponse(BaseModel):
     verified: bool

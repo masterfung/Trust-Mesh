@@ -10,6 +10,7 @@ from src.auth import get_current_user_id
 from src.crypto import hash_pin, verify_pin
 from src.database import get_db
 from src.models import User
+from src.rate_limit import check_pin_rate, record_pin_attempt
 from src.schemas import PinSetRequest, PinStatusResponse, PinVerifyRequest, PinVerifyResponse
 
 router = APIRouter(prefix="/api", tags=["pin"])
@@ -35,6 +36,11 @@ async def set_pin(
     if not user:
         raise HTTPException(404, "User not found")
 
+    if len(data.pin) < 6:
+        raise HTTPException(400, "PIN must be at least 6 digits")
+    if len(set(data.pin)) == 1:
+        raise HTTPException(400, "PIN cannot be all the same digit")
+
     user.pin_hash = hash_pin(data.pin)
     await db.commit()
     return PinStatusResponse(has_pin=True)
@@ -58,8 +64,15 @@ async def verify_user_pin(
     if not user.pin_hash:
         raise HTTPException(400, "PIN not set — set a PIN first")
 
+    rate_ok, rate_reason = check_pin_rate(user_id)
+    if not rate_ok:
+        raise HTTPException(429, rate_reason)
+
     if not verify_pin(data.pin, user.pin_hash):
+        record_pin_attempt(user_id)
         raise HTTPException(403, "Incorrect PIN")
+
+    record_pin_attempt(user_id)
 
     # Generate a short-lived token
     token = secrets.token_urlsafe(32)

@@ -36,12 +36,14 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
-    username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    username: Mapped[str | None] = mapped_column(String(50), unique=True, nullable=True)  # Public handle — set on "Go Live", NULL for private users
+    email: Mapped[str | None] = mapped_column(String(254), unique=True, nullable=True)
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
     bio: Mapped[str] = mapped_column(Text, default="")
+    avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)  # base64 data URI or external URL
     user_type: Mapped[str] = mapped_column(String(20), default="person")  # "person" | "organization" | "government"
     profile_data: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON structured profile
-    is_discoverable: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_discoverable: Mapped[bool] = mapped_column(Boolean, default=False)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     is_remote: Mapped[bool] = mapped_column(Boolean, default=False)
     remote_pod_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -146,6 +148,7 @@ class KnowledgeCapsule(Base):
     authority_weight: Mapped[float] = mapped_column(Float, default=1.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     owner: Mapped["User"] = relationship(back_populates="capsules")
     network_access: Mapped[list["CapsuleNetworkAccess"]] = relationship(
@@ -302,6 +305,29 @@ class AuditLog(Base):
     decision: Mapped[str] = mapped_column(String(20), default="allowed")  # allowed | denied
     details: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CapsuleVersion(Base):
+    """Version history for capsule changes (audit trail)."""
+    __tablename__ = "capsule_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    capsule_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    changed_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    changed_fields: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: {"field": {"old": x, "new": y}}
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UCANRevocation(Base):
+    """Revoked UCAN tokens — checked during token validation."""
+    __tablename__ = "ucan_revocations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    revoked_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class PeerPod(Base):

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents import extract_profile
-from src.crypto import derive_vault_key, encrypt, encrypt_text, generate_key, generate_ed25519_keypair, public_key_to_did, public_key_to_b64
+from src.crypto import derive_vault_key, encrypt, generate_key, generate_ed25519_keypair, public_key_to_did, public_key_to_b64
 from src.database import get_db
 from src.embeddings import upsert_capsule_embedding
 from src.models import Agent, CapsuleNetworkAccess, KnowledgeCapsule, User, parse_profile_data
@@ -127,9 +127,10 @@ async def create_service(data: ServiceCreate, db: AsyncSession = Depends(get_db)
     db.add(agent)
     await db.flush()
 
-    # Store vault key
-    from src.main import vault_keys
-    vault_keys[user.id] = vault_master_key
+    # Store vault key in transit engine (Zig side) and zero Python copy
+    from src import transit_bridge
+    transit_bridge.store_key(user.id, vault_master_key)
+    transit_bridge._zero_bytes(vault_master_key)
 
     # Create capsules from provided data
     for capsule_data in data.capsules:
@@ -137,7 +138,7 @@ async def create_service(data: ServiceCreate, db: AsyncSession = Depends(get_db)
             owner_id=user.id,
             capsule_type=capsule_data.get("type", "skill"),
             title=capsule_data.get("title", "Service Info"),
-            content_encrypted=encrypt_text(capsule_data.get("content", ""), vault_master_key),
+            content_encrypted=transit_bridge.encrypt_text(user.id, capsule_data.get("content", "")),
             tier=capsule_data.get("tier", "public"),
         )
         db.add(capsule)

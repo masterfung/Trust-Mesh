@@ -1,15 +1,19 @@
 """Knowledge capsule CRUD routes."""
 
+import json
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.audit import log_event
 from src.auth import get_current_user_id
-from src.crypto import content_hash, decrypt_text, encrypt_text
+from src.crypto import content_hash
+from src import transit_bridge
 from src.database import get_db
 from src.embeddings import delete_capsule_embedding, move_capsule_embedding, upsert_capsule_embedding
-from src.models import CapsuleNetworkAccess, KnowledgeCapsule, Network, NetworkMembership, User
+from src.models import CapsuleNetworkAccess, CapsuleVersion, KnowledgeCapsule, Network, NetworkMembership, User
 from src.schemas import CapsuleCreate, CapsuleResponse, CapsuleShareRequest, CapsuleUpdate
 
 router = APIRouter(prefix="/api", tags=["capsules"])
@@ -27,13 +31,10 @@ def _push_timeline_event(event_type: str):
         pass  # Timeline is optional — never block capsule operations
 
 
-def _vault_key_for_user(user_id: str) -> bytes:
-    """Get vault key for user. Uses the in-memory key store from main app."""
-    from src.main import vault_keys
-    key = vault_keys.get(user_id)
-    if not key:
+def _check_vault_key(user_id: str) -> None:
+    """Verify vault key is loaded for user. Raises 500 if not."""
+    if not transit_bridge.has_key(user_id):
         raise HTTPException(500, "Vault key not loaded")
-    return key
 
 
 async def _validate_network_ids(
@@ -106,7 +107,7 @@ async def create_capsule(
     """Add a knowledge capsule to a user's vault."""
     if auth_user_id != user_id:
         raise HTTPException(403, "Access denied")
-    vault_key = _vault_key_for_user(user_id)
+    _check_vault_key(user_id)
 
     network_ids = await _validate_network_ids(db, user_id, data.network_ids)
 
@@ -129,7 +130,7 @@ async def create_capsule(
         owner_id=user_id,
         capsule_type=data.capsule_type,
         title=data.title,
-        content_encrypted=encrypt_text(data.content, vault_key),
+        content_encrypted=transit_bridge.encrypt_text(user_id, data.content),
         content_hash=content_hash(data.content),
         visibility=data.effective_visibility(),
         emergency_accessible=data.emergency_accessible,
@@ -191,9 +192,10 @@ async def list_capsules(user_id: str, context: str | None = None,
     """List all capsules for a user (owner view). Optional context filter."""
     if auth_user_id != user_id:
         raise HTTPException(403, "Access denied")
-    vault_key = _vault_key_for_user(user_id)
+    _check_vault_key(user_id)
 
     filters = [KnowledgeCapsule.owner_id == user_id]
+    filters.append(KnowledgeCapsule.deleted_at == None)  # noqa: E711
     if context and context != "all":
         filters.append(KnowledgeCapsule.context.in_([context, "both"]))
 
@@ -232,7 +234,7 @@ async def list_capsules(user_id: str, context: str | None = None,
     responses = []
     for c in capsules:
         try:
-            content = decrypt_text(c.content_encrypted, vault_key)
+            content = transit_bridge.decrypt_text(user_id, c.content_encrypted)
         except Exception:
             content = "Content is securely encrypted. Please log in again to refresh your vault key."
         network_ids = capsule_network_map.get(c.id, [])
@@ -253,16 +255,48 @@ async def update_capsule(
     if capsule.owner_id != auth_user_id:
         raise HTTPException(403, "Access denied")
 
-    vault_key = _vault_key_for_user(capsule.owner_id)
+    _check_vault_key(capsule.owner_id)
+
+    # Compute effective visibility once (used in version tracking and field update)
+    eff_vis = data.effective_visibility()
+
+    # Track changes for version history
+    changed_fields = {}
+    if data.title is not None and data.title != capsule.title:
+        changed_fields["title"] = {"old": capsule.title, "new": data.title}
+    if data.content is not None:
+        changed_fields["content"] = {"old": "[encrypted]", "new": "[encrypted]"}
+    if eff_vis is not None and eff_vis != capsule.visibility:
+        changed_fields["visibility"] = {"old": capsule.visibility, "new": eff_vis}
+    if data.emergency_accessible is not None and data.emergency_accessible != capsule.emergency_accessible:
+        changed_fields["emergency_accessible"] = {"old": capsule.emergency_accessible, "new": data.emergency_accessible}
+    if data.can_reshare is not None and data.can_reshare != capsule.can_reshare:
+        changed_fields["can_reshare"] = {"old": capsule.can_reshare, "new": data.can_reshare}
+    if data.category is not None and data.category != capsule.category:
+        changed_fields["category"] = {"old": capsule.category, "new": data.category}
+
+    # Save version if anything changed
+    if changed_fields:
+        from sqlalchemy import func
+        version_count = await db.execute(
+            select(func.count()).where(CapsuleVersion.capsule_id == capsule_id)
+        )
+        next_version = (version_count.scalar() or 0) + 1
+        version = CapsuleVersion(
+            capsule_id=capsule_id,
+            version_number=next_version,
+            changed_by=auth_user_id,
+            changed_fields=json.dumps(changed_fields),
+        )
+        db.add(version)
 
     if data.title is not None:
         capsule.title = data.title
     if data.capsule_type is not None:
         capsule.capsule_type = data.capsule_type
     if data.content is not None:
-        capsule.content_encrypted = encrypt_text(data.content, vault_key)
+        capsule.content_encrypted = transit_bridge.encrypt_text(capsule.owner_id, data.content)
         capsule.content_hash = content_hash(data.content)
-    eff_vis = data.effective_visibility()
     if eff_vis is not None:
         capsule.visibility = eff_vis
     if data.emergency_accessible is not None:
@@ -296,7 +330,7 @@ async def update_capsule(
 
     # Re-embed (move between collections if category changed)
     try:
-        content = decrypt_text(capsule.content_encrypted, vault_key)
+        content = transit_bridge.decrypt_text(capsule.owner_id, capsule.content_encrypted)
     except Exception:
         content = ""
     new_category = capsule.embedding_collection or capsule.category or "general"
@@ -336,24 +370,22 @@ async def update_capsule(
 @router.delete("/capsules/{capsule_id}")
 async def delete_capsule(capsule_id: str, db: AsyncSession = Depends(get_db),
                          auth_user_id: str = Depends(get_current_user_id)):
-    """Delete a capsule."""
+    """Soft-delete a capsule (marks deleted_at, archives it)."""
     capsule = await db.get(KnowledgeCapsule, capsule_id)
     if not capsule:
         raise HTTPException(404, "Capsule not found")
     if capsule.owner_id != auth_user_id:
         raise HTTPException(403, "Access denied")
 
-    # Delete network access
-    na_result = await db.execute(
-        select(CapsuleNetworkAccess).where(CapsuleNetworkAccess.capsule_id == capsule_id)
-    )
-    for na in na_result.scalars().all():
-        await db.delete(na)
-
     title = capsule.title
     embed_cat = capsule.embedding_collection or capsule.category or "general"
-    await db.delete(capsule)
+
+    # Soft delete: mark as deleted and archived
+    capsule.deleted_at = datetime.now(timezone.utc)
+    capsule.is_archived = True
     await db.commit()
+
+    # Remove from search index
     delete_capsule_embedding(capsule_id, category=embed_cat)
 
     # Audit log
@@ -396,9 +428,8 @@ async def share_capsule(
     await db.commit()
     await db.refresh(capsule)
 
-    vault_key = _vault_key_for_user(capsule.owner_id)
     try:
-        content = decrypt_text(capsule.content_encrypted, vault_key)
+        content = transit_bridge.decrypt_text(capsule.owner_id, capsule.content_encrypted)
     except Exception:
         content = "Content is securely encrypted. Please log in again to refresh your vault key."
 

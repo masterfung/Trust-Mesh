@@ -12,12 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.audit import log_event
+from src.audit import log_event, log_event_strict
 from src.auth import get_current_user_id
-from src.crypto import decrypt
+from src import transit_bridge
 from src.database import get_db
 from src.gossip import load_capsules_decrypted
-from src.models import Agent, KnowledgeCapsule, Network, NetworkMembership, Notification, User
+from src.models import Agent, KnowledgeCapsule, Network, NetworkMembership, Notification, UCANRevocation, User
 from src.schemas import (
     EmergencyAccessRequest,
     EmergencyAccessResponse,
@@ -49,8 +49,6 @@ async def issue_token(
 
     The issuer must be a service/provider user with a loaded vault key and keypair.
     """
-    from src.main import vault_keys
-
     if auth_user_id != data.issuer_user_id:
         raise HTTPException(403, "Access denied")
 
@@ -67,13 +65,12 @@ async def issue_token(
     if not issuer_agent or not issuer_agent.did or not issuer_agent.encrypted_private_key:
         raise HTTPException(500, "Issuer agent has no cryptographic identity")
 
-    # Decrypt issuer's private key
-    vault_key = vault_keys.get(data.issuer_user_id)
-    if not vault_key:
+    # Decrypt issuer's private key using transit bridge
+    if not transit_bridge.has_key(data.issuer_user_id):
         raise HTTPException(500, "Issuer vault key not loaded — log in first")
 
     try:
-        issuer_private_key = decrypt(issuer_agent.encrypted_private_key, vault_key)
+        issuer_private_key = transit_bridge.decrypt(data.issuer_user_id, issuer_agent.encrypted_private_key)
     except Exception:
         raise HTTPException(500, "Failed to decrypt issuer's private key")
 
@@ -97,6 +94,13 @@ async def issue_token(
     if data.role not in ROLE_SCOPES:
         raise HTTPException(400, f"Invalid role. Valid roles: {list(ROLE_SCOPES.keys())}")
 
+    # Rate limit: 3 tokens per hour per issuer:patient pair
+    from src.rate_limit import check_emergency_issue_rate, record_emergency_issue
+    rate_key = f"{data.issuer_user_id}:{patient.id}"
+    rate_ok, rate_msg = check_emergency_issue_rate(rate_key)
+    if not rate_ok:
+        raise HTTPException(429, rate_msg)
+
     # Create UCAN token
     facts = {
         "practitioner_name": data.practitioner_name,
@@ -115,8 +119,8 @@ async def issue_token(
         facts=facts,
     )
 
-    # Audit: token issuance
-    await log_event(
+    # Audit: token issuance (fail-safe — abort if audit write fails)
+    await log_event_strict(
         db,
         actor_user_id=data.issuer_user_id,
         actor_did=issuer_agent.did,
@@ -133,6 +137,7 @@ async def issue_token(
         details=facts,
     )
     await db.commit()
+    record_emergency_issue(rate_key)
 
     scope = ROLE_SCOPES[data.role]
     return EmergencyTokenResponse(
@@ -158,8 +163,6 @@ async def access_patient_data(
 
     Validates token, filters capsules by role scope, logs everything.
     """
-    from src.main import vault_keys
-
     # Find patient by username
     patient_result = await db.execute(
         select(User).where(User.username == data.patient_username)
@@ -226,13 +229,30 @@ async def access_patient_data(
         )
         raise HTTPException(403, validation.error or "Token validation failed")
 
+    # Check if token has been revoked
+    from src.ucan import is_token_revoked
+    if await is_token_revoked(db, data.token):
+        await _log_denied(
+            db, issuer_agent.owner_id, patient.id, data.token,
+            "Token has been revoked",
+            actor_did=issuer_did,
+            actor_institution=issuer_user.display_name,
+        )
+        raise HTTPException(403, "Token has been revoked")
+
+    # Rate limit: 5 accesses per hour per token
+    from src.rate_limit import check_emergency_present_rate, record_emergency_present
+    t_hash = token_hash(data.token)
+    rate_ok, rate_msg = check_emergency_present_rate(t_hash)
+    if not rate_ok:
+        raise HTTPException(429, rate_msg)
+
     payload = validation.payload
     role = payload.att.get("role", "")
 
-    # Get patient's vault key
-    vault_key = vault_keys.get(patient.id)
-    if not vault_key:
-        raise HTTPException(500, "Patient vault key not loaded")
+    # Verify patient's vault key is loaded
+    if not transit_bridge.has_key(patient.id):
+        raise HTTPException(403, "Emergency access denied")
 
     # Load ALL patient capsules (not just public — emergency overrides trust tiers)
     capsule_result = await db.execute(
@@ -244,25 +264,20 @@ async def access_patient_data(
     all_capsule_ids = list(capsule_result.scalars().all())
 
     # Decrypt capsules
-    all_capsules = await load_capsules_decrypted(db, all_capsule_ids, vault_key)
+    all_capsules = await load_capsules_decrypted(db, all_capsule_ids, patient.id)
 
     # Filter by role scope AND emergency_accessible flag
     scoped_capsules = [
         c for c in all_capsules
         if capsule_matches_scope(c, role) and c.get("emergency_accessible", False)
     ]
-    # Fallback: if no capsules have emergency_accessible set, use old behavior (scope only)
-    # This handles data seeded before the flag existed
-    if not scoped_capsules:
-        scoped_capsules = [c for c in all_capsules if capsule_matches_scope(c, role)]
-
     # Collect categories accessed
     categories = list(set(c.get("category", "") for c in scoped_capsules if c.get("category")))
     capsule_ids = [c["id"] for c in scoped_capsules]
 
-    # Audit: emergency access
+    # Audit: emergency access (fail-safe — abort if audit write fails)
     expires_at = datetime.fromtimestamp(payload.exp, tz=timezone.utc)
-    audit_entry = await log_event(
+    audit_entry = await log_event_strict(
         db,
         actor_user_id=issuer_agent.owner_id,
         actor_did=issuer_did,
@@ -307,6 +322,7 @@ async def access_patient_data(
     )
 
     await db.commit()
+    record_emergency_present(t_hash)
 
     return EmergencyAccessResponse(
         patient_name=patient.display_name,
@@ -318,6 +334,77 @@ async def access_patient_data(
         expires_at=expires_at,
         family_notified=family_notified,
     )
+
+
+@router.post("/revoke")
+async def revoke_emergency_token(
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
+    """Revoke an emergency token. Only the issuer can revoke their own tokens."""
+    token = data.get("token")
+    reason = data.get("reason", "")
+    if not token:
+        raise HTTPException(400, "Token is required")
+
+    # Verify the token was issued by this user
+    from src.ucan import token_hash as ucan_token_hash, is_token_revoked
+
+    # Parse token to get issuer DID
+    parts = token.split(".")
+    if len(parts) != 2:
+        raise HTTPException(400, "Invalid token format")
+
+    import base64, json
+    try:
+        payload_b64 = parts[0]
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        payload_bytes = base64.urlsafe_b64decode(payload_b64)
+        payload = json.loads(payload_bytes)
+    except Exception:
+        raise HTTPException(400, "Invalid token")
+
+    issuer_did = payload.get("iss", "")
+
+    # Verify the auth user owns this issuer DID
+    issuer_agent = await db.execute(
+        select(Agent).where(Agent.owner_id == auth_user_id)
+    )
+    agent = issuer_agent.scalar_one_or_none()
+    if not agent or agent.did != issuer_did:
+        raise HTTPException(403, "You can only revoke tokens you issued")
+
+    # Check if already revoked
+    t_hash = ucan_token_hash(token)
+    already_revoked = await is_token_revoked(db, token)
+    if already_revoked:
+        return {"status": "already_revoked", "token_hash": t_hash}
+
+    # Revoke
+    revocation = UCANRevocation(
+        token_hash=t_hash,
+        revoked_by=auth_user_id,
+        reason=reason,
+    )
+    db.add(revocation)
+
+    # Audit
+    await log_event_strict(
+        db,
+        actor_user_id=auth_user_id,
+        target_user_id=payload.get("aud", ""),
+        action="emergency_token_revoked",
+        event_type="emergency",
+        token_hash=t_hash,
+        reason=reason,
+        decision="allowed",
+    )
+    await db.commit()
+
+    return {"status": "revoked", "token_hash": t_hash}
 
 
 async def _notify_family_network(

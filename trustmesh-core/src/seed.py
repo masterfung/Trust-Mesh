@@ -4,7 +4,8 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
-from src.crypto import derive_vault_key, encrypt, encrypt_text, generate_key, generate_ed25519_keypair, hash_pin, public_key_to_did
+from src.crypto import derive_vault_key, encrypt, generate_key, generate_ed25519_keypair, hash_pin, public_key_to_did
+from src import transit_bridge
 from src.database import drop_db, init_db, async_session
 from src.embeddings import init_fts, reset_collections, upsert_capsule_embedding
 from src.models import (
@@ -1770,7 +1771,7 @@ async def seed():
             # Generate ed25519 keypair for agent identity
             private_key_bytes, public_key_bytes = generate_ed25519_keypair()
             agent_did = public_key_to_did(public_key_bytes)
-            encrypted_privkey = encrypt(private_key_bytes, vault_master_key)
+            encrypted_privkey = transit_bridge.encrypt(user.id, private_key_bytes)
 
             agent = Agent(
                 owner_id=user.id,
@@ -1810,7 +1811,7 @@ async def seed():
             # Generate ed25519 keypair for service agent identity
             private_key_bytes, public_key_bytes = generate_ed25519_keypair()
             agent_did = public_key_to_did(public_key_bytes)
-            encrypted_privkey = encrypt(private_key_bytes, vault_master_key)
+            encrypted_privkey = transit_bridge.encrypt(service_user.id, private_key_bytes)
 
             agent = Agent(
                 owner_id=service_user.id,
@@ -1844,8 +1845,8 @@ async def seed():
         print(f"\nStep 4/7: Creating {len(NETWORKS)} networks with key wrapping...")
         for n in NETWORKS:
             network_key = generate_key()
-            owner_vault_key = vault_keys[user_map[n["owner"]].id]
-            encrypted_key = encrypt(network_key, owner_vault_key)
+            owner_id = user_map[n["owner"]].id
+            encrypted_key = transit_bridge.encrypt(owner_id, network_key)
 
             shared_cats = n.get("shared_categories")
             network = Network(
@@ -1866,12 +1867,12 @@ async def seed():
             network_keys[network.id] = network_key
 
             for member_name in n["members"]:
-                member_vault_key = vault_keys[user_map[member_name].id]
+                member_id = user_map[member_name].id
                 membership = NetworkMembership(
                     network_id=network.id,
-                    user_id=user_map[member_name].id,
+                    user_id=member_id,
                     role="owner" if member_name == n["owner"] else "member",
-                    encrypted_network_key=encrypt(network_key, member_vault_key),
+                    encrypted_network_key=transit_bridge.encrypt(member_id, network_key),
                 )
                 db.add(membership)
             print(f"  \u2713 {n['name']} \u2014 key wrapped for {len(n['members'])} members")
@@ -1884,7 +1885,6 @@ async def seed():
         capsule_count = 0
         for c in CAPSULES:
             owner = user_map[c["owner"]]
-            vault_key = vault_keys[owner.id]
 
             # Infer context: explicit > network-based > default personal
             if "context" in c:
@@ -1902,7 +1902,7 @@ async def seed():
                 owner_id=owner.id,
                 capsule_type=c["type"],
                 title=c["title"],
-                content_encrypted=encrypt_text(c["content"], vault_key),
+                content_encrypted=transit_bridge.encrypt_text(owner.id, c["content"]),
                 visibility=visibility,
                 emergency_accessible=emergency_accessible,
                 can_reshare=can_reshare,
@@ -1934,14 +1934,13 @@ async def seed():
         # Service provider capsules
         for sp in SERVICE_PROVIDERS:
             sp_user = user_map[sp["username"]]
-            sp_vault_key = vault_keys[sp_user.id]
             for cap in sp.get("capsules", []):
                 cap_visibility = cap.get("visibility", "open")
                 capsule = KnowledgeCapsule(
                     owner_id=sp_user.id,
                     capsule_type=cap["type"],
                     title=cap["title"],
-                    content_encrypted=encrypt_text(cap["content"], sp_vault_key),
+                    content_encrypted=transit_bridge.encrypt_text(sp_user.id, cap["content"]),
                     visibility=cap_visibility,
                     category=cap.get("category", "general"),
                     freshness="permanent",

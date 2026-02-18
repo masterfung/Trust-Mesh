@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.audit import log_event
 from src.auth import get_current_user_id
-from src.crypto import encrypt, generate_key
+from src.crypto import generate_key
 from src.database import get_db
 from src.models import Connection, Network, NetworkJoinRequest, NetworkMembership, Notification, User
 from src.schemas import (
@@ -73,12 +73,11 @@ async def create_network(data: NetworkCreate, db: AsyncSession = Depends(get_db)
         raise HTTPException(404, "Owner not found")
 
     network_key = generate_key()
-    # Encrypt network key with owner's vault key
-    from src.main import vault_keys
-    vault_key = vault_keys.get(data.owner_id)
-    if not vault_key:
+    # Encrypt network key with owner's vault key via transit bridge
+    from src import transit_bridge
+    if not transit_bridge.has_key(data.owner_id):
         raise HTTPException(500, "Vault key not loaded — log in first")
-    encrypted_key = encrypt(network_key, vault_key)
+    encrypted_key = transit_bridge.encrypt(data.owner_id, network_key)
 
     network = Network(
         owner_id=data.owner_id,

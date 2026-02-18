@@ -5,14 +5,25 @@ When Citadel is unavailable, a built-in heuristic fallback catches obvious attac
 so the demo works without the separate Go process.
 """
 
+import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 CITADEL_URL = os.getenv("CITADEL_URL", "http://localhost:3001")
-CITADEL_TIMEOUT = 5.0
+CITADEL_TIMEOUT = 2.0
+
+# Circuit breaker: if 3 failures in 60s, skip Citadel for next 60s
+_citadel_failures: list[float] = []
+CIRCUIT_BREAKER_THRESHOLD = 3
+CIRCUIT_BREAKER_WINDOW = 60  # seconds
+CIRCUIT_BREAKER_COOLDOWN = 60  # seconds
+_circuit_open_until: float = 0.0
 
 # Heuristic patterns for prompt injection detection (fallback when Citadel is down)
 INJECTION_PATTERNS = [
@@ -106,6 +117,26 @@ SOFT_LEAK_CATEGORIES = {
     "team_size_hint", "role_referral_hint",
 }
 
+SEVERITY_MAP = {
+    "credential_leak": "critical",
+    "api_key_leak": "critical",
+    "vault_key_leak": "critical",
+    "encryption_key_leak": "critical",
+    "ssn_leak": "critical",
+    "credit_card_leak": "critical",
+    "system_prompt_leak": "high",
+    "instruction_leak": "high",
+    "base64_blob_leak": "high",
+    "member_referral_hint": "info",
+    "network_structure_hint": "info",
+    "soft_member_hint": "info",
+    "soft_referral_hint": "info",
+    "hidden_data_hint": "info",
+    "restricted_data_hint": "info",
+    "team_size_hint": "info",
+    "role_referral_hint": "info",
+}
+
 # Pre-compile all patterns at module load for performance
 _COMPILED_INPUT_PATTERNS = [(re.compile(p, re.IGNORECASE), s) for p, s in INJECTION_PATTERNS]
 _COMPILED_HARD_OUTPUT = [(re.compile(p, re.IGNORECASE), c) for p, c in OUTPUT_RISK_PATTERNS if c not in SOFT_LEAK_CATEGORIES]
@@ -127,6 +158,30 @@ class OutputScanResult:
     risk_level: str = "NONE"
     findings: list[str] = field(default_factory=list)
     threat_categories: list[str] = field(default_factory=list)
+    scan_mode: str = "heuristic"  # "citadel" or "heuristic"
+
+
+def _is_circuit_open() -> bool:
+    """Check if circuit breaker is open (Citadel should be skipped)."""
+    if time.time() < _circuit_open_until:
+        return True
+    return False
+
+
+def _record_citadel_failure():
+    """Record a Citadel failure and potentially open the circuit."""
+    global _circuit_open_until
+    now = time.time()
+    _citadel_failures.append(now)
+    # Prune old failures
+    cutoff = now - CIRCUIT_BREAKER_WINDOW
+    while _citadel_failures and _citadel_failures[0] < cutoff:
+        _citadel_failures.pop(0)
+    # Open circuit if threshold reached
+    if len(_citadel_failures) >= CIRCUIT_BREAKER_THRESHOLD:
+        _circuit_open_until = now + CIRCUIT_BREAKER_COOLDOWN
+        logger.warning(f"Citadel circuit breaker opened — skipping for {CIRCUIT_BREAKER_COOLDOWN}s")
+        _citadel_failures.clear()
 
 
 def _heuristic_input_scan(text: str) -> InputScanResult:
@@ -203,6 +258,9 @@ def _heuristic_output_scan(text: str, trust_level: str = "public") -> OutputScan
 
 async def scan_input(text: str) -> InputScanResult:
     """Scan input text for prompt injection via Citadel (or heuristic fallback)."""
+    if _is_circuit_open():
+        return _heuristic_input_scan(text)
+
     try:
         async with httpx.AsyncClient(timeout=CITADEL_TIMEOUT) as client:
             resp = await client.post(
@@ -217,8 +275,9 @@ async def scan_input(text: str) -> InputScanResult:
                     reason=data.get("reason", ""),
                     latency_ms=data.get("latency_ms", 0),
                 )
-    except (httpx.ConnectError, httpx.TimeoutException):
-        pass  # Citadel unavailable — use heuristic fallback
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        logger.warning(f"Citadel unavailable for input scan: {e}")
+        _record_citadel_failure()
 
     return _heuristic_input_scan(text)
 
@@ -229,6 +288,11 @@ async def scan_output(text: str, trust_level: str = "public") -> OutputScanResul
     trust_level controls whether soft-leak patterns (member hints, network structure) fire.
     Hard patterns (credentials, PII, keys) always fire regardless of trust level.
     """
+    if _is_circuit_open():
+        result = _heuristic_output_scan(text, trust_level)
+        result.scan_mode = "heuristic"
+        return result
+
     try:
         async with httpx.AsyncClient(timeout=CITADEL_TIMEOUT) as client:
             resp = await client.post(
@@ -243,6 +307,7 @@ async def scan_output(text: str, trust_level: str = "public") -> OutputScanResul
                     risk_level=data.get("risk_level", "NONE"),
                     findings=data.get("findings", []),
                     threat_categories=data.get("threat_categories", []),
+                    scan_mode="citadel",
                 )
                 # Citadel sidecar doesn't know about soft-leak patterns yet,
                 # so also run heuristic for soft-leak detection at public trust
@@ -254,10 +319,13 @@ async def scan_output(text: str, trust_level: str = "public") -> OutputScanResul
                         result.is_safe = False
                         result.risk_score = max(result.risk_score, heuristic.risk_score)
                 return result
-    except (httpx.ConnectError, httpx.TimeoutException):
-        pass  # Citadel unavailable — use heuristic fallback
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        logger.warning(f"Citadel unavailable for output scan: {e}")
+        _record_citadel_failure()
 
-    return _heuristic_output_scan(text, trust_level)
+    result = _heuristic_output_scan(text, trust_level)
+    result.scan_mode = "heuristic"
+    return result
 
 
 async def is_citadel_available() -> bool:

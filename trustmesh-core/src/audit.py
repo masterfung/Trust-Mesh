@@ -71,3 +71,21 @@ async def log_event(
         db.add(notification)
 
     return entry
+
+
+async def log_event_strict(
+    db: AsyncSession,
+    **kwargs,
+) -> AuditLog:
+    """Fail-safe audit: if audit write fails, the parent operation is aborted.
+
+    Use for security-critical events (emergency access, UCAN ops, visibility changes,
+    cross-pod queries) where losing the audit trail is unacceptable.
+    """
+    try:
+        return await log_event(db, **kwargs)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Audit write failed — aborting operation: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(500, "Audit write failed — operation aborted for safety")

@@ -462,7 +462,7 @@ class ToolContext:
 
 async def handle_search_vault(ctx: ToolContext, query: str) -> str:
     """Search the vault for capsules matching the query. Returns JSON summary."""
-    from src.crypto import decrypt_text
+    from src import transit_bridge
     from src.embeddings import search_capsules
 
     from sqlalchemy import select
@@ -493,7 +493,7 @@ async def handle_search_vault(ctx: ToolContext, query: str) -> str:
     matches = []
     for c in capsules:
         try:
-            content = decrypt_text(c.content_encrypted, ctx.vault_key)
+            content = transit_bridge.decrypt_text(ctx.owner_id, c.content_encrypted)
         except Exception:
             content = "[Could not decrypt]"
         matches.append({
@@ -515,7 +515,8 @@ async def handle_search_vault(ctx: ToolContext, query: str) -> str:
 
 async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
     """Create or update a capsule in the vault. Returns confirmation JSON."""
-    from src.crypto import content_hash, encrypt_text
+    from src import transit_bridge
+    from src.crypto import content_hash
     from src.embeddings import upsert_capsule_embedding
     from src.models import CapsuleNetworkAccess
 
@@ -565,7 +566,7 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
 
         old_title = capsule.title
         capsule.title = title
-        capsule.content_encrypted = encrypt_text(content, ctx.vault_key)
+        capsule.content_encrypted = transit_bridge.encrypt_text(ctx.owner_id, content)
         capsule.content_hash = content_hash(content)
         capsule.capsule_type = capsule_type
         capsule.visibility = visibility
@@ -619,7 +620,7 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
             owner_id=ctx.owner_id,
             capsule_type=capsule_type,
             title=title,
-            content_encrypted=encrypt_text(content, ctx.vault_key),
+            content_encrypted=transit_bridge.encrypt_text(ctx.owner_id, content),
             content_hash=content_hash(content),
             visibility=visibility,
             emergency_accessible=emergency_accessible,
@@ -855,25 +856,25 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
     # ── Path 1: Local real user (unchanged fast path) ──
     if target_user and not target_user.is_remote:
         from src.gossip import query_agent
-        from src.main import vault_keys
 
         query_result = await query_agent(
             db=ctx.db,
             from_user_id=ctx.owner_id,
             to_user_id=target_user.id,
             question=question,
-            vault_keys=vault_keys,
             query_depth=ctx.query_depth + 1,
         )
+
+        trust_level = query_result.get("trust_level", "unknown")
 
         ctx.actions.append({
             "type": "peer_queried",
             "target_username": target_username,
+            "target_display_name": target_user.display_name,
             "question": question[:100],
             "decision": query_result.get("decision", "unknown"),
+            "trust_level": trust_level,
         })
-
-        trust_level = query_result.get("trust_level", "unknown")
         trust_explanation = {
             "private": "Full access (self-query)",
             "network": f"Trusted — you share networks: {', '.join(query_result.get('shared_networks', []))}",
@@ -905,9 +906,9 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
         our_did = our_agent.did if our_agent else "unknown"
         signing_key: bytes | None = None
         if our_agent and our_agent.encrypted_private_key:
-            from src.crypto import decrypt
+            from src import transit_bridge
             try:
-                signing_key = decrypt(our_agent.encrypted_private_key, ctx.vault_key)
+                signing_key = transit_bridge.decrypt(ctx.owner_id, our_agent.encrypted_private_key)
             except Exception:
                 signing_key = None
 
@@ -925,25 +926,29 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
         ctx.actions.append({
             "type": "peer_queried",
             "target_username": target_username,
+            "target_display_name": target_user.display_name,
             "question": question[:100],
             "decision": remote_result.get("decision", "unknown") if remote_result else "unreachable",
+            "trust_level": remote_result.get("trust_level", "public") if remote_result else "public",
             "federated": True,
             "remote_pod": target_user.remote_pod_url,
         })
 
         if remote_result:
+            remote_pod_name = remote_result.get("pod_name", "")
             return json.dumps({
                 "success": True,
                 "target": target_username,
                 "target_display_name": target_user.display_name,
                 "target_type": target_user.user_type,
                 "trust_level": remote_result.get("trust_level", "public"),
-                "trust_explanation": f"Federated query to {target_user.remote_pod_url}",
+                "trust_explanation": f"Federated query to {remote_pod_name or target_user.remote_pod_url}",
                 "shared_networks": remote_result.get("shared_networks", []),
                 "response": remote_result.get("response", "No response"),
                 "decision": remote_result.get("decision", "unknown"),
                 "federated": True,
                 "remote_pod": target_user.remote_pod_url,
+                "remote_pod_name": remote_pod_name,
             })
         return json.dumps({
             "success": False,
@@ -961,9 +966,9 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
     our_did = our_agent.did if our_agent else "unknown"
     signing_key: bytes | None = None
     if our_agent and our_agent.encrypted_private_key:
-        from src.crypto import decrypt
+        from src import transit_bridge
         try:
-            signing_key = decrypt(our_agent.encrypted_private_key, ctx.vault_key)
+            signing_key = transit_bridge.decrypt(ctx.owner_id, our_agent.encrypted_private_key)
         except Exception:
             signing_key = None
 
@@ -978,8 +983,10 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
             ctx.actions.append({
                 "type": "peer_queried",
                 "target_username": target_username,
+                "target_display_name": target_username,  # Don't know display name for remote
                 "question": question[:100],
                 "decision": remote_result.get("decision", "unknown"),
+                "trust_level": remote_result.get("trust_level", "public"),
                 "federated": True,
                 "remote_pod": peer.url,
             })
@@ -1008,7 +1015,6 @@ async def handle_request_quotes(ctx: ToolContext, params: dict) -> str:
     from sqlalchemy import select
     from src.models import User
     from src.gossip import query_agent
-    from src.main import vault_keys
 
     service_type = params["service_type"]
     requirements = params["requirements"]
@@ -1052,7 +1058,6 @@ async def handle_request_quotes(ctx: ToolContext, params: dict) -> str:
                 from_user_id=ctx.owner_id,
                 to_user_id=service.id,
                 question=quote_question,
-                vault_keys=vault_keys,
             )
             quotes.append({
                 "provider": service.display_name,
@@ -1297,7 +1302,8 @@ async def handle_check_calendar(ctx: ToolContext, time_range: str = "this_week")
 
 async def handle_draft_email(ctx: ToolContext, params: dict) -> str:
     """Draft an email and save it as a capsule."""
-    from src.crypto import content_hash, encrypt_text
+    from src import transit_bridge
+    from src.crypto import content_hash
     from src.embeddings import upsert_capsule_embedding
 
     to = params["to"]
@@ -1310,7 +1316,7 @@ async def handle_draft_email(ctx: ToolContext, params: dict) -> str:
         owner_id=ctx.owner_id,
         capsule_type="memory",
         title=f"Email Draft: {subject}",
-        content_encrypted=encrypt_text(email_content, ctx.vault_key),
+        content_encrypted=transit_bridge.encrypt_text(ctx.owner_id, email_content),
         content_hash=content_hash(email_content),
         visibility="private",
         category="work",
@@ -1367,6 +1373,7 @@ async def handle_create_timeline_entry(ctx: ToolContext, inp: dict) -> str:
             EventSource,
             HookActionKind,
             HookPhase,
+            Visibility,
         )
 
         engine = _get_engine()
@@ -1412,6 +1419,51 @@ async def handle_create_timeline_entry(ctx: ToolContext, inp: dict) -> str:
 
     # Push event so other entries can react
     engine.push_event("timeline.entry_created", EventSource.AGENT)
+
+    # Persist for crash/restart restore (best-effort).
+    try:
+        from src.routes.timeline import persist_entry_spec
+        state_val = engine.get_entry_state(entry_id)
+
+        act = {"kind": "manual"}
+        if trigger_type == "time" and inp.get("trigger_at_ms"):
+            act = {"kind": "time", "at_ms": int(inp["trigger_at_ms"])}
+        elif trigger_type == "event" and inp.get("trigger_event_type"):
+            act = {"kind": "event", "event_source": int(EventSource.SYSTEM), "event_type": str(inp["trigger_event_type"])}
+        elif trigger_type == "cron" and inp.get("trigger_cron"):
+            act = {"kind": "time", "cron": str(inp["trigger_cron"])}
+        elif trigger_type == "immediate":
+            act = {"kind": "time", "at_ms": int(now_ms - 1000)}
+
+        spec = {
+            "id": str(entry_id),
+            "owner_id": ctx.owner_id,
+            "label": label,
+            "category": category,
+            "entry_type": int(EntryType.TASK),
+            "visibility": int(Visibility.PRIVATE),
+            "salience": float(salience),
+            "window_start_ms": None,
+            "window_end_ms": None,
+            "activation_trigger": act,
+            "deactivation_trigger": None,
+            "dependencies": [],
+            "hooks": [{
+                "action": int(HookActionKind.AGENT_TASK),
+                "phase": int(HookPhase.PRE),
+                "prompt": hook_prompt,
+                "timeout_ms": 30000,
+                "max_retries": 0,
+            }] if hook_prompt else [],
+        }
+        persist_entry_spec(
+            owner_id=ctx.owner_id,
+            entry_id=entry_id,
+            state=int(state_val) if state_val is not None else 0,
+            spec=spec,
+        )
+    except Exception:
+        pass
 
     ctx.actions.append({
         "type": "timeline_entry_created",
@@ -1516,6 +1568,15 @@ async def handle_complete_timeline_entry(ctx: ToolContext, entry_id_str: str) ->
         return json.dumps({"error": f"Transition failed: {e}"})
 
     engine.push_event("timeline.entry_completed", EventSource.AGENT)
+
+    # Persist state update (best-effort).
+    try:
+        from src.routes.timeline import persist_update_state
+        st = engine.get_entry_state(eid)
+        if st is not None:
+            persist_update_state(entry_id=eid, state=int(st))
+    except Exception:
+        pass
 
     ctx.actions.append({
         "type": "timeline_entry_completed",
@@ -1750,7 +1811,7 @@ You are talking directly to {owner_name} (your owner). You have FULL access to t
 {formatted_capsules}
 
 ## What You Can Do
-You have fifteen tools:
+You have tools:
 
 1. **search_vault** — Search for existing capsules before saving. ALWAYS search first to avoid duplicates.
 2. **save_capsule** — Save new knowledge or update existing capsules.
@@ -1868,6 +1929,19 @@ After saving, confirm the governance: "I saved Rose's medication list as **inter
 - Work-related knowledge → share with work network (visibility: internal)
 - Personal observations about relationships → keep "private" unless owner specifies
 - If unsure, default to "private" and tell the owner they can share it later
+
+## Cross-Pod Query Results — Save & Confirm
+
+When you receive useful information from a cross-pod query (via query_peer):
+1. **Present the results clearly** — summarize what you learned, who you asked, and what trust level was used
+2. **Offer to save** — "I found this from [source]. Want me to save it to your vault?"
+3. **If the user agrees (or you got useful service/health/contact info), save it** — use save_capsule with appropriate category and visibility
+4. **Before sharing personal data with another pod** — ALWAYS tell the user what you're about to share and ask for confirmation. Say: "I'd like to share [summary] with [target]. Should I go ahead?"
+
+When federation is involved, always mention:
+- Which pod/agent you queried
+- What trust level was used (network = shared pool, public = open only)
+- What shared networks enabled the trust
 
 ## Response Style
 - Be conversational and warm — you're talking to your owner
@@ -2264,40 +2338,47 @@ async def extract_profile(bio: str, display_name: str) -> dict | None:
 # Morning Briefing
 # ═══════════════════════════════════════════════════════════════
 
-INTAKE_SYSTEM_PROMPT = """You are the onboarding agent for TrustMesh, helping {owner_name} set up their personal AI agent.
+INTAKE_SYSTEM_PROMPT = """You are {owner_name}'s personal AI agent, getting to know them for the first time.
 
-Your goal: learn about this person through a warm, natural conversation and save their key information as knowledge capsules in their encrypted vault.
+Your goal: Have a warm, natural conversation and save key facts as encrypted capsules in their vault.
 
-## Conversation Context
+## Conversation so far
 {conversation_history}
 
-## What to gather (in order of priority):
-1. **About them** — What they do (job, school), their skills, interests, hobbies
-2. **Family/household** — Who they live with, family members, pets
-3. **Important contacts** — Close friends, family members, colleagues they'd want their agent to know about
-4. **Preferences** — Dietary restrictions, allergies, likes/dislikes
-5. **Schedule/routine** — Regular commitments, upcoming events
-6. **What they want from TrustMesh** — What kind of info they want to share, who they want to connect with
+## Flow (follow this order, but keep it natural):
 
-## Rules:
-- Ask ONE question at a time. Keep it conversational, not interrogation-like.
-- After each answer, IMMEDIATELY save the information using save_capsule.
-- Classify accurately: use the right capsule_type, tier, category.
-- Default to "private" tier unless they mention wanting to share something.
-- Be warm, encouraging. Celebrate what you learn ("That's great! Your agent will remember that.")
-- After 4-6 exchanges, wrap up naturally. Don't drag it out.
-- If they say "skip" or "done" or "that's it", wrap up immediately.
-- In your final message, summarize what you saved and suggest they explore the dashboard.
+1. **Who they are** — Where they're from, what they do for work/school, what stage of life they're in. Save as "skill" capsule (category: "work" or "personal").
 
-## Capsule types to use:
-- "skill" for their job, expertise, domain knowledge
-- "preference" for likes, dislikes, dietary info, allergies
-- "contact" for family members, friends, colleagues
-- "schedule" for regular commitments, upcoming events
-- "memory" for personal stories, observations
-- "procedure" for routines, how they do things
+2. **Hobbies & interests** — What they do for fun, passions, creative outlets. Save as "preference" capsule (category: "personal").
 
-Always search_vault before saving to avoid duplicates (vault may be empty for new users, that's fine)."""
+3. **Daily routines** — Morning routine, exercise, commute, evening wind-down. Save as "procedure" capsule (category: "routine").
+
+4. **People in their life** — Family, partner, close friends, pets. Save as "contact" capsule (category: "family" or "social").
+
+5. **Wrap up** — Summarize what you learned, suggest exploring their dashboard.
+
+## Style rules:
+- Talk like a friendly human, not a form. Be curious, ask follow-ups.
+- ONE question at a time. Short responses — 2-3 sentences max.
+- After each answer, save a capsule IMMEDIATELY. Don't wait.
+- Default tier is "private" unless they say otherwise.
+- Don't number your questions or say "Step 1". Just flow naturally.
+- If they give a long answer, save MULTIPLE capsules (one per distinct fact).
+- After 4-5 exchanges, wrap up. Don't overstay.
+- If they say "skip", "done", or "that's it" — end immediately with a summary.
+
+## First message:
+Start with something warm and specific: "Hey! So tell me a bit about yourself — where are you based and what do you do?" Don't repeat their name or bio back to them.
+
+## Capsule types:
+- "skill" — job, expertise, education
+- "preference" — hobbies, interests, likes, allergies, diet
+- "contact" — family, friends, colleagues, pets
+- "schedule" — regular commitments, appointments
+- "procedure" — routines, habits, workflows
+- "memory" — stories, observations, life events
+
+Always search_vault first to avoid duplicates."""
 
 INTAKE_TOOLS = [
     AGENT_TOOLS[0],  # search_vault

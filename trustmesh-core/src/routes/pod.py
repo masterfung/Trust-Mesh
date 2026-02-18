@@ -288,8 +288,9 @@ async def receive_remote_query(req: RemoteQueryRequest, request: Request):
         if requesting_agent:
             # Agent exists locally (maybe they have an account here too) — use normal gossip
             from src.gossip import query_agent
-            from src.main import vault_keys
-            response = await query_agent(db, requesting_agent.owner_id, target_user.id, req.question, vault_keys)
+            response = await query_agent(db, requesting_agent.owner_id, target_user.id, req.question)
+            if isinstance(response, dict):
+                response["pod_name"] = POD_NAME
             return response
 
         # Check for ghost user with this DID — enables elevated trust for pool members
@@ -309,10 +310,11 @@ async def receive_remote_query(req: RemoteQueryRequest, request: Request):
                 if not ghost.remote_pod_url:
                     logger.warning(f"Ghost {ghost.id} missing remote_pod_url; refusing trust elevation")
                     from src.gossip import query_agent_public
-                    from src.main import vault_keys
                     response = await query_agent_public(
-                        db, target_user.id, req.question, req.from_did, req.from_pod, vault_keys
+                        db, target_user.id, req.question, req.from_did, req.from_pod
                     )
+                    if isinstance(response, dict):
+                        response["pod_name"] = POD_NAME
                     return response
 
                 raw_body = await request.body()
@@ -320,24 +322,27 @@ async def receive_remote_query(req: RemoteQueryRequest, request: Request):
                 if auth.status == "missing":
                     # Backward-compatible: unsigned federation requests stay public.
                     from src.gossip import query_agent_public
-                    from src.main import vault_keys
                     response = await query_agent_public(
-                        db, target_user.id, req.question, req.from_did, req.from_pod, vault_keys
+                        db, target_user.id, req.question, req.from_did, req.from_pod
                     )
+                    if isinstance(response, dict):
+                        response["pod_name"] = POD_NAME
                     return response
                 if auth.status != "valid":
                     raise HTTPException(403, f"Invalid federation signature: {auth.reason or 'invalid'}")
 
                 # Ghost found + pod verified + signature valid — use full query_agent with ghost's user ID
                 from src.gossip import query_agent
-                from src.main import vault_keys
-                response = await query_agent(db, ghost.id, target_user.id, req.question, vault_keys)
+                response = await query_agent(db, ghost.id, target_user.id, req.question)
+                if isinstance(response, dict):
+                    response["pod_name"] = POD_NAME
                 return response
 
         # Remote agent with no ghost — public trust only
         from src.gossip import query_agent_public
-        from src.main import vault_keys
-        response = await query_agent_public(db, target_user.id, req.question, req.from_did, req.from_pod, vault_keys)
+        response = await query_agent_public(db, target_user.id, req.question, req.from_did, req.from_pod)
+        if isinstance(response, dict):
+            response["pod_name"] = POD_NAME
         return response
 
 
@@ -430,8 +435,7 @@ async def a2a_message(req: A2ARequest, request: Request):
 
         if requesting_agent:
             from src.gossip import query_agent
-            from src.main import vault_keys
-            response = await query_agent(db, requesting_agent.owner_id, target_user.id, question, vault_keys)
+            response = await query_agent(db, requesting_agent.owner_id, target_user.id, question)
         else:
             # Check for ghost user (elevated trust via pool membership)
             ghost = await lookup_ghost_by_did(db, from_did)
@@ -445,22 +449,19 @@ async def a2a_message(req: A2ARequest, request: Request):
                     )
                     # Fall through to public trust (don't use ghost elevation)
                     from src.gossip import query_agent_public
-                    from src.main import vault_keys
-                    response = await query_agent_public(db, target_user.id, question, from_did, "a2a", vault_keys)
+                    response = await query_agent_public(db, target_user.id, question, from_did, "a2a")
                 else:
                     # SECURITY: Ghost trust elevation requires a valid federation signature.
                     if not ghost.remote_pod_url:
                         logger.warning(f"A2A ghost {ghost.id} missing remote_pod_url; refusing trust elevation")
                         from src.gossip import query_agent_public
-                        from src.main import vault_keys
-                        response = await query_agent_public(db, target_user.id, question, from_did, "a2a", vault_keys)
+                        response = await query_agent_public(db, target_user.id, question, from_did, "a2a")
                     else:
                         raw_body = await request.body()
                         auth = verify_federation_request(from_did=from_did, body=raw_body, headers=request.headers)
                         if auth.status == "missing":
                             from src.gossip import query_agent_public
-                            from src.main import vault_keys
-                            response = await query_agent_public(db, target_user.id, question, from_did, "a2a", vault_keys)
+                            response = await query_agent_public(db, target_user.id, question, from_did, "a2a")
                         elif auth.status != "valid":
                             # JSON-RPC style error payload (keep HTTP 200 for A2A clients).
                             return {
@@ -470,12 +471,10 @@ async def a2a_message(req: A2ARequest, request: Request):
                             }
                         else:
                             from src.gossip import query_agent
-                            from src.main import vault_keys
-                            response = await query_agent(db, ghost.id, target_user.id, question, vault_keys)
+                            response = await query_agent(db, ghost.id, target_user.id, question)
             else:
                 from src.gossip import query_agent_public
-                from src.main import vault_keys
-                response = await query_agent_public(db, target_user.id, question, from_did, "a2a", vault_keys)
+                response = await query_agent_public(db, target_user.id, question, from_did, "a2a")
 
     # Format as A2A Task response
     return {

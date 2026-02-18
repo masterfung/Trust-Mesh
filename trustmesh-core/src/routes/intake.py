@@ -28,7 +28,7 @@ async def intake_step(user_id: str, data: IntakeMessage,
     The agent responds, potentially saving capsules via tools.
     Returns SSE stream with text chunks and actions.
     """
-    from src.main import vault_keys
+    from src import transit_bridge
     from src.agents import ToolContext, run_intake_step
     from src.gossip import get_user_networks
 
@@ -50,15 +50,14 @@ async def intake_step(user_id: str, data: IntakeMessage,
                 yield f"data: {json.dumps({'type': 'error', 'data': 'Agent not found'})}\n\n"
                 return
 
-            vault_key = vault_keys.get(user_id)
-            if not vault_key:
+            if not transit_bridge.has_key(user_id):
                 yield f"data: {json.dumps({'type': 'error', 'data': 'Vault key not available'})}\n\n"
                 return
 
             user_networks = await get_user_networks(db, user_id)
             tool_context = ToolContext(
                 db=db,
-                vault_key=vault_key,
+                vault_key=b"",  # unused — transit_bridge handles encryption
                 owner_id=user_id,
                 owner_name=user.display_name,
                 networks=user_networks,

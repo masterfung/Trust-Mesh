@@ -21,12 +21,15 @@ Replay protection:
 from __future__ import annotations
 
 import base64
+import logging
 import re
 import secrets
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Mapping, Literal
+
+logger = logging.getLogger(__name__)
 
 from src.crypto import did_key_to_public_key, sign_ed25519, verify_ed25519
 
@@ -38,8 +41,8 @@ HEADER_SIGNATURE_ALG = "X-TrustMesh-Signature-Alg"
 ALG_ED25519 = "ed25519"
 
 # Default verification window and replay TTL (seconds).
-DEFAULT_SKEW_SECONDS = 300
-DEFAULT_NONCE_TTL_SECONDS = 300
+DEFAULT_SKEW_SECONDS = 60
+DEFAULT_NONCE_TTL_SECONDS = 120
 
 # Keep nonce values small + predictable for header parsing.
 _NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
@@ -73,7 +76,10 @@ def _now_epoch(now: datetime | None) -> int:
     return int(now.timestamp())
 
 
-def _signed_message(ts: int, nonce: str, body: bytes) -> bytes:
+def _signed_message(ts: int, nonce: str, body: bytes, *, method: str = "", path: str = "") -> bytes:
+    """Build the message to sign. Includes method+path when provided (new format)."""
+    if method and path:
+        return f"{method}\n{path}\n{ts}\n{nonce}\n".encode("utf-8") + body
     return f"{ts}\n{nonce}\n".encode("utf-8") + body
 
 
@@ -95,20 +101,27 @@ def sign_federation_request(
     body: bytes,
     private_key_bytes: bytes,
     *,
+    method: str = "",
+    path: str = "",
     timestamp: int | None = None,
     nonce: str | None = None,
 ) -> dict[str, str]:
     """Create signature headers for a federation request body."""
     ts = int(timestamp if timestamp is not None else time.time())
     n = nonce if nonce is not None else secrets.token_urlsafe(18)
-    msg = _signed_message(ts, n, body)
+    msg = _signed_message(ts, n, body, method=method, path=path)
     sig = sign_ed25519(msg, private_key_bytes)
-    return {
+    headers = {
         HEADER_TIMESTAMP: str(ts),
         HEADER_NONCE: n,
         HEADER_SIGNATURE: _b64url_encode(sig),
         HEADER_SIGNATURE_ALG: ALG_ED25519,
     }
+    # Include method+path in headers so verifier can reconstruct
+    if method and path:
+        headers["X-TrustMesh-Method"] = method
+        headers["X-TrustMesh-Path"] = path
+    return headers
 
 
 def verify_federation_request(
@@ -168,6 +181,7 @@ def verify_federation_request(
     key = (from_did, nonce)
     exp = _SEEN_NONCES.get(key)
     if exp is not None and exp > now_epoch:
+        logger.warning(f"Federation replay detected: did={from_did[:20]}..., nonce={nonce[:16]}")
         return FederationVerifyResult(status="invalid", reason="Replay detected (nonce already used)")
 
     try:
@@ -182,9 +196,22 @@ def verify_federation_request(
     except Exception:
         return FederationVerifyResult(status="invalid", reason="Unsupported or invalid from_did (did:key required)")
 
-    msg = _signed_message(ts, nonce, body)
-    if not verify_ed25519(msg, sig, pub):
-        return FederationVerifyResult(status="invalid", reason="Invalid signature")
+    # Try new format first (with method+path), then fall back to old format
+    req_method = headers.get("X-TrustMesh-Method", "")
+    req_path = headers.get("X-TrustMesh-Path", "")
+
+    if req_method and req_path:
+        # New format: method+path included
+        msg = _signed_message(ts, nonce, body, method=req_method, path=req_path)
+        if not verify_ed25519(msg, sig, pub):
+            logger.warning(f"Federation invalid signature: did={from_did[:20]}...")
+            return FederationVerifyResult(status="invalid", reason="Invalid signature")
+    else:
+        # Legacy format: no method+path
+        msg = _signed_message(ts, nonce, body)
+        if not verify_ed25519(msg, sig, pub):
+            logger.warning(f"Federation invalid signature: did={from_did[:20]}...")
+            return FederationVerifyResult(status="invalid", reason="Invalid signature")
 
     _SEEN_NONCES[key] = now_epoch + int(nonce_ttl_seconds)
 

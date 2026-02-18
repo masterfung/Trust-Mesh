@@ -226,6 +226,12 @@ def _configure_signatures(lib: ctypes.CDLL) -> None:
     lib.podos_engine_is_running.argtypes = [c_void_p]
     lib.podos_engine_is_running.restype = c_int32
 
+    lib.podos_engine_attach_persist_db.argtypes = [c_void_p, c_void_p]
+    lib.podos_engine_attach_persist_db.restype = c_int32
+
+    lib.podos_engine_detach_persist_db.argtypes = [c_void_p]
+    lib.podos_engine_detach_persist_db.restype = None
+
     # Entry builder
     lib.podos_entry_create.argtypes = []
     lib.podos_entry_create.restype = c_void_p
@@ -392,6 +398,238 @@ def _configure_signatures(lib: ctypes.CDLL) -> None:
     lib.podos_fts_reset.argtypes = [c_void_p]
     lib.podos_fts_reset.restype = c_int32
 
+    # ── Timeline persistence (SQLite) ──
+
+    lib.podos_timeline_entry_upsert.argtypes = [
+        c_void_p,  # handle
+        c_char_p, c_uint32,  # entry_id, entry_id_len (UUID string)
+        c_char_p, c_uint32,  # owner_id, owner_id_len
+        c_int32,             # state
+        c_char_p, c_uint32,  # spec_json, spec_json_len
+    ]
+    lib.podos_timeline_entry_upsert.restype = c_int32
+
+    lib.podos_timeline_entry_update_state.argtypes = [
+        c_void_p,
+        c_char_p, c_uint32,  # entry_id, entry_id_len
+        c_int32,             # state
+    ]
+    lib.podos_timeline_entry_update_state.restype = c_int32
+
+    lib.podos_timeline_entry_delete.argtypes = [c_void_p, c_char_p, c_uint32]
+    lib.podos_timeline_entry_delete.restype = c_int32
+
+    lib.podos_timeline_entries_load.argtypes = [
+        c_void_p,
+        c_char_p, c_uint32,      # owner_id, owner_id_len (0 = all)
+        c_char_p, c_uint32,      # out_buf, out_capacity
+        POINTER(c_uint32),       # out_len
+    ]
+    lib.podos_timeline_entries_load.restype = c_int32
+
+    lib.podos_timeline_entry_get_owner.argtypes = [
+        c_void_p,
+        c_char_p, c_uint32,      # entry_id, entry_id_len
+        c_char_p, c_uint32,      # out_buf, out_capacity
+        POINTER(c_uint32),       # out_len
+    ]
+    lib.podos_timeline_entry_get_owner.restype = c_int32
+
+    lib.podos_timeline_outbox_append.argtypes = [
+        c_void_p,
+        c_uint64,            # tick
+        c_char_p, c_uint32,  # event_json, event_json_len
+    ]
+    lib.podos_timeline_outbox_append.restype = c_int32
+
+    lib.podos_timeline_outbox_pull.argtypes = [
+        c_void_p,
+        c_uint64,            # since_tick
+        c_char_p, c_uint32,  # out_buf, out_capacity
+        POINTER(c_uint32),   # out_len
+    ]
+    lib.podos_timeline_outbox_pull.restype = c_int32
+
+    lib.podos_timeline_inbox_mark.argtypes = [
+        c_void_p,
+        c_char_p, c_uint32,  # event_id, event_id_len
+        c_char_p, c_uint32,  # event_json, event_json_len
+    ]
+    lib.podos_timeline_inbox_mark.restype = c_int32
+
+    # ── Crypto ──
+
+    lib.podos_crypto_generate_key.argtypes = [c_char_p]  # out_key[32]
+    lib.podos_crypto_generate_key.restype = None
+
+    lib.podos_crypto_encrypt.argtypes = [
+        c_char_p, c_uint32,        # plaintext, pt_len
+        c_char_p,                  # key[32]
+        c_char_p, c_uint32,        # out_buf, out_capacity
+        POINTER(c_uint32),         # out_len
+    ]
+    lib.podos_crypto_encrypt.restype = c_int32
+
+    lib.podos_crypto_decrypt.argtypes = [
+        c_char_p, c_uint32,        # data, data_len
+        c_char_p,                  # key[32]
+        c_char_p, c_uint32,        # out_buf, out_capacity
+        POINTER(c_uint32),         # out_len
+    ]
+    lib.podos_crypto_decrypt.restype = c_int32
+
+    lib.podos_crypto_derive_vault_key.argtypes = [
+        c_char_p, c_uint32,        # password, pw_len
+        c_char_p, c_uint32,        # salt_in (nullable), salt_len
+        c_char_p,                  # out_key[32]
+        c_char_p,                  # out_salt[16]
+    ]
+    lib.podos_crypto_derive_vault_key.restype = c_int32
+
+    lib.podos_crypto_hash_pin.argtypes = [
+        c_char_p, c_uint32,        # pin, pin_len
+        c_char_p,                  # out_buf
+        POINTER(c_uint32),         # out_len
+    ]
+    lib.podos_crypto_hash_pin.restype = c_int32
+
+    lib.podos_crypto_verify_pin.argtypes = [
+        c_char_p, c_uint32,        # pin, pin_len
+        c_char_p, c_uint32,        # hash_str, hash_len
+    ]
+    lib.podos_crypto_verify_pin.restype = c_int32
+
+    lib.podos_crypto_ed25519_keygen.argtypes = [c_char_p, c_char_p]  # out_seed[32], out_pub[32]
+    lib.podos_crypto_ed25519_keygen.restype = None
+
+    lib.podos_crypto_ed25519_sign.argtypes = [
+        c_char_p, c_uint32,        # msg, msg_len
+        c_char_p,                  # seed[32]
+        c_char_p,                  # out_sig[64]
+    ]
+    lib.podos_crypto_ed25519_sign.restype = c_int32
+
+    lib.podos_crypto_ed25519_verify.argtypes = [
+        c_char_p, c_uint32,        # msg, msg_len
+        c_char_p,                  # sig[64]
+        c_char_p,                  # pub_key[32]
+    ]
+    lib.podos_crypto_ed25519_verify.restype = c_int32
+
+    lib.podos_crypto_sha256_hex.argtypes = [
+        c_char_p, c_uint32,        # data, data_len
+        c_char_p,                  # out_hex[64]
+    ]
+    lib.podos_crypto_sha256_hex.restype = None
+
+    lib.podos_crypto_pubkey_to_did.argtypes = [
+        c_char_p,                  # pub_key[32]
+        c_char_p, c_uint32,        # out_buf, out_capacity
+    ]
+    lib.podos_crypto_pubkey_to_did.restype = c_int32
+
+    lib.podos_crypto_did_to_pubkey.argtypes = [
+        c_char_p, c_uint32,        # did, did_len
+        c_char_p,                  # out_key[32]
+    ]
+    lib.podos_crypto_did_to_pubkey.restype = c_int32
+
+    lib.podos_crypto_b64url_encode.argtypes = [
+        c_char_p, c_uint32,        # data, data_len
+        c_char_p, c_uint32,        # out_buf, out_capacity
+    ]
+    lib.podos_crypto_b64url_encode.restype = c_int32
+
+    lib.podos_crypto_b64url_decode.argtypes = [
+        c_char_p, c_uint32,        # encoded, enc_len
+        c_char_p, c_uint32,        # out_buf, out_capacity
+    ]
+    lib.podos_crypto_b64url_decode.restype = c_int32
+
+    # ── Trust ──
+
+    lib.podos_trust_resolve.argtypes = [
+        c_void_p,                  # db_handle
+        c_char_p, c_uint32,        # from_id, from_id_len
+        c_char_p, c_uint32,        # to_id, to_id_len
+        c_char_p, c_uint32,        # out_buf, out_capacity
+    ]
+    lib.podos_trust_resolve.restype = c_int32
+
+    # ── Sessions ──
+
+    lib.podos_session_init.argtypes = []
+    lib.podos_session_init.restype = c_int32
+
+    lib.podos_session_deinit.argtypes = []
+    lib.podos_session_deinit.restype = None
+
+    lib.podos_session_create.argtypes = [
+        c_char_p, c_uint32,        # user_id, user_id_len
+        c_char_p, c_uint32,        # out_token, out_capacity
+    ]
+    lib.podos_session_create.restype = c_int32
+
+    lib.podos_session_validate.argtypes = [
+        c_char_p, c_uint32,        # token, token_len
+        c_char_p, c_uint32,        # out_user_id, out_capacity
+    ]
+    lib.podos_session_validate.restype = c_int32
+
+    lib.podos_session_invalidate.argtypes = [c_char_p, c_uint32]  # token, token_len
+    lib.podos_session_invalidate.restype = None
+
+    lib.podos_session_invalidate_user.argtypes = [c_char_p, c_uint32]  # user_id, user_id_len
+    lib.podos_session_invalidate_user.restype = None
+
+    lib.podos_session_check_login_rate.argtypes = [c_char_p, c_uint32]  # ip, ip_len
+    lib.podos_session_check_login_rate.restype = c_int32
+
+    lib.podos_session_reset.argtypes = []
+    lib.podos_session_reset.restype = None
+
+    lib.podos_session_inject.argtypes = [
+        c_char_p, c_uint32,        # token, token_len
+        c_char_p, c_uint32,        # user_id, user_id_len
+    ]
+    lib.podos_session_inject.restype = c_int32
+
+    # ── Rate Limiting ──
+
+    lib.podos_rate_init.argtypes = []
+    lib.podos_rate_init.restype = c_int32
+
+    lib.podos_rate_deinit.argtypes = []
+    lib.podos_rate_deinit.restype = None
+
+    lib.podos_rate_check_connection.argtypes = [
+        c_char_p, c_uint32,        # user_id, user_id_len
+        c_char_p,                  # out_msg
+        POINTER(c_uint32),         # out_msg_len
+    ]
+    lib.podos_rate_check_connection.restype = c_int32
+
+    lib.podos_rate_record_connection.argtypes = [c_char_p, c_uint32]  # user_id, user_id_len
+    lib.podos_rate_record_connection.restype = c_int32
+
+    lib.podos_rate_check_query.argtypes = [
+        c_char_p, c_uint32,        # user_id, user_id_len
+        c_char_p, c_uint32,        # target_id, target_id_len
+        c_int32,                   # is_public
+        c_char_p,                  # out_msg
+        POINTER(c_uint32),         # out_msg_len
+    ]
+    lib.podos_rate_check_query.restype = c_int32
+
+    lib.podos_rate_record_query.argtypes = [
+        c_char_p, c_uint32,        # user_id, user_id_len
+        c_char_p, c_uint32,        # target_id, target_id_len
+    ]
+    lib.podos_rate_record_query.restype = c_int32
+
+    lib.podos_rate_reset.argtypes = []
+    lib.podos_rate_reset.restype = None
+
 
 # ═══════════════════════════════════════════
 #  HELPER: UUID ↔ 16-byte C buffer
@@ -536,6 +774,14 @@ class EntryBuilder:
             self._lib.podos_entry_set_id(self._ptr, _uuid_to_bytes(self._id))
         return self._id
 
+    def set_id(self, entry_id: uuid.UUID) -> "EntryBuilder":
+        """Force a specific entry UUID (used for persistence restore and shadow entries)."""
+        if self._consumed:
+            raise RuntimeError("Cannot set ID after entry is consumed (added to engine)")
+        self._id = entry_id
+        self._lib.podos_entry_set_id(self._ptr, _uuid_to_bytes(entry_id))
+        return self
+
     def _consume(self) -> c_void_p:
         """Return the pointer and mark as consumed (ownership transferred)."""
         if self._consumed:
@@ -594,8 +840,20 @@ class TimelineEngine:
 
     def destroy(self) -> None:
         if hasattr(self, "_engine") and self._engine:
+            try:
+                self._lib.podos_engine_detach_persist_db(self._engine)
+            except Exception:
+                pass
             self._lib.podos_engine_destroy(self._engine)
             self._engine = None
+
+    def attach_persist_db(self, db_handle) -> None:
+        rc = self._lib.podos_engine_attach_persist_db(self._engine, db_handle)
+        if rc != 0:
+            raise RuntimeError(f"Failed to attach persist DB: {rc}")
+
+    def detach_persist_db(self) -> None:
+        self._lib.podos_engine_detach_persist_db(self._engine)
 
     def start(self) -> None:
         self._lib.podos_engine_start(self._engine)

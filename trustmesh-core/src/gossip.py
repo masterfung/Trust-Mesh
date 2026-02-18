@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src import citadel, embeddings
 from src.agents import ToolContext, agent_respond, agent_respond_with_tools
-from src.crypto import decrypt_text
+from src import transit_bridge
 from src.rate_limit import check_query_rate, record_query
 from src.audit import log_event
 from src.models import (
@@ -41,12 +41,13 @@ async def get_accessible_capsule_ids(
     - shareable: explicitly shared via allow-list grants (with expiry)
     - open: discoverable by anyone
     """
-    from datetime import datetime, timezone
     from src.models import CapsuleShareGrant
 
+    now = datetime.now(timezone.utc)
     base_filter = [
         KnowledgeCapsule.owner_id == owner_id,
         KnowledgeCapsule.is_archived == False,  # noqa: E712
+        (KnowledgeCapsule.expires_at == None) | (KnowledgeCapsule.expires_at > now),  # noqa: E711
     ]
     if context_filter and context_filter != "all":
         base_filter.append(KnowledgeCapsule.context.in_([context_filter, "both"]))
@@ -98,6 +99,7 @@ async def get_accessible_capsule_ids(
                 KnowledgeCapsule.owner_id == owner_id,
                 KnowledgeCapsule.visibility.in_(["internal", "shareable"]),
                 KnowledgeCapsule.is_archived == False,  # noqa: E712
+                (KnowledgeCapsule.expires_at == None) | (KnowledgeCapsule.expires_at > now),  # noqa: E711
             )
         )
         # Apply category filter only if all pools are category_scoped
@@ -111,7 +113,6 @@ async def get_accessible_capsule_ids(
 
     # Level 3: shareable — explicit grants to the requester (with expiry check)
     if requester_id:
-        now = datetime.now(timezone.utc)
         # Direct user grants
         grant_result = await db.execute(
             select(CapsuleShareGrant.capsule_id)
@@ -145,9 +146,12 @@ async def get_accessible_capsule_ids(
 
 
 async def load_capsules_decrypted(
-    db: AsyncSession, capsule_ids: list[str], vault_key: bytes
+    db: AsyncSession, capsule_ids: list[str], owner_id_or_key
 ) -> list[dict]:
-    """Load and decrypt capsules by ID. Marks superseded capsules."""
+    """Load and decrypt capsules by ID. Marks superseded capsules.
+
+    owner_id_or_key: either a user_id string (transit path) or bytes (legacy/compat).
+    """
     if not capsule_ids:
         return []
     result = await db.execute(
@@ -157,7 +161,15 @@ async def load_capsules_decrypted(
     decrypted = []
     for c in capsules:
         try:
-            content = decrypt_text(c.content_encrypted, vault_key)
+            if isinstance(owner_id_or_key, str):
+                content = transit_bridge.decrypt_text(owner_id_or_key, c.content_encrypted)
+            elif owner_id_or_key == b"__transit__":
+                # Sentinel from _TransitKeyStore — use capsule's owner_id
+                content = transit_bridge.decrypt_text(c.owner_id, c.content_encrypted)
+            else:
+                # Legacy: raw bytes key
+                from src.crypto import decrypt_text
+                content = decrypt_text(c.content_encrypted, owner_id_or_key)
         except Exception:
             content = "Content is securely encrypted. Owner's vault key is required to view."
         decrypted.append({
@@ -231,7 +243,7 @@ async def query_agent_public(
     question: str,
     from_did: str,
     from_pod: str,
-    vault_keys: dict[str, bytes],
+    vault_keys=None,
 ) -> dict:
     """Handle a cross-pod query at public trust level.
 
@@ -285,15 +297,14 @@ async def query_agent_public(
         relevant_ids = accessible_ids[:5]
 
     # Decrypt capsules
-    vault_key = vault_keys.get(target_user_id)
-    if not vault_key:
+    if not transit_bridge.has_key(target_user_id):
         return _error_result(
             "remote", target_user_id, question,
             "Vault key not available — target user needs to log in first",
             trust_level="public",
         )
 
-    capsules = await load_capsules_decrypted(db, relevant_ids, vault_key)
+    capsules = await load_capsules_decrypted(db, relevant_ids, target_user_id)
 
     # Agent responds (read-only, no tools)
     try:
@@ -316,7 +327,7 @@ async def query_agent_public(
     decision = "allowed"
     if not output_scan.is_safe:
         decision = "redacted"
-        response_text = f"Response redacted: {', '.join(output_scan.findings)}"
+        response_text = "This response was filtered by our security system."
 
     latency = int((time.time() - start) * 1000)
 
@@ -369,7 +380,7 @@ async def query_agent(
     from_user_id: str,
     to_user_id: str,
     question: str,
-    vault_keys: dict[str, bytes],
+    vault_keys=None,
     query_depth: int = 0,
 ) -> dict:
     """The core inter-agent query flow.
@@ -410,6 +421,22 @@ async def query_agent(
         network_names = []
     else:
         trust_level, shared_networks = await resolve_trust_level(db, from_user_id, to_user_id)
+        # Trust race condition fix: verify memberships still exist in DB
+        if shared_networks:
+            valid_net_ids = set()
+            for net in shared_networks:
+                exists = await db.execute(
+                    select(NetworkMembership.id).where(
+                        NetworkMembership.network_id == net.id,
+                        NetworkMembership.user_id == from_user_id,
+                    ).limit(1)
+                )
+                if exists.scalar_one_or_none():
+                    valid_net_ids.add(net.id)
+            if len(valid_net_ids) < len(shared_networks):
+                shared_networks = [n for n in shared_networks if n.id in valid_net_ids]
+                if not shared_networks:
+                    trust_level = "public"
         network_names = [n.name for n in shared_networks]
 
     # 1b. Rate limit check (skip for self-query)
@@ -487,15 +514,14 @@ async def query_agent(
         relevant_ids = accessible_ids[:5]  # Fallback: use first 5
 
     # 5. Load and decrypt capsules
-    vault_key = vault_keys.get(to_user_id)
-    if not vault_key:
+    if not transit_bridge.has_key(to_user_id):
         return _error_result(
             from_user_id, to_user_id, question,
             "Vault key not available — target user needs to log in first",
             trust_level=trust_level, shared_networks=network_names,
         )
 
-    capsules = await load_capsules_decrypted(db, relevant_ids, vault_key)
+    capsules = await load_capsules_decrypted(db, relevant_ids, to_user_id)
 
     # 6. Opus 4.6 agent responds
     actions = []
@@ -505,7 +531,7 @@ async def query_agent(
             user_networks = await get_user_networks(db, to_user_id)
             tool_context = ToolContext(
                 db=db,
-                vault_key=vault_key,
+                vault_key=b"__transit__",  # sentinel — tools use transit_bridge
                 owner_id=to_user_id,
                 owner_name=to_user.display_name,
                 networks=user_networks,
@@ -541,7 +567,7 @@ async def query_agent(
         output_scan = await citadel.scan_output(response_text, trust_level=trust_level)
         if not output_scan.is_safe:
             decision = "redacted"
-            response_text = f"Response redacted: {', '.join(output_scan.findings)}"
+            response_text = "This response was filtered by our security system."
 
     latency = int((time.time() - start) * 1000)
 

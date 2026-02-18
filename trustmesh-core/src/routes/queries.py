@@ -25,14 +25,12 @@ async def create_query(data: QueryCreate, db: AsyncSession = Depends(get_db),
         from_user = await db.get(User, data.from_user_id)
         if not from_user or not from_user.is_demo:
             raise HTTPException(403, "Access denied")
-    from src.main import vault_keys
 
     result = await query_agent(
         db=db,
         from_user_id=data.from_user_id,
         to_user_id=data.to_user_id,
         question=data.question,
-        vault_keys=vault_keys,
     )
     return result
 
@@ -46,8 +44,7 @@ async def create_query_stream(data: QueryCreate,
             from_user = await check_db.get(User, data.from_user_id)
             if not from_user or not from_user.is_demo:
                 raise HTTPException(403, "Access denied")
-    from src.main import vault_keys
-    from src import citadel, embeddings
+    from src import citadel, embeddings, transit_bridge
     from src.agents import (
         ToolContext, agent_respond_streaming, agent_respond_with_tools_streaming,
         detect_sensitivity,
@@ -112,12 +109,11 @@ async def create_query_stream(data: QueryCreate,
             if not relevant_ids:
                 relevant_ids = accessible_ids[:5]
 
-            vault_key = vault_keys.get(data.to_user_id)
-            if not vault_key:
+            if not transit_bridge.has_key(data.to_user_id):
                 yield f"data: {json.dumps({'type': 'error', 'data': 'Vault key not available'})}\n\n"
                 return
 
-            capsules = await load_capsules_decrypted(db, relevant_ids, vault_key)
+            capsules = await load_capsules_decrypted(db, relevant_ids, data.to_user_id)
 
             # Stream the response
             actions = []
@@ -126,7 +122,7 @@ async def create_query_stream(data: QueryCreate,
                     user_networks = await get_user_networks(db, data.to_user_id)
                     tool_context = ToolContext(
                         db=db,
-                        vault_key=vault_key,
+                        vault_key=b"__transit__",  # sentinel — tools use transit_bridge
                         owner_id=data.to_user_id,
                         owner_name=to_user.display_name,
                         networks=user_networks,

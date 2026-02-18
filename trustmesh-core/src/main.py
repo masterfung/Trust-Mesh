@@ -16,17 +16,84 @@ else:
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+from src.csrf import CSRFMiddleware
+from src.middleware import RateLimitHeadersMiddleware
 from sqlalchemy import select, or_
 
-from src.crypto import decrypt, decrypt_text, derive_vault_key, public_key_to_b64
+from src.crypto import decrypt, derive_vault_key, public_key_to_b64
 from src.database import async_session, init_db
 from src.models import Agent, Connection, KnowledgeCapsule, Network, NetworkMembership, User, parse_profile_data
 from src.routes import audit, briefing, capsules, connections, emergency, fhir, intake, invites, networks, notifications, pin, pod, queries, registry, services, tasks, timeline, users
 from src.schemas import GraphEdge, GraphNetwork, GraphNode, GraphResponse
 
-# In-memory vault key store (user_id -> decrypted vault master key)
-# Populated at startup from seed data or on user login
-vault_keys: dict[str, bytes] = {}
+# Transit-backed vault key store. Keys live in Zig memory (secureZero on removal).
+# This dict-like wrapper delegates to the transit bridge for backward compat.
+from src import transit_bridge as _transit
+
+
+class _TransitKeyStore:
+    """Dict-like wrapper around the Zig transit engine.
+
+    Supports `vault_keys[uid]`, `vault_keys.get(uid)`, `uid in vault_keys`,
+    `vault_keys.pop(uid)`, and `len(vault_keys)`.
+
+    Keys are stored in Zig; __getitem__ raises KeyError (never returns raw key).
+    Callers should use transit_bridge.encrypt()/decrypt() instead.
+    """
+
+    def __init__(self):
+        self._user_ids: set[str] = set()
+
+    def __setitem__(self, user_id: str, key: bytes):
+        _transit._ensure_init()
+        _transit.store_key(user_id, key)
+        self._user_ids.add(user_id)
+        # Best-effort zero the Python copy
+        _transit._zero_bytes(key)
+
+    def __contains__(self, user_id: str) -> bool:
+        _transit._ensure_init()
+        return _transit.has_key(user_id)
+
+    def get(self, user_id: str, default=None):
+        """Return a sentinel that signals 'key is available' or default.
+
+        LEGACY COMPAT: Some code paths check `vault_keys.get(uid)` for truthiness.
+        We return a non-None sentinel bytes object (not the real key).
+        The actual encrypt/decrypt should go through transit_bridge.
+        """
+        _transit._ensure_init()
+        if _transit.has_key(user_id):
+            return b"__transit__"  # sentinel — not the real key
+        return default
+
+    def pop(self, user_id: str, *args):
+        _transit._ensure_init()
+        had = _transit.has_key(user_id)
+        _transit.remove_user(user_id)
+        self._user_ids.discard(user_id)
+        if had:
+            return b"__transit__"
+        if args:
+            return args[0]
+        raise KeyError(user_id)
+
+    def clear(self):
+        """Remove all keys from transit engine (secureZero each)."""
+        _transit._ensure_init()
+        for uid in list(self._user_ids):
+            _transit.remove_user(uid)
+        self._user_ids.clear()
+
+    def __len__(self):
+        return len(self._user_ids)
+
+    def __repr__(self):
+        return f"<TransitKeyStore users={len(self._user_ids)}>"
+
+
+vault_keys: dict[str, bytes] = _TransitKeyStore()  # type: ignore[assignment]
 
 # In-memory PIN auth tokens (token -> {user_id, expires_at, created_at})
 # Short-lived (5 min) tokens for governance changes after PIN verification
@@ -65,11 +132,10 @@ async def _init_fts_index():
         result = await db.execute(select(KnowledgeCapsule))
         count = 0
         for cap in result.scalars().all():
-            vk = vault_keys.get(cap.owner_id)
-            if not vk:
+            if not _transit.has_key(cap.owner_id):
                 continue
             try:
-                text = decrypt_text(cap.content_encrypted, vk)
+                text = _transit.decrypt_text(cap.owner_id, cap.content_encrypted)
                 upsert_capsule_embedding(
                     cap.id,
                     f"{cap.title}: {text}",
@@ -84,21 +150,41 @@ async def _init_fts_index():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifecycle: init DB + load vault keys + build FTS5 index on startup."""
+    """Application lifecycle: init DB + load vault keys + build FTS5 index + Zig subsystems."""
     import asyncio
     await init_db()
+    # Initialize transit engine before loading vault keys
+    _transit.init()
     await _load_vault_keys()
     await _init_fts_index()
+    # Initialize Zig session store and rate limiter
+    from src.auth import _init_sessions
+    from src.rate_limit import _init_rate_limits
+    from src.trust import set_db_handle
+    from src.embeddings import _db_handle as fts_db_handle
+    _init_sessions()
+    _init_rate_limits()
+    set_db_handle(fts_db_handle)
     # Auto-register discoverable agents with the public registry (fire-and-forget)
     from src.federation import sync_discoverable_agents_to_registry
     asyncio.create_task(sync_discoverable_agents_to_registry())
     # Start the PodOS Timeline auto-tick loop (fire-and-forget)
     from src.routes.timeline import start_auto_tick
     asyncio.create_task(start_auto_tick())
+    # Start data lifecycle loop (capsule expiry, auto-archive)
+    from src.lifecycle import start_lifecycle_loop
+    asyncio.create_task(start_lifecycle_loop())
     yield
-    # Shutdown: stop the timeline engine
+    # Shutdown: stop the timeline engine and Zig subsystems
     from src.routes.timeline import stop_auto_tick
     await stop_auto_tick()
+    from src.lifecycle import stop_lifecycle_loop
+    await stop_lifecycle_loop()
+    from src.auth import _deinit_sessions
+    from src.rate_limit import _deinit_rate_limits
+    _deinit_sessions()
+    _deinit_rate_limits()
+    _transit.deinit()
 
 
 app = FastAPI(
@@ -108,6 +194,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(RateLimitHeadersMiddleware)
+app.add_middleware(CSRFMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -118,7 +206,8 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization", "X-CSRF-Token", "X-Pool-Sync-Secret", "Cookie"],
+    max_age=3600,
 )
 
 # Register route modules
@@ -140,6 +229,19 @@ app.include_router(fhir.router)
 app.include_router(pod.router)
 app.include_router(registry.router)
 app.include_router(timeline.router)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if not os.getenv("TRUSTMESH_DEV_MODE"):
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    return response
 
 
 @app.post("/api/demo/warmup")
