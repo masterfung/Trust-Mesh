@@ -413,12 +413,13 @@ fn handleRevokeShare(ctx: *http.RequestContext) !void {
     const share_id = ctx.path[prefix.len..];
 
     // Lookup cred_id from the share for audit
-    var cred_id_buf: [128]u8 = "unknown".*;
+    var cred_id_buf: [128]u8 = undefined;
+    @memcpy(cred_id_buf[0..7], "unknown");
     var cred_id_len: usize = 7;
-    {
-        var q = database.prepare("SELECT credential_id FROM credential_shares WHERE id = ?") catch {};
+    blk: {
+        var q = database.prepare("SELECT credential_id FROM credential_shares WHERE id = ?") catch break :blk;
         defer q.finalize();
-        q.bindText(1, share_id.ptr, @intCast(share_id.len)) catch {};
+        q.bindText(1, share_id.ptr, @intCast(share_id.len)) catch break :blk;
         if (q.step() catch false) {
             if (q.getText(0)) |ptr| {
                 const s = std.mem.span(ptr);

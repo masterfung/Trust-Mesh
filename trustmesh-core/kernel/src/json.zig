@@ -21,18 +21,15 @@ pub fn parse(comptime T: type, allocator: Allocator, data: []const u8) JsonError
 }
 
 /// Serialize value to a newly allocated []u8. Caller must free.
-pub fn stringify(value: anytype, allocator: Allocator) JsonError![]u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    errdefer buf.deinit();
-    std.json.stringify(value, .{}, buf.writer()) catch return JsonError.SerializeFailed;
-    return buf.toOwnedSlice() catch return JsonError.OutOfMemory;
+pub fn stringify(val: anytype, allocator: Allocator) JsonError![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, val, .{}) catch return JsonError.SerializeFailed;
 }
 
 /// Serialize value to a fixed-size buffer. Returns bytes written.
-pub fn stringifyBuf(value: anytype, buf: []u8) JsonError!usize {
-    var fbs = std.io.fixedBufferStream(buf);
-    std.json.stringify(value, .{}, fbs.writer()) catch return JsonError.SerializeFailed;
-    return fbs.pos;
+pub fn stringifyBuf(val: anytype, buf: []u8) JsonError!usize {
+    var writer: std.io.Writer = .fixed(buf);
+    std.json.Stringify.value(val, .{}, &writer) catch return JsonError.SerializeFailed;
+    return writer.end;
 }
 
 /// Convenience: produce {"error":"<msg>"} in a fixed buffer.

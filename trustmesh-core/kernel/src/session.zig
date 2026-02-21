@@ -44,6 +44,8 @@ pub const SessionStore = struct {
     // ip (heap-duped) → list of attempt timestamps
     login_attempts: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(i64)),
     allocator: Allocator,
+    /// Protects sessions + login_attempts from concurrent access (thread-per-connection model).
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: Allocator) SessionStore {
         return .{
@@ -74,6 +76,12 @@ pub const SessionStore = struct {
     /// Token is base64url-encoded 32 random bytes (~43 chars).
     /// Enforces MAX_SESSIONS_PER_USER — evicts oldest (by last_activity_at) if at cap.
     pub fn createSession(self: *SessionStore, user_id: []const u8, fingerprint: []const u8, out_token: []u8) SessionError!usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.createSessionLocked(user_id, fingerprint, out_token);
+    }
+
+    fn createSessionLocked(self: *SessionStore, user_id: []const u8, fingerprint: []const u8, out_token: []u8) SessionError!usize {
         if (user_id.len > 128) return SessionError.BufferTooSmall;
 
         // Enforce per-user session cap — evict oldest if at limit
@@ -115,6 +123,8 @@ pub const SessionStore = struct {
     /// On success, updates last_activity_at (sliding window).
     /// If stored fingerprint_hash is all-zeros (legacy/test), skips fingerprint check.
     pub fn validateSession(self: *SessionStore, token: []const u8, fingerprint: []const u8) ?[]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const entry_ptr = self.sessions.getPtr(token) orelse return null;
         const now = std.time.timestamp();
 
@@ -150,6 +160,8 @@ pub const SessionStore = struct {
 
     /// Remove a session by token.
     pub fn invalidateSession(self: *SessionStore, token: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.sessions.fetchRemove(token)) |removed| {
             self.allocator.free(removed.key);
         }
@@ -157,6 +169,8 @@ pub const SessionStore = struct {
 
     /// Remove all sessions for a user.
     pub fn invalidateUserSessions(self: *SessionStore, user_id: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         // Collect tokens to remove (can't modify during iteration)
         var to_remove: [256][]const u8 = undefined;
         var remove_count: usize = 0;
@@ -180,6 +194,8 @@ pub const SessionStore = struct {
 
     /// Check login rate limit. Returns true if allowed, false if rate limited.
     pub fn checkLoginRateLimit(self: *SessionStore, ip: []const u8) SessionError!bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const now = std.time.timestamp();
         const window_start = now - LOGIN_WINDOW;
 
@@ -218,6 +234,8 @@ pub const SessionStore = struct {
 
     /// Reset all state (test helper).
     pub fn reset(self: *SessionStore) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var s_it = self.sessions.iterator();
         while (s_it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
@@ -235,6 +253,8 @@ pub const SessionStore = struct {
     /// Inject a session (test helper for fixture compat).
     /// Pass empty fingerprint ("") for legacy/test sessions (stores all-zeros hash, skips verification).
     pub fn injectSession(self: *SessionStore, token: []const u8, user_id: []const u8, fingerprint: []const u8) SessionError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (user_id.len > 128) return SessionError.BufferTooSmall;
 
         const now = std.time.timestamp();
@@ -262,6 +282,8 @@ pub const SessionStore = struct {
 
     /// Count active (non-expired) sessions for a user.
     pub fn countUserSessions(self: *SessionStore, user_id: []const u8) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var count: usize = 0;
         const now = std.time.timestamp();
         var it = self.sessions.iterator();

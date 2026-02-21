@@ -15,6 +15,8 @@ const http_mod = @import("http.zig");
 const router = @import("router.zig");
 const auth_handler = @import("handlers/auth.zig");
 const cred_handler = @import("handlers/credentials.zig");
+const onboard_handler = @import("handlers/onboard.zig");
+const memory_handler = @import("handlers/memory.zig");
 
 // ── Globals ──
 var _gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -72,6 +74,9 @@ pub fn main() !void {
     };
     std.log.info("  DB: {s}", .{db_path_str});
 
+    // ── Give proxy layer access to session store (for X-Verified-User-Id injection) ──
+    http_mod.setSessionStore(&sess_store);
+
     // ── Register native route handlers ──
     // Phase 3b: Auth routes (login, logout, me)
     auth_handler.setDatabase(&database);
@@ -84,6 +89,20 @@ pub fn main() !void {
     cred_handler.setTransitEngine(&transit_engine);
     cred_handler.setSessionStore(&sess_store);
     cred_handler.registerRoutes();
+
+    // Onboard routes (pod initialization)
+    onboard_handler.setDatabase(&database);
+    onboard_handler.setSessionStore(&sess_store);
+    onboard_handler.setTransitEngine(&transit_engine);
+    onboard_handler.setRateLimiter(&rate_limiter);
+    onboard_handler.registerRoutes();
+
+    // Memory API routes (ZeroClaw/NullClaw backend)
+    memory_handler.setDatabase(&database);
+    memory_handler.setSessionStore(&sess_store);
+    memory_handler.setTransitEngine(&transit_engine);
+    memory_handler.setRateLimiter(&rate_limiter);
+    memory_handler.registerRoutes();
 
     // ── Start HTTP server ──
     const config = http_mod.Config{
@@ -120,6 +139,10 @@ pub fn main() !void {
     var listener = try addr.listen(.{ .reuse_address = true });
     defer listener.deinit();
 
+    // Connection semaphore: cap concurrent connections at 256
+    const MAX_CONCURRENT: usize = 256;
+    var active_connections = std.atomic.Value(usize).init(0);
+
     while (!http_server._stop.load(.acquire)) {
         const conn = listener.accept() catch |err| switch (err) {
             error.WouldBlock => continue,
@@ -129,7 +152,21 @@ pub fn main() !void {
             },
         };
 
-        const t = std.Thread.spawn(.{}, http_mod.handleConnection, .{ conn, &http_server.config }) catch |err| {
+        // Reject if at capacity
+        const current = active_connections.load(.acquire);
+        if (current >= MAX_CONCURRENT) {
+            std.log.warn("Max connections reached ({d}), rejecting", .{MAX_CONCURRENT});
+            conn.stream.close();
+            continue;
+        }
+
+        const t = std.Thread.spawn(.{}, struct {
+            fn run(c: std.net.Server.Connection, cfg: *const http_mod.Config, counter: *std.atomic.Value(usize)) void {
+                _ = counter.fetchAdd(1, .monotonic);
+                defer _ = counter.fetchSub(1, .monotonic);
+                http_mod.handleConnection(c, cfg);
+            }
+        }.run, .{ conn, &http_server.config, &active_connections }) catch |err| {
             std.log.warn("Failed to spawn handler thread: {}", .{err});
             conn.stream.close();
             continue;

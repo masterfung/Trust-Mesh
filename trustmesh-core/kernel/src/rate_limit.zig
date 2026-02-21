@@ -102,14 +102,17 @@ pub const SlidingWindowCounter = struct {
     }
 };
 
-/// Combined rate limiter with connection + query + pin + emergency counters.
+/// Combined rate limiter with connection + query + pin + emergency + memory counters.
 pub const RateLimiter = struct {
     connection: SlidingWindowCounter,
     query: SlidingWindowCounter,
     pin: SlidingWindowCounter, // 5 per 15 min per user
     emergency_issue: SlidingWindowCounter, // 3 per hour per key
     emergency_present: SlidingWindowCounter, // 5 per hour per key
+    memory: SlidingWindowCounter, // memory API rate limits
     allocator: Allocator,
+    /// Protects all counters from concurrent access (thread-per-connection model).
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: Allocator) RateLimiter {
         return .{
@@ -118,6 +121,7 @@ pub const RateLimiter = struct {
             .pin = SlidingWindowCounter.init(allocator),
             .emergency_issue = SlidingWindowCounter.init(allocator),
             .emergency_present = SlidingWindowCounter.init(allocator),
+            .memory = SlidingWindowCounter.init(allocator),
             .allocator = allocator,
         };
     }
@@ -128,6 +132,7 @@ pub const RateLimiter = struct {
         self.pin.deinit();
         self.emergency_issue.deinit();
         self.emergency_present.deinit();
+        self.memory.deinit();
     }
 
     // ── Connection Rate Limiting ──
@@ -135,6 +140,8 @@ pub const RateLimiter = struct {
     /// Check if user can send a connection request.
     /// Limits: 10/day, 30/week.
     pub fn checkConnection(self: *RateLimiter, user_id: []const u8) CheckResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         // Build keys in stack buffers
         var day_key_buf: [256]u8 = undefined;
         var week_key_buf: [256]u8 = undefined;
@@ -157,6 +164,8 @@ pub const RateLimiter = struct {
 
     /// Record a connection request for rate limiting.
     pub fn recordConnection(self: *RateLimiter, user_id: []const u8) RateLimitError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var day_key_buf: [256]u8 = undefined;
         var week_key_buf: [256]u8 = undefined;
 
@@ -198,6 +207,8 @@ pub const RateLimiter = struct {
         target_id: []const u8,
         is_public: bool,
     ) CheckResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var burst_buf: [256]u8 = undefined;
         var target_buf: [512]u8 = undefined;
         var daily_buf: [256]u8 = undefined;
@@ -245,6 +256,8 @@ pub const RateLimiter = struct {
         user_id: []const u8,
         target_id: []const u8,
     ) RateLimitError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var burst_buf: [256]u8 = undefined;
         var daily_buf: [256]u8 = undefined;
         var target_buf: [512]u8 = undefined;
@@ -262,6 +275,8 @@ pub const RateLimiter = struct {
 
     /// Check PIN attempt rate (5 per 15 min per user_id).
     pub fn checkPin(self: *RateLimiter, user_id: []const u8) CheckResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const count = self.pin.count(user_id, 900); // 15 min window
         if (count >= 5) {
             return deniedResult("Too many PIN attempts. Try again in 15 minutes.");
@@ -271,6 +286,8 @@ pub const RateLimiter = struct {
 
     /// Record a PIN attempt.
     pub fn recordPin(self: *RateLimiter, user_id: []const u8) RateLimitError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         try self.pin.record(user_id);
     }
 
@@ -279,6 +296,8 @@ pub const RateLimiter = struct {
     /// Check emergency token issuance rate (3 per hour per key).
     /// Key should be "{issuer_id}:{patient_id}".
     pub fn checkEmergencyIssue(self: *RateLimiter, key: []const u8) CheckResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const count = self.emergency_issue.count(key, 3600);
         if (count >= 3) {
             return deniedResult("Emergency token issuance limit reached (3/hour per patient).");
@@ -288,11 +307,15 @@ pub const RateLimiter = struct {
 
     /// Record an emergency token issuance.
     pub fn recordEmergencyIssue(self: *RateLimiter, key: []const u8) RateLimitError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         try self.emergency_issue.record(key);
     }
 
     /// Check emergency access rate (5 per hour per token hash).
     pub fn checkEmergencyPresent(self: *RateLimiter, key: []const u8) CheckResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const count = self.emergency_present.count(key, 3600);
         if (count >= 5) {
             return deniedResult("Emergency access limit reached. Token has been used too many times.");
@@ -302,16 +325,83 @@ pub const RateLimiter = struct {
 
     /// Record an emergency access attempt.
     pub fn recordEmergencyPresent(self: *RateLimiter, key: []const u8) RateLimitError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         try self.emergency_present.record(key);
     }
 
     /// Reset all rate limit state (test helper).
     pub fn reset(self: *RateLimiter) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         self.connection.reset();
         self.query.reset();
         self.pin.reset();
         self.emergency_issue.reset();
         self.emergency_present.reset();
+        self.memory.reset();
+    }
+
+    // ── Memory API Rate Limiting ──
+
+    /// Check if user can perform a memory store operation (100/hour).
+    pub fn checkMemoryStore(self: *RateLimiter, user_id: []const u8) CheckResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var key_buf: [256]u8 = undefined;
+        const key = fmtKey(&key_buf, "mem_store:", user_id, ":hour");
+        const cnt = self.memory.count(key, 3600);
+        if (cnt >= 100) return deniedResult("Memory store limit reached (100/hour).");
+        return okResult();
+    }
+
+    /// Record a memory store for rate limiting.
+    pub fn recordMemoryStore(self: *RateLimiter, user_id: []const u8) RateLimitError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var key_buf: [256]u8 = undefined;
+        const key = fmtKey(&key_buf, "mem_store:", user_id, ":hour");
+        try self.memory.record(key);
+    }
+
+    /// Check if user can perform a memory recall operation (500/hour).
+    pub fn checkMemoryRecall(self: *RateLimiter, user_id: []const u8) CheckResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var key_buf: [256]u8 = undefined;
+        const key = fmtKey(&key_buf, "mem_recall:", user_id, ":hour");
+        const cnt = self.memory.count(key, 3600);
+        if (cnt >= 500) return deniedResult("Memory recall limit reached (500/hour).");
+        return okResult();
+    }
+
+    /// Record a memory recall for rate limiting.
+    pub fn recordMemoryRecall(self: *RateLimiter, user_id: []const u8) RateLimitError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var key_buf: [256]u8 = undefined;
+        const key = fmtKey(&key_buf, "mem_recall:", user_id, ":hour");
+        try self.memory.record(key);
+    }
+
+    /// Check if user can perform a memory schedule operation (50/hour).
+    pub fn checkMemorySchedule(self: *RateLimiter, user_id: []const u8) CheckResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var key_buf: [256]u8 = undefined;
+        const key = fmtKey(&key_buf, "mem_sched:", user_id, ":hour");
+        const cnt = self.memory.count(key, 3600);
+        if (cnt >= 50) return deniedResult("Memory schedule limit reached (50/hour).");
+        return okResult();
+    }
+
+    /// Record a memory schedule for rate limiting.
+    pub fn recordMemorySchedule(self: *RateLimiter, user_id: []const u8) RateLimitError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var key_buf: [256]u8 = undefined;
+        const key = fmtKey(&key_buf, "mem_sched:", user_id, ":hour");
+        try self.memory.record(key);
     }
 };
 

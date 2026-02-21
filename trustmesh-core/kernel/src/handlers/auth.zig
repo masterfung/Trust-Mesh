@@ -219,10 +219,8 @@ fn removeVaultKey(user_id: []const u8) void {
 // ═══════════════════════════════════════════
 
 /// Build a JSON response body for a user with proper escaping of all user-controlled fields.
-/// Uses a thread-local buffer. Returns a slice into a static buffer valid until next call.
-var _user_json_buf: [4096]u8 = undefined;
-
-fn buildUserJson(user: UserRow) ![]const u8 {
+/// Allocates on the per-connection arena — safe for concurrent requests.
+fn buildUserJson(user: UserRow, allocator: std.mem.Allocator) ![]const u8 {
     // Escape user-controlled fields
     var esc_display: [512]u8 = undefined;
     var esc_type: [128]u8 = undefined;
@@ -232,7 +230,7 @@ fn buildUserJson(user: UserRow) ![]const u8 {
     const type_len = json_mod.escapeJsonString(user.user_type, &esc_type) catch return error.SerializeFailed;
     const id_len = json_mod.escapeJsonString(user.id, &esc_id) catch return error.SerializeFailed;
 
-    return std.fmt.bufPrint(&_user_json_buf,
+    return std.fmt.allocPrint(allocator,
         "{{\"id\":\"{s}\",\"display_name\":\"{s}\",\"user_type\":\"{s}\",\"is_demo\":{s},\"is_discoverable\":{s},\"is_remote\":false}}",
         .{
             esc_id[0..id_len],
@@ -305,7 +303,7 @@ fn handleLogin(ctx: *http.RequestContext) !void {
         return ctx.sendError(.internal_server_error, "Session creation failed");
 
     // Build response body with proper JSON escaping for user-controlled fields
-    const body_bytes = buildUserJson(user) catch
+    const body_bytes = buildUserJson(user, ctx.allocator) catch
         return ctx.sendError(.internal_server_error, "Serialization failed");
 
     // Set-Cookie header
@@ -361,7 +359,7 @@ fn handleMe(ctx: *http.RequestContext) !void {
     const user = try lookupUserById(database, user_id, ctx.allocator) orelse
         return ctx.sendError(.not_found, "User not found");
 
-    const body_bytes = buildUserJson(user) catch
+    const body_bytes = buildUserJson(user, ctx.allocator) catch
         return ctx.sendError(.internal_server_error, "Serialization failed");
 
     try ctx.json(.ok, body_bytes);

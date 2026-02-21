@@ -172,6 +172,12 @@ pub const Statement = struct {
         if (rc != c.SQLITE_OK) return SqliteError.BindFailed;
     }
 
+    pub fn bindBlob(self: *Statement, col: c_int, data: [*]const u8, len: c_int) SqliteError!void {
+        // Use SQLITE_STATIC (null) — safe because we always step() right after bind.
+        const rc = c.sqlite3_bind_blob(self.handle, col, data, len, null);
+        if (rc != c.SQLITE_OK) return SqliteError.BindFailed;
+    }
+
     /// Step the statement. Returns true if there's a row (SQLITE_ROW), false if done.
     pub fn step(self: *Statement) SqliteError!bool {
         const rc = c.sqlite3_step(self.handle);

@@ -97,6 +97,8 @@ pub const TransitEngine = struct {
     rings: [MAX_USERS]UserKeyRing,
     ring_count: usize,
     allocator: Allocator,
+    /// Protects rings from concurrent access (thread-per-connection model).
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: Allocator) TransitEngine {
         return .{
@@ -127,6 +129,8 @@ pub const TransitEngine = struct {
     /// Store a key for a user. Returns version number.
     /// If user doesn't exist, creates a new ring. If exists, adds a new version.
     pub fn storeKey(self: *TransitEngine, user_id: []const u8, key: *const [KEY_SIZE]u8) TransitError!u32 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (user_id.len > 128 or user_id.len == 0) return TransitError.BufferTooSmall;
 
         if (self.findRing(user_id)) |ring| {
@@ -172,6 +176,8 @@ pub const TransitEngine = struct {
         aad: []const u8,
         out: []u8,
     ) TransitError!usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const ring = self.findRing(user_id) orelse return TransitError.UserNotFound;
         const slot = ring.activeSlot() orelse return TransitError.KeyNotFound;
 
@@ -213,6 +219,8 @@ pub const TransitEngine = struct {
         aad: []const u8,
         out: []u8,
     ) TransitError!usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const ring = self.findRing(user_id) orelse return TransitError.UserNotFound;
 
         // Check for version prefix "v{N}."
@@ -236,6 +244,8 @@ pub const TransitEngine = struct {
 
     /// Rotate key for a user. Returns new version number.
     pub fn rotateKey(self: *TransitEngine, user_id: []const u8) TransitError!u32 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const ring = self.findRing(user_id) orelse return TransitError.UserNotFound;
         if (ring.slot_count >= MAX_VERSIONS) return TransitError.VersionsFull;
 
@@ -249,6 +259,8 @@ pub const TransitEngine = struct {
 
     /// Remove all keys for a user. secureZero all material.
     pub fn removeUser(self: *TransitEngine, user_id: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var idx: usize = 0;
         while (idx < self.ring_count) {
             if (self.rings[idx].user_id_len == user_id.len and
@@ -269,6 +281,8 @@ pub const TransitEngine = struct {
 
     /// Check if a user has a key loaded.
     pub fn hasKey(self: *TransitEngine, user_id: []const u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         return self.findRing(user_id) != null;
     }
 };
