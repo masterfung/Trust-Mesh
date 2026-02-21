@@ -15,11 +15,86 @@ log = logging.getLogger(__name__)
 
 _db_handle: Any = None
 _initialized: bool = False
+_sigs_set: bool = False
+
+c_void_p = ctypes.c_void_p
+c_char_p = ctypes.c_char_p
+c_int32 = ctypes.c_int32
+c_uint32 = ctypes.c_uint32
+POINTER = ctypes.POINTER
 
 
 def _get_lib():
     from src.timeline_bridge import _get_lib as _tl_get_lib
-    return _tl_get_lib()
+    lib = _tl_get_lib()
+    _set_sigs(lib)
+    return lib
+
+
+def _set_sigs(lib):
+    """Set argtypes/restype for credential C ABI functions (once)."""
+    global _sigs_set
+    if _sigs_set:
+        return
+    _sigs_set = True
+
+    # init_tables(db) -> i32
+    lib.podos_credential_init_tables.argtypes = [c_void_p]
+    lib.podos_credential_init_tables.restype = c_int32
+
+    # create(db, id, id_len, owner, owner_len, name, name_len, svc, svc_len,
+    #        cat, cat_len, secret_enc, sec_len, tools_json, tools_len, exp, exp_len) -> i32
+    lib.podos_credential_create.argtypes = [
+        c_void_p,
+        c_char_p, c_uint32, c_char_p, c_uint32,
+        c_char_p, c_uint32, c_char_p, c_uint32,
+        c_char_p, c_uint32, c_char_p, c_uint32,
+        c_char_p, c_uint32, c_char_p, c_uint32,
+    ]
+    lib.podos_credential_create.restype = c_int32
+
+    # list(db, owner, owner_len, out, out_cap, out_len*) -> i32
+    lib.podos_credential_list.argtypes = [
+        c_void_p, c_char_p, c_uint32,
+        c_char_p, c_uint32, POINTER(c_uint32),
+    ]
+    lib.podos_credential_list.restype = c_int32
+
+    # for_tool(db, owner, owner_len, tool, tool_len, out, out_cap, out_len*) -> i32
+    lib.podos_credential_for_tool.argtypes = [
+        c_void_p, c_char_p, c_uint32,
+        c_char_p, c_uint32,
+        c_char_p, c_uint32, POINTER(c_uint32),
+    ]
+    lib.podos_credential_for_tool.restype = c_int32
+
+    # update_use(db, id, id_len, actor, actor_len) -> i32
+    lib.podos_credential_update_use.argtypes = [
+        c_void_p, c_char_p, c_uint32, c_char_p, c_uint32,
+    ]
+    lib.podos_credential_update_use.restype = c_int32
+
+    # deactivate(db, id, id_len, owner, owner_len) -> i32
+    lib.podos_credential_deactivate.argtypes = [
+        c_void_p, c_char_p, c_uint32, c_char_p, c_uint32,
+    ]
+    lib.podos_credential_deactivate.restype = c_int32
+
+    # audit_append(db, cred_id, cid_len, op, op_len, actor, actor_len,
+    #              tool, tool_len, share, share_len, ip, ip_len,
+    #              decision, dec_len, details, det_len) -> i32
+    lib.podos_credential_audit_append.argtypes = [
+        c_void_p,
+        c_char_p, c_uint32, c_char_p, c_uint32,
+        c_char_p, c_uint32, c_char_p, c_uint32,
+        c_char_p, c_uint32, c_char_p, c_uint32,
+        c_char_p, c_uint32, c_char_p, c_uint32,
+    ]
+    lib.podos_credential_audit_append.restype = c_int32
+
+    # sweep_expiry(db) -> i32
+    lib.podos_credential_sweep_expiry.argtypes = [c_void_p]
+    lib.podos_credential_sweep_expiry.restype = c_int32
 
 
 def _get_db():
@@ -39,7 +114,7 @@ def _ensure_zig():
     lib = _get_lib()
     db = _get_db()
     if db is not None:
-        lib.podos_credential_init_tables(db)
+        lib.podos_credential_init_tables(c_void_p(db))
     _initialized = True
 
 
@@ -53,7 +128,7 @@ def init_tables() -> None:
     if db is None:
         log.warning("credential_bridge: DB handle not ready — skipping table init")
         return
-    rc = lib.podos_credential_init_tables(db)
+    rc = lib.podos_credential_init_tables(c_void_p(db))
     if rc != 0:
         log.error("podos_credential_init_tables failed: %d", rc)
     else:
@@ -105,7 +180,7 @@ def create_credential(
     #   secret_enc, secret_enc_len, scoped_tools_json, tools_len,
     #   expires_at, exp_len)
     rc = lib.podos_credential_create(
-        db,
+        c_void_p(db),
         cid, len(cid),
         uid, len(uid),
         nm, len(nm),
@@ -136,7 +211,7 @@ def list_credentials(owner_id: str) -> list[dict]:
     out_len = ctypes.c_uint32(0)
     uid = owner_id.encode()
 
-    rc = lib.podos_credential_list(db, uid, len(uid), out, 65536, ctypes.byref(out_len))
+    rc = lib.podos_credential_list(c_void_p(db), uid, len(uid), out, 65536, ctypes.byref(out_len))
     if rc != 0:
         log.error("podos_credential_list failed: %d", rc)
         return []
@@ -165,7 +240,7 @@ def get_credential_for_tool(owner_id: str, tool_name: str) -> list[dict]:
     tn = tool_name.encode()
 
     rc = lib.podos_credential_for_tool(
-        db, uid, len(uid), tn, len(tn), out, 65536, ctypes.byref(out_len)
+        c_void_p(db), uid, len(uid), tn, len(tn), out, 65536, ctypes.byref(out_len)
     )
     if rc != 0:
         log.error("podos_credential_for_tool failed: %d", rc)
@@ -206,7 +281,7 @@ def record_use(cred_id: str, actor_id: str, tool_name: str) -> None:
     # Update use_count
     cid = cred_id.encode()
     uid = actor_id.encode()
-    lib.podos_credential_update_use(db, cid, len(cid), uid, len(uid))
+    lib.podos_credential_update_use(c_void_p(db), cid, len(cid), uid, len(uid))
 
     # Audit
     _audit_append(db, lib, cred_id, "used", actor_id, tool_name=tool_name)
@@ -224,7 +299,7 @@ def deactivate_credential(cred_id: str, owner_id: str) -> None:
 
     cid = cred_id.encode()
     uid = owner_id.encode()
-    rc = lib.podos_credential_deactivate(db, cid, len(cid), uid, len(uid))
+    rc = lib.podos_credential_deactivate(c_void_p(db), cid, len(cid), uid, len(uid))
     if rc == -3:
         raise PermissionError("Access denied")
     if rc != 0:
@@ -242,7 +317,7 @@ def _audit_append(db, lib, cred_id: str, operation: str, actor_id: str, tool_nam
     decision = b"allowed"
 
     rc = lib.podos_credential_audit_append(
-        db,
+        c_void_p(db),
         cid, len(cid),
         op, len(op),
         uid, len(uid),

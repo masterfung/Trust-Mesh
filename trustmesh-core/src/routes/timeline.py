@@ -419,6 +419,7 @@ async def start_auto_tick():
     if engine.entry_count == 0:
         _seed_demo_entries(engine)
         _seed_cme_entries(engine)
+        _seed_credential_entries(engine)
     if _tick_task is None or _tick_task.done():
         _tick_task = asyncio.create_task(_auto_tick_loop(engine))
         logger.info("Auto-tick loop started")
@@ -779,6 +780,102 @@ def _seed_cme_entries(engine):
     )
 
 
+def _seed_credential_entries(engine):
+    """Seed credential lifecycle management timeline entries.
+
+    Two entries:
+      1. Daily sweep — SYSTEM hook, runs podos_credential_sweep_expiry
+      2. Weekly rotation reminder — AGENT_TASK, notifies owner of stale credentials
+    """
+    from src.timeline_bridge import (
+        EntryBuilder,
+        EntryType,
+        HookActionKind,
+        HookPhase,
+        Visibility,
+    )
+
+    def _persist_and_cache(eid, spec):
+        try:
+            state_val = engine.get_entry_state(eid)
+            persist_entry_spec(
+                owner_id="demo",
+                entry_id=eid,
+                state=int(state_val) if state_val is not None else 0,
+                spec=spec,
+            )
+            _cache_spec(eid, spec)
+        except Exception:
+            logger.exception("Failed to persist credential entry %s", eid)
+
+    # 1. Credential Expiry + Share Cleanup — daily at 06:00 UTC, SYSTEM hook
+    sweep = (
+        EntryBuilder()
+        .set_label("Credential Expiry + Share Cleanup")
+        .set_category("system.security")
+        .set_salience(0.15)
+        .set_visibility(Visibility.PRIVATE)
+        .set_entry_type(EntryType.TASK)
+        .set_trigger_cron("0 6 * * *")
+    )
+    sweep.add_hook(
+        action=HookActionKind.PIPELINE,
+        phase=HookPhase.PRE,
+        prompt="credential_sweep",
+    )
+    sweep_id = engine.add_entry(sweep)
+    _persist_and_cache(sweep_id, {
+        "id": str(sweep_id), "owner_id": "demo",
+        "label": "Credential Expiry + Share Cleanup", "category": "system.security",
+        "entry_type": int(EntryType.TASK), "visibility": int(Visibility.PRIVATE),
+        "salience": 0.15,
+        "activation_trigger": {"kind": "time", "cron": "0 6 * * *"},
+        "deactivation_trigger": None, "dependencies": [],
+        "hooks": [{"action": int(HookActionKind.PIPELINE), "phase": int(HookPhase.PRE),
+                    "prompt": "credential_sweep", "timeout_ms": 30000, "max_retries": 0}],
+    })
+
+    # 2. Credential Rotation Reminder — weekly on Monday at 09:00 UTC, AGENT_TASK
+    rotation = (
+        EntryBuilder()
+        .set_label("Credential Rotation Reminder")
+        .set_category("system.security")
+        .set_salience(0.3)
+        .set_visibility(Visibility.PRIVATE)
+        .set_entry_type(EntryType.TASK)
+        .set_trigger_cron("0 9 * * 1")
+    )
+    rotation.add_hook(
+        action=HookActionKind.AGENT_TASK,
+        phase=HookPhase.PRE,
+        prompt=(
+            "Review credentials due for rotation based on rotation_interval_days. "
+            "List each overdue credential (name, service, last_used_at) and notify "
+            "the owner with a summary. Do not expose secret values."
+        ),
+    )
+    rotation_id = engine.add_entry(rotation)
+    _persist_and_cache(rotation_id, {
+        "id": str(rotation_id), "owner_id": "demo",
+        "label": "Credential Rotation Reminder", "category": "system.security",
+        "entry_type": int(EntryType.TASK), "visibility": int(Visibility.PRIVATE),
+        "salience": 0.3,
+        "activation_trigger": {"kind": "time", "cron": "0 9 * * 1"},
+        "deactivation_trigger": None, "dependencies": [],
+        "hooks": [{"action": int(HookActionKind.AGENT_TASK), "phase": int(HookPhase.PRE),
+                    "prompt": (
+                        "Review credentials due for rotation based on rotation_interval_days. "
+                        "List each overdue credential (name, service, last_used_at) and notify "
+                        "the owner with a summary. Do not expose secret values."
+                    ), "timeout_ms": 60000, "max_retries": 1}],
+    })
+
+    logger.info(
+        "Seeded 2 credential lifecycle entries (sweep=%s, rotation=%s)",
+        sweep_id, rotation_id,
+    )
+
+
 async def stop_auto_tick():
     """Stop the auto-tick background loop. Called from app shutdown."""
     global _tick_task
@@ -814,6 +911,8 @@ async def _auto_tick_loop(engine):
             else:
                 sleep_sec = heartbeat_sec
 
+            # NTP guard: never sleep negative or near-zero (prevents rapid-fire ticks on clock correction)
+            sleep_sec = max(0.1, sleep_sec)
             await asyncio.sleep(sleep_sec)
 
             if engine.is_running:

@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api", tags=["audit"])
 @router.get("/users/{user_id}/audit", response_model=list[AuditLogResponse])
 async def list_audit_logs(
     user_id: str,
-    event_type: str | None = Query(default=None, pattern=r"^(emergency|query|auth|capsule)$", description="Filter by event_type"),
+    event_type: str | None = Query(default=None, pattern=r"^(emergency|query|auth|capsule|credential|network)$", description="Filter by event_type"),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     auth_user_id: str = Depends(get_current_user_id),

@@ -293,7 +293,7 @@ class AuditLog(Base):
     actor_institution: Mapped[str | None] = mapped_column(String(200), nullable=True)
     target_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     action: Mapped[str] = mapped_column(String(50), nullable=False)
-    event_type: Mapped[str] = mapped_column(String(30), nullable=False)  # emergency | query | auth | capsule
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False)  # emergency | query | auth | capsule | credential | network
     capsule_ids_accessed: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
     categories_accessed: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
     token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)

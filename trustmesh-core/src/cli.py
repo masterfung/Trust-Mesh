@@ -355,6 +355,121 @@ def status():
 
 
 @app.command()
+def init(
+    pod: str = typer.Option("http://localhost:8000", "--pod", "-p", help="Pod URL"),
+    username: str = typer.Option(None, "--username", "-u", help="Username for the new account"),
+    display_name: str = typer.Option(None, "--display-name", "-n", help="Display name"),
+    user_type: str = typer.Option("person", "--type", "-t", help="Entity type: person, organization, government"),
+    pod_name: str = typer.Option(None, "--pod-name", help="Pod name (for config)"),
+):
+    """Initialize a new TrustMesh pod — create the first user account.
+
+    This calls POST /api/onboard/init on the running Zig server to create a user,
+    agent, ed25519 keypair, and vault key. The pod must be running.
+
+    Example:
+        trustmesh init --username molly --pod-name "Molly's Pod"
+    """
+    pod_url = pod.rstrip("/")
+
+    # Check pod is reachable
+    try:
+        health = httpx.get(f"{pod_url}/api/onboard/status", timeout=5.0)
+        if health.status_code == 200:
+            data = health.json()
+            if data.get("initialized"):
+                console.print(f"[yellow]Pod already initialized ({data.get('user_count', '?')} users).[/yellow]")
+                console.print("[dim]Run 'trustmesh login' to sign in.[/dim]")
+                raise typer.Exit(0)
+    except (httpx.ConnectError, httpx.TimeoutException):
+        console.print(f"[red]Cannot connect to {pod_url} — is the Zig server running?[/red]")
+        console.print("[dim]Start with: ./dev.sh start[/dim]")
+        raise typer.Exit(1)
+    except typer.Exit:
+        raise
+    except Exception:
+        pass  # Non-fatal — proceed with init attempt
+
+    if not username:
+        username = typer.prompt("Username (2-50 chars)")
+    if not display_name:
+        display_name = typer.prompt("Display name", default=username)
+
+    # Password with confirmation
+    for _ in range(3):
+        password = getpass.getpass("Password (12+ chars, upper+lower+digit): ")
+        confirm = getpass.getpass("Confirm password: ")
+        if password != confirm:
+            console.print("[yellow]Passwords don't match. Try again.[/yellow]")
+            continue
+        break
+    else:
+        console.print("[red]Too many failed attempts.[/red]")
+        raise typer.Exit(1)
+
+    if password != confirm:
+        console.print("[red]Passwords don't match.[/red]")
+        raise typer.Exit(1)
+
+    # Call onboard endpoint
+    try:
+        resp = httpx.post(
+            f"{pod_url}/api/onboard/init",
+            json={
+                "username": username,
+                "password": password,
+                "display_name": display_name,
+                "user_type": user_type,
+            },
+            timeout=30.0,
+        )
+    except (httpx.ConnectError, httpx.TimeoutException):
+        console.print(f"[red]Cannot connect to {pod_url}[/red]")
+        raise typer.Exit(1)
+
+    if resp.status_code >= 400:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        console.print(f"[red]Init failed: {detail}[/red]")
+        raise typer.Exit(1)
+
+    result = resp.json()
+    user_id = result.get("user_id", "")
+    did = result.get("did", "")
+
+    # Save session from response cookie or token
+    token = resp.cookies.get("trustmesh_session") or result.get("session_token", "")
+    if token:
+        _save_session(pod_url, token, user_id, username)
+
+    # Write config.toml
+    _ensure_config_dir()
+    config_data = {
+        "pod_url": pod_url,
+        "pod_name": pod_name or f"{display_name}'s Pod",
+        "username": username,
+        "did": did,
+    }
+    CONFIG_FILE.write_text(
+        "\n".join(f'{k} = "{v}"' for k, v in config_data.items()) + "\n"
+    )
+
+    console.print()
+    console.print(f"[green bold]Pod initialized![/green bold]")
+    console.print(f"  User:    {display_name} (@{username})")
+    console.print(f"  DID:     {did}")
+    console.print(f"  Pod:     {pod_url}")
+    console.print(f"  Config:  {CONFIG_FILE}")
+    console.print()
+    console.print("[dim]You're now logged in. Try:[/dim]")
+    console.print("  [cyan]trustmesh whoami[/cyan]")
+    console.print("  [cyan]trustmesh vault list[/cyan]")
+    console.print("  [cyan]trustmesh agent chat[/cyan]")
+
+
+@app.command()
 def pods():
     """Scan local ports 8001-8016 for running TrustMesh pods. Use with multi-pod setup."""
     table = Table(title="Local TrustMesh Pods")

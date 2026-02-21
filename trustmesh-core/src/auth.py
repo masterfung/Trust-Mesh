@@ -221,7 +221,19 @@ def get_session_token(request: Request) -> str | None:
 
 
 async def get_current_user_id(request: Request) -> str:
-    """FastAPI dependency: extract and validate session from httpOnly cookie."""
+    """FastAPI dependency: extract and validate session from httpOnly cookie.
+
+    When behind the Zig HTTP proxy (:8000 → :9000), Zig validates the session
+    and injects X-Verified-User-Id. We trust this header because Python on :9000
+    is only reachable from localhost (Zig proxy). This eliminates the need for
+    Python to maintain its own session store copy.
+    """
+    # Trust Zig-verified session (proxy path: :8000 → :9000)
+    verified_uid = request.headers.get("x-verified-user-id")
+    if verified_uid:
+        return verified_uid
+
+    # Direct Python access (tests, non-proxy mode)
     token = get_session_token(request)
     if not token:
         raise HTTPException(401, "Authentication required")
@@ -234,6 +246,11 @@ async def get_current_user_id(request: Request) -> str:
 
 async def get_optional_user_id(request: Request) -> str | None:
     """FastAPI dependency: optionally extract user_id from cookie."""
+    # Trust Zig-verified session (proxy path)
+    verified_uid = request.headers.get("x-verified-user-id")
+    if verified_uid:
+        return verified_uid
+
     token = get_session_token(request)
     if not token:
         return None

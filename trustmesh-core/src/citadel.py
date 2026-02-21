@@ -328,6 +328,102 @@ async def scan_output(text: str, trust_level: str = "public") -> OutputScanResul
     return result
 
 
+# ═══════════════════════════════════════════════════════════════
+# Secret Prefix Scrubbing (adopted from NullClaw/ZeroClaw)
+# ═══════════════════════════════════════════════════════════════
+
+# Token prefixes for well-known API keys and service tokens
+SECRET_PREFIXES = (
+    "sk-",      # OpenAI API keys
+    "xoxb-",    # Slack Bot tokens
+    "xoxp-",    # Slack User tokens
+    "ghp_",     # GitHub Personal Access Tokens
+    "gho_",     # GitHub OAuth tokens
+    "ghs_",     # GitHub Service tokens
+    "ghu_",     # GitHub User-to-Server tokens
+    "glpat-",   # GitLab Personal Access Tokens
+    "AKIA",     # AWS Access Key IDs
+    "pypi-",    # PyPI API tokens
+    "npm_",     # NPM tokens
+    "shpat_",   # Shopify API tokens
+    "whsec_",   # Stripe webhook secrets
+    "sk_live_", # Stripe live secret keys
+    "sk_test_", # Stripe test secret keys
+    "pk_live_", # Stripe live publishable keys
+    "pk_test_", # Stripe test publishable keys
+    "rk_live_", # Stripe restricted keys
+    "rk_test_", # Stripe restricted test keys
+    "SG.",      # SendGrid API keys
+    "xapp-",    # Slack App tokens
+    "dop_v1_",  # DigitalOcean tokens
+    "snyk-",    # Snyk API tokens
+    "sq0csp-",  # Square sandbox tokens
+    "EAACEdEose0cBA",  # Facebook/Meta access tokens (prefix)
+)
+
+# Key-value patterns where a well-known key name precedes a secret value
+_KV_PATTERN = re.compile(
+    r"(?i)\b(api[_-]?key|api[_-]?secret|access[_-]?key|secret[_-]?key|"
+    r"token|password|passwd|auth[_-]?token|bearer|private[_-]?key|"
+    r"client[_-]?secret|signing[_-]?key)"
+    r"\s*[=:]\s*"
+    r"(['\"]?)([A-Za-z0-9+/_.~-]{8,})(\2)",
+)
+
+# Bearer token pattern in headers
+_BEARER_PATTERN = re.compile(
+    r"(?i)\b(bearer)\s+([A-Za-z0-9+/_.~-]{8,})",
+)
+
+# Maximum tool output size before truncation (chars)
+MAX_TOOL_OUTPUT_CHARS = 10_000
+
+
+def scrub_secret_prefixes(text: str) -> str:
+    """Scrub well-known secret token prefixes from text.
+
+    Replaces any token starting with a known prefix (followed by 8+ alphanum chars)
+    with the prefix + [REDACTED]. Also scrubs key=value patterns and Bearer tokens.
+    """
+    if not text:
+        return text
+
+    result = text
+
+    # 1. Prefix-based tokens (e.g., "sk-abc123..." → "sk-[REDACTED]")
+    for prefix in SECRET_PREFIXES:
+        # Build a pattern that matches the prefix followed by token characters
+        # Use re.escape for prefixes that contain regex-special chars
+        escaped = re.escape(prefix)
+        pattern = re.compile(escaped + r"[A-Za-z0-9+/_.~-]{4,}")
+        result = pattern.sub(prefix + "[REDACTED]", result)
+
+    # 2. Key=value patterns (e.g., "api_key=abc123" → "api_key=[REDACTED]")
+    result = _KV_PATTERN.sub(lambda m: f"{m.group(1)}=[REDACTED]", result)
+
+    # 3. Bearer tokens (e.g., "Bearer abc123..." → "Bearer [REDACTED]")
+    result = _BEARER_PATTERN.sub(r"\1 [REDACTED]", result)
+
+    return result
+
+
+def scrub_tool_output(text: str) -> str:
+    """Scrub secrets from tool output and enforce size limit.
+
+    Called on ALL tool results before they're sent to the LLM, regardless of
+    which tool produced them. This is the last line of defense against
+    credential leakage via tool execution.
+    """
+    if not text:
+        return text
+
+    # Truncate oversized output first (before scanning)
+    if len(text) > MAX_TOOL_OUTPUT_CHARS:
+        text = text[:MAX_TOOL_OUTPUT_CHARS] + "\n[output truncated]"
+
+    return scrub_secret_prefixes(text)
+
+
 async def is_citadel_available() -> bool:
     """Check if Citadel is running."""
     try:

@@ -1,5 +1,6 @@
 """CSRF protection middleware — double-submit cookie pattern."""
 
+import hmac
 import os
 import secrets
 
@@ -35,7 +36,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             if not self._is_exempt(path):
                 cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
                 header_token = request.headers.get(CSRF_HEADER_NAME)
-                if not cookie_token or not header_token or cookie_token != header_token:
+                if not cookie_token or not header_token or not hmac.compare_digest(cookie_token, header_token):
                     return Response(
                         content='{"detail":"CSRF token missing or mismatch"}',
                         status_code=403,

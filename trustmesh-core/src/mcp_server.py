@@ -277,6 +277,90 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
             )
         return "\n".join(lines)
 
+    # ── Memory API Tools (via Zig HTTP server) ──
+
+    @mcp.tool()
+    def memory_store(
+        content: str,
+        title: str = "Untitled",
+        category: str = "general",
+        visibility: str = "private",
+    ) -> str:
+        """Store a memory capsule directly via the Memory API (Zig fast path).
+
+        Simpler than save_to_vault — goes through the Zig HTTP server's
+        /api/memory/store endpoint for minimal-latency writes.
+
+        Args:
+            content: The knowledge content to store
+            title: Short title for the memory
+            category: Category tag (health, work, personal, finance, etc.)
+            visibility: private (only you), internal (trusted), open (anyone)
+        """
+        result = _api(_s(), "POST", "/api/memory/store", json={
+            "content": content,
+            "title": title,
+            "category": category,
+            "visibility": visibility,
+        })
+        return f"Stored: {result.get('id', '?')[:8]} ({result.get('status', 'unknown')})"
+
+    @mcp.tool()
+    def memory_recall(query: str, top_k: int = 5) -> str:
+        """Recall memories matching a query via FTS5 search (Zig fast path).
+
+        Uses the Zig HTTP server's /api/memory/recall endpoint for
+        trust-filtered full-text search with Porter stemming.
+
+        Args:
+            query: Search query (supports natural language)
+            top_k: Maximum number of results to return
+        """
+        result = _api(_s(), "POST", "/api/memory/recall", json={
+            "query": query,
+            "top_k": top_k,
+        })
+        results = result.get("results", [])
+        if not results:
+            return "No memories found."
+        lines = [f"Found {len(results)} result(s):\n"]
+        for r in results:
+            lines.append(f"- {r.get('title', '?')} [{r.get('category', '?')}]")
+            content = r.get("content", "")
+            if len(content) > 200:
+                content = content[:200] + "..."
+            lines.append(f"  {content}\n")
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def init_pod(username: str, password: str, display_name: str = "", user_type: str = "person") -> str:
+        """Initialize a new TrustMesh pod with the first user account.
+
+        Creates user + agent + ed25519 DID + encrypted vault. Only works
+        on a running pod that hasn't been initialized yet.
+
+        Args:
+            username: Username (2-32 chars, alphanumeric)
+            password: Password (12+ chars, upper + lower + digit)
+            display_name: Human-readable name (optional, defaults to username)
+            user_type: Entity type (person, organization, government)
+        """
+        payload = {
+            "username": username,
+            "password": password,
+            "user_type": user_type,
+        }
+        if display_name:
+            payload["display_name"] = display_name
+
+        result = _api(_s(), "POST", "/api/onboard/init", json=payload)
+        return (
+            f"Pod initialized!\n"
+            f"  User: {result.get('username', '?')}\n"
+            f"  DID: {result.get('did', '?')}\n"
+            f"  User ID: {result.get('user_id', '?')[:8]}..."
+        )
+
     # ── Public Tools (work without session) ──
 
     @mcp.tool()

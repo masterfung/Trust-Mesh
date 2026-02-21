@@ -14,8 +14,10 @@ else:
     # Fallback: try trustmesh-core/.env
     load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+from src.auth import get_current_user_id
 
 from src.csrf import CSRFMiddleware
 from src.middleware import RateLimitHeadersMiddleware
@@ -165,6 +167,9 @@ async def lifespan(app: FastAPI):
     _init_sessions()
     _init_rate_limits()
     set_db_handle(fts_db_handle)
+    # Initialize credential store tables (idempotent)
+    from src.credential_bridge import init_tables as credential_init_tables
+    credential_init_tables()
     # Auto-register discoverable agents with the public registry (fire-and-forget)
     from src.federation import sync_discoverable_agents_to_registry
     asyncio.create_task(sync_discoverable_agents_to_registry())
@@ -423,15 +428,15 @@ async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
 
 
 @app.get("/api/graph", response_model=GraphResponse)
-async def get_graph():
-    """Full trust graph (demo/admin view): all users, connections, networks."""
+async def get_graph(auth_user_id: str = Depends(get_current_user_id)):
+    """Full trust graph — requires authentication."""
     async with async_session() as db:
         return await _build_graph(db)
 
 
 @app.get("/api/graph/{user_id}", response_model=GraphResponse)
-async def get_user_graph(user_id: str):
-    """User-scoped trust graph: only this user's connections and networks."""
+async def get_user_graph(user_id: str, auth_user_id: str = Depends(get_current_user_id)):
+    """User-scoped trust graph — requires authentication."""
     async with async_session() as db:
         return await _build_graph(db, user_id=user_id)
 
