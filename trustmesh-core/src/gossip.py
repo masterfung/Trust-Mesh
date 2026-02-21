@@ -394,7 +394,7 @@ async def query_agent(
     2. Citadel: scan input
     3. Get accessible capsules
     4. Semantic retrieval
-    5. Opus 4.6 agent responds (with or without tools)
+    5. Sonnet 4.5 agent responds (with or without tools)
     6. Citadel: scan output
     7. Log and return
     """
@@ -523,7 +523,7 @@ async def query_agent(
 
     capsules = await load_capsules_decrypted(db, relevant_ids, to_user_id)
 
-    # 6. Opus 4.6 agent responds
+    # 6. Sonnet 4.5 agent responds
     actions = []
     try:
         if is_self_query:

@@ -188,7 +188,7 @@ Claude Code
                       ├── Resource: vault://my-capsules
                       ├── Resource: graph://my-networks
                       └── Prompt: "Query with trust context"
-                            └── Trust Resolution → Opus 4.6 → Citadel → Response
+                            └── Trust Resolution → Sonnet 4.5 → Citadel → Response
 ```
 
 ### MCP Server Implementation (Future)

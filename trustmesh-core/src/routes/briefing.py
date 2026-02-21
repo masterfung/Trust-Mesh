@@ -147,7 +147,7 @@ async def get_briefing(user_id: str, db: AsyncSession = Depends(get_db),
     )
     unread_notifications = len(list(notif_result.scalars().all()))
 
-    # 6. Generate briefing with Opus 4.6
+    # 6. Generate briefing with Sonnet 4.5
     briefing_text = await generate_briefing(
         owner_name=user.display_name,
         capsules=user_capsules,

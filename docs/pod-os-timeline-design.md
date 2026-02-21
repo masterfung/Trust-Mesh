@@ -996,7 +996,7 @@ Capsules (vault)          →    Ref targets (what entries point to)
 Trust levels              →    Entry visibility rules
 Connections/Networks      →    Sync topology for shared timelines
 Federation (pod-to-pod)   →    Distributed timeline sync
-Agent (Opus 4.6)          →    Service consumer of central state
+Agent (Sonnet 4.5)          →    Service consumer of central state
 Citadel (security)        →    Scans on ref resolution + hook output
 UCAN tokens               →    Emergency override triggers
 Ghost users               →    Shadow entries from peer timelines
@@ -1526,7 +1526,7 @@ The Zig timeline kernel doesn't replace the host operating system. It's a **user
 │  │                                                          │  │
 │  │  Agent Runtime:                                          │  │
 │  │  ├── Receives agent_task hooks from kernel               │  │
-│  │  ├── Calls LLM (Opus 4.6) with central state context    │  │
+│  │  ├── Calls LLM (Sonnet 4.5) with central state context    │  │
 │  │  ├── Executes tools (search, save, query)                │  │
 │  │  └── Returns results as events to kernel                 │  │
 │  │                                                          │  │

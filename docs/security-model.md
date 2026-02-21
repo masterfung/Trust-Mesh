@@ -201,7 +201,7 @@ User Query
     ▼
 ┌──────────────────┐
 │  TrustMesh       │
-│  Query Pipeline  │ ──► Trust resolution → Opus 4.6 → Response
+│  Query Pipeline  │ ──► Trust resolution → Sonnet 4.5 → Response
 └──────────────────┘
     │
     ▼
@@ -364,7 +364,7 @@ Request Arrives
     ├── 5. Citadel Input: Is this a prompt injection?
     ├── 6. Access Filtering: Only show capsules for this trust level
     ├── 7. Semantic Retrieval: Only relevant capsules (not full dump)
-    ├── 8. Opus 4.6 Reasoning: Agent decides what to share
+    ├── 8. Sonnet 4.5 Reasoning: Agent decides what to share
     ├── 9. Citadel Output: Does the response leak sensitive data?
     └── 10. Audit Log: Record everything
 ```

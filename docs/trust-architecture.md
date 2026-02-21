@@ -8,7 +8,7 @@ Today's AI agents operate in a binary world: either they share everything or not
 - "Share my work project timeline with my team, but not my family"
 - "Keep my private journal entries hidden from everyone"
 
-TrustMesh solves this with a **three-tier trust model** backed by human-approved connections, user-created networks, and Opus 4.6 reasoning.
+TrustMesh solves this with a **three-tier trust model** backed by human-approved connections, user-created networks, and Sonnet 4.5 reasoning.
 
 ---
 

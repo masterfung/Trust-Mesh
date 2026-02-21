@@ -140,7 +140,7 @@ async def retrieve_relevant_capsules(
 
 ### Why This Matters
 
-- **Context efficiency**: Opus 4.6 gets 3-5 relevant capsules, not 50 irrelevant ones
+- **Context efficiency**: Sonnet 4.5 gets 3-5 relevant capsules, not 50 irrelevant ones
 - **Better answers**: Agent reasons over focused context, not noise
 - **Trust enforcement**: Only capsules passing the trust filter are searchable
 - **Performance**: Vector search is O(log n), scales to thousands of capsules

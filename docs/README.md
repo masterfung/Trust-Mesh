@@ -24,10 +24,10 @@ Trust-aware knowledge sharing for AI agents.
 ## Quick Links
 
 - **Backend**: `trustmesh-core/` (Python + FastAPI, port 8000)
-- **Frontend**: `trustmesh-ui/` (Next.js 15 + Bun, port 3050)
+- **Frontend**: `trustmesh-ui/` (Next.js 16 + Bun, port 3050)
 - **Security**: Citadel sidecar (Go, port 3001)
 - **Database**: SQLite via SQLAlchemy async + ChromaDB for embeddings
-- **AI**: Anthropic Opus 4.6 for agent reasoning
+- **AI**: Anthropic Sonnet 4.5 for agent reasoning
 
 ## Key Concepts
 

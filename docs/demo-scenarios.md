@@ -195,7 +195,7 @@ The journal contains: *"Dr. Chen said 6-12 months before we need to discuss opti
 > "I can share grandma's care routine and medical contacts with you, but I don't have information about her overall prognosis. You might want to talk to your mom directly about that."
 
 ### Why This Matters
-Opus 4.6 doesn't lie — it genuinely doesn't have access to the private journal at this trust level. It can't accidentally leak information it can't see. The private tier is enforced at the **data access layer**, not just at the LLM prompt level.
+Sonnet 4.5 doesn't lie — it genuinely doesn't have access to the private journal at this trust level. It can't accidentally leak information it can't see. The private tier is enforced at the **data access layer**, not just at the LLM prompt level.
 
 ---
 
@@ -226,7 +226,7 @@ Decision: BLOCK
 ```
 
 ### Why This Matters
-Citadel catches prompt injection attacks **before they reach the agent**. The query never reaches Opus 4.6, never triggers trust resolution, and never accesses any capsules. Defense-in-depth.
+Citadel catches prompt injection attacks **before they reach the agent**. The query never reaches Sonnet 4.5, never triggers trust resolution, and never accesses any capsules. Defense-in-depth.
 
 ---
 
@@ -293,7 +293,7 @@ Show: TrustMesh landing page with the Johnson family.
 
 ### The Family (0:20 - 0:40)
 Show: Trust graph visualization with 5 users, connections, and 2 networks.
-*"Meet the Johnsons. Peter, Molly, their kids Jane and Bill, and Molly's coworker Kyle. Each has a personal AI agent powered by Opus 4.6 that holds their knowledge."*
+*"Meet the Johnsons. Peter, Molly, their kids Jane and Bill, and Molly's coworker Kyle. Each has a personal AI agent powered by Sonnet 4.5 that holds their knowledge."*
 
 ### Scenario 1 - Family Sharing (0:40 - 1:10)
 *"Bill asks Jane's agent: 'Where did Jane leave her wallet?' Because they're family..."*
@@ -315,7 +315,7 @@ Show: Prompt injection → Citadel blocks it → red warning.
 *"Citadel catches it before it reaches the agent."*
 
 ### The Architecture (2:30 - 2:50)
-*"Under the hood: encrypted knowledge vaults, trust-tiered networks, Opus 4.6 reasoning about what to share, and Citadel guarding every query."*
+*"Under the hood: encrypted knowledge vaults, trust-tiered networks, Sonnet 4.5 reasoning about what to share, and Citadel guarding every query."*
 Show: Architecture diagram animation.
 
 ### Closing (2:50 - 3:00)

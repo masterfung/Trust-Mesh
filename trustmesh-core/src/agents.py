@@ -1,4 +1,4 @@
-"""Opus 4.6 personal agent logic — the core intelligence layer.
+"""Sonnet 4.5 personal agent logic — the core intelligence layer.
 
 Agents have two modes:
 - Cross-query (read-only): Another user asks your agent. Agent reasons about
@@ -1691,43 +1691,123 @@ async def handle_check_timeline_state(ctx: ToolContext) -> str:
     })
 
 
+async def handle_list_credentials(ctx: ToolContext) -> str:
+    """List owner's credentials — metadata only, never secret values."""
+    from src import credential_bridge
+    try:
+        creds = credential_bridge.list_credentials(ctx.owner_id)
+        return json.dumps({
+            "success": True,
+            "credentials": creds,
+            "count": len(creds),
+        })
+    except Exception as e:
+        log.error("handle_list_credentials failed: %s", e)
+        return json.dumps({"success": False, "error": "Could not list credentials"})
+
+
+async def handle_manage_credential(ctx: ToolContext, params: dict) -> str:
+    """Store, rotate, or deactivate a credential.
+
+    SECURITY: Never echoes secret values in responses.
+    """
+    from src import credential_bridge
+    action = params.get("action", "")
+
+    if action == "store":
+        name = params.get("name", "")
+        service = params.get("service", "")
+        secret = params.get("secret", "")
+        scoped_tools = params.get("scoped_tools", [])
+        expires_at = params.get("expires_at")
+
+        if not name or not secret:
+            return json.dumps({"success": False, "error": "name and secret are required"})
+
+        try:
+            cred_id = credential_bridge.create_credential(
+                ctx.owner_id, name, service, secret,
+                scoped_tools, expires_at=expires_at,
+            )
+            return json.dumps({
+                "success": True,
+                "action": "stored",
+                "credential_id": cred_id,
+                # Never echo the secret value back — confirm storage only
+                "message": f"Stored securely. Credential '{name}' is ready for use by: {scoped_tools or 'any tool'}.",
+            })
+        except Exception as e:
+            log.error("handle_manage_credential store failed: %s", e)
+            return json.dumps({"success": False, "error": str(e)})
+
+    elif action == "deactivate":
+        cred_id = params.get("cred_id", "")
+        if not cred_id:
+            return json.dumps({"success": False, "error": "cred_id required"})
+        try:
+            credential_bridge.deactivate_credential(cred_id, ctx.owner_id)
+            return json.dumps({"success": True, "action": "deactivated", "credential_id": cred_id})
+        except PermissionError:
+            return json.dumps({"success": False, "error": "Access denied"})
+        except Exception as e:
+            log.error("handle_manage_credential deactivate failed: %s", e)
+            return json.dumps({"success": False, "error": str(e)})
+
+    else:
+        return json.dumps({"success": False, "error": f"Unknown action: {action}"})
+
+
 async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> str:
-    """Route a tool call to its handler. Returns JSON string."""
+    """Route a tool call to its handler. Returns JSON string.
+
+    All tool output is scrubbed for secret prefixes before returning to the LLM.
+    This prevents credential leakage regardless of which tool produces the output.
+    """
+    from src.citadel import scrub_tool_output
+
     if tool_name == "search_vault":
-        return await handle_search_vault(ctx, tool_input["query"])
+        result = await handle_search_vault(ctx, tool_input["query"])
     elif tool_name == "save_capsule":
-        return await handle_save_capsule(ctx, tool_input)
+        result = await handle_save_capsule(ctx, tool_input)
     elif tool_name == "web_search":
-        return await handle_web_search(ctx, tool_input["query"], tool_input.get("context", ""))
+        result = await handle_web_search(ctx, tool_input["query"], tool_input.get("context", ""))
     elif tool_name == "create_task":
-        return await handle_create_task(ctx, tool_input)
+        result = await handle_create_task(ctx, tool_input)
     elif tool_name == "discover_agents":
-        return await handle_discover_agents(ctx, tool_input)
+        result = await handle_discover_agents(ctx, tool_input)
     elif tool_name == "query_peer":
-        return await handle_query_peer(ctx, tool_input)
+        result = await handle_query_peer(ctx, tool_input)
     elif tool_name == "request_quotes":
-        return await handle_request_quotes(ctx, tool_input)
+        result = await handle_request_quotes(ctx, tool_input)
     elif tool_name == "list_connections":
-        return await handle_list_connections(ctx)
+        result = await handle_list_connections(ctx)
     elif tool_name == "list_services":
-        return await handle_list_services(ctx)
+        result = await handle_list_services(ctx)
     elif tool_name == "discover_networks":
-        return await handle_discover_networks(ctx, tool_input.get("interest", ""))
+        result = await handle_discover_networks(ctx, tool_input.get("interest", ""))
     elif tool_name == "check_calendar":
-        return await handle_check_calendar(ctx, tool_input.get("time_range", "this_week"))
+        result = await handle_check_calendar(ctx, tool_input.get("time_range", "this_week"))
     elif tool_name == "draft_email":
-        return await handle_draft_email(ctx, tool_input)
+        result = await handle_draft_email(ctx, tool_input)
     # Timeline tools
     elif tool_name == "create_timeline_entry":
-        return await handle_create_timeline_entry(ctx, tool_input)
+        result = await handle_create_timeline_entry(ctx, tool_input)
     elif tool_name == "list_timeline_entries":
-        return await handle_list_timeline_entries(ctx, tool_input.get("filter_state", "all"))
+        result = await handle_list_timeline_entries(ctx, tool_input.get("filter_state", "all"))
     elif tool_name == "complete_timeline_entry":
-        return await handle_complete_timeline_entry(ctx, tool_input["entry_id"])
+        result = await handle_complete_timeline_entry(ctx, tool_input["entry_id"])
     elif tool_name == "check_timeline_state":
-        return await handle_check_timeline_state(ctx)
+        result = await handle_check_timeline_state(ctx)
+    # Credential tools
+    elif tool_name == "list_credentials":
+        result = await handle_list_credentials(ctx)
+    elif tool_name == "manage_credential":
+        result = await handle_manage_credential(ctx, tool_input)
     else:
-        return json.dumps({"error": f"Unknown tool: {tool_name}"})
+        result = json.dumps({"error": f"Unknown tool: {tool_name}"})
+
+    # Scrub secret prefixes from ALL tool output before sending to LLM
+    return scrub_tool_output(result)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2573,7 +2653,7 @@ async def generate_briefing(
     pending_requests: int,
     unread_notifications: int,
 ) -> str:
-    """Generate a time-aware briefing using Opus 4.6."""
+    """Generate a time-aware briefing using Sonnet 4.5."""
     time_of_day, day_type, day_guidance = _get_briefing_time_context()
 
     context_parts = []

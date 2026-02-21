@@ -2019,6 +2019,6 @@ This transparency builds trust, enables compliance, and creates a more human-cen
 
 ---
 
-**Document prepared for:** Claude Opus 4.6 Hackathon
+**Document prepared for:** Claude Sonnet 4.5 Hackathon
 **TrustMesh Architecture Review**
 **Feb 12, 2026**

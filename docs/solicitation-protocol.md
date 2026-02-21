@@ -405,7 +405,7 @@ Cross-user dedup (same network):
 
 ### Agent-Level Synthesis
 
-When queried, the agent may have access to multiple overlapping capsules (from the owner or network members' shared capsules). The agent already handles this through Opus 4.6 reasoning — it sees all relevant capsules and synthesizes the best answer.
+When queried, the agent may have access to multiple overlapping capsules (from the owner or network members' shared capsules). The agent already handles this through Sonnet 4.5 reasoning — it sees all relevant capsules and synthesizes the best answer.
 
 The key improvement is **source attribution**: the agent should say "Based on Molly's care routine (updated Feb 10)..." rather than just presenting information without provenance.
 
@@ -420,7 +420,7 @@ How to search 3T data points with AI context limits:
 ```
           ┌─────────────┐
           │  LLM Response│  ~2K tokens
-          │  (Opus 4.6)  │
+          │  (Sonnet 4.5)  │
           ├──────────────┤
           │  Context     │  5 capsules → ~5K tokens
           │  Assembly    │  Re-rank, deduplicate, format
@@ -466,7 +466,7 @@ How to search 3T data points with AI context limits:
 - Latency: <1ms
 
 **Stage 5: LLM Response**
-- Opus 4.6 reasons about what to share
+- Sonnet 4.5 reasons about what to share
 - Latency: ~1-3s
 
 ### Vector Store Scaling Guide

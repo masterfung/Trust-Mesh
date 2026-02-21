@@ -4,12 +4,12 @@ Instructions for Claude Code when working on TrustMesh.
 
 ## Project Overview
 
-TrustMesh is a trust-aware knowledge sharing platform for personal AI agents. FastAPI backend + Next.js frontend. Users have encrypted vaults, agents powered by Claude Opus 4.6, and trust networks that control information sharing.
+TrustMesh is a trust-aware knowledge sharing platform for personal AI agents. FastAPI backend + Next.js frontend. Users have encrypted vaults, agents powered by Claude Sonnet 4.5, and trust networks that control information sharing.
 
 ## Repository Structure
 
 - `trustmesh-core/` - Python backend (FastAPI, SQLAlchemy async, SQLite)
-- `trustmesh-ui/` - TypeScript frontend (Next.js 15, Tailwind, D3.js)
+- `trustmesh-ui/` - TypeScript frontend (Next.js 16, Tailwind, D3.js)
 - `trustmesh-registry/` - Public agent registry (Next.js 16, SQLite, DID verification)
 - `citadel-ref/` - [Citadel](https://github.com/TryMightyAI/citadel) AI security sidecar (Go, gitignored)
 - `docs/` - Architecture documentation
@@ -137,7 +137,7 @@ For production multimodal AI security (text, images, PDFs, tool calls), see [Mig
 | File | Purpose |
 |------|---------|
 | `src/gossip.py` | Core query engine - trust resolution -> Citadel -> semantic search -> LLM -> Citadel |
-| `src/agents.py` | Opus 4.6 agent prompting, tool use (search, save, update capsules, query peers) |
+| `src/agents.py` | Sonnet 4.5 agent prompting, tool use (search, save, update capsules, query peers) |
 | `src/crypto.py` | AES-256-GCM, Argon2id, ed25519, HKDF |
 | `src/ucan.py` | UCAN token create/validate/scope-match |
 | `src/trust.py` | Trust level resolution from connections and networks |

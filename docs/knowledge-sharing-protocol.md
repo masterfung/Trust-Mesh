@@ -23,7 +23,7 @@ TrustMesh is **not** a social network. It's an **internal knowledge sharing plat
 │   ┌───────────┐  ┌───────────┐  ┌───────────────────────┐  │
 │   │  Security  │  │  Agents   │  │    Data Vault         │  │
 │   │           │  │           │  │                       │  │
-│   │ Citadel   │  │ Opus 4.6  │  │ Encrypted capsules    │  │
+│   │ Citadel   │  │ Sonnet 4.5  │  │ Encrypted capsules    │  │
 │   │ UCAN      │  │ Trust-    │  │ Typed knowledge       │  │
 │   │ E2E       │  │ aware     │  │ Semantic retrieval    │  │
 │   │ Audit     │  │ reasoning │  │ Freshness tracking    │  │
@@ -141,7 +141,7 @@ Peter's agent processes a query about grandma:
    Decrypt capsule content with network key
    Plaintext available to the agent in memory only
 
-4. AGENT REASONING (Opus 4.6)
+4. AGENT REASONING (Sonnet 4.5)
    Agent receives: decrypted capsule + trust context + question
    Agent reasons about what to share and how
    Agent responds with relevant information
@@ -794,7 +794,7 @@ async def remove_member(network_id: str, user_id: str):
 | Sharing unit | Files | Messages | **Typed knowledge capsules** |
 | Access control | Folder-level ACLs | Channel membership | **Network-scoped UCAN tokens** |
 | Discovery | Browse folders | Search messages | **Agent-mediated semantic search** |
-| Intelligence | None | None | **Opus 4.6 reasons about what to share** |
+| Intelligence | None | None | **Sonnet 4.5 reasons about what to share** |
 | Encryption | Server-side | TLS only | **E2E (vault + network keys)** |
 | Revocation | Manual permissions | Remove from channel | **UCAN expiry + revocation list** |
 | Audit | Basic access logs | Message history | **Full trust decision audit trail** |

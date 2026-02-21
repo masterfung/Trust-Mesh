@@ -49,8 +49,8 @@ class ModelResponse:
 
 # Anthropic models
 ANTHROPIC_MODELS = {
-    "default": "claude-opus-4-6",
-    "reasoning": "claude-opus-4-6",
+    "default": "claude-sonnet-4-5-20250929",
+    "reasoning": "claude-sonnet-4-5-20250929",
     "fast": "claude-haiku-4-5-20251001",
 }
 

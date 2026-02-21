@@ -39,7 +39,7 @@ Like the internet went from unencrypted to SSL to verify-who-you-talk-to, TrustM
 
 A pod is one entity's complete TrustMesh presence. It runs on your machine — laptop, phone, Raspberry Pi, cloud server, whatever. It works completely standalone. No internet required to store data, manage your vault, or set up trust rules. Internet is needed for:
 
-- LLM inference (Opus 4.6 via Anthropic, or TEE models for sensitive data)
+- LLM inference (Sonnet 4.5 via Anthropic, or TEE models for sensitive data)
 - Federation (talking to other pods)
 - Registry (optional public discovery)
 
@@ -55,7 +55,7 @@ A pod is one entity's complete TrustMesh presence. It runs on your machine — l
 │  └── Entity type — person | organization | government │
 │                                                      │
 │  Agent                                               │
-│  ├── AI model (Opus 4.6 or TEE model)                │
+│  ├── AI model (Sonnet 4.5 or TEE model)                │
 │  ├── Personality (customizable)                       │
 │  ├── Tools (search, save, update capsules)            │
 │  └── Represents YOU in all interactions               │
@@ -100,7 +100,7 @@ The pod's agent needs an excellent model for tool calling and reasoning. Here's 
 
 ```
 Standard path (most queries):
-  Pod → Anthropic API → Opus 4.6 → response
+  Pod → Anthropic API → Sonnet 4.5 → response
   Cost: ~$0.015/1K input, ~$0.075/1K output
   Quality: Best reasoning + tool calling
 
@@ -116,14 +116,14 @@ Fallback path (no API key or credits):
 ```
 
 For the demo and initial launch, every pod gets:
-- Opus 4.6 for standard queries (requires ANTHROPIC_API_KEY)
+- Sonnet 4.5 for standard queries (requires ANTHROPIC_API_KEY)
 - TEE model access via Tinfoil/Redpill/Phala for sensitive data
 - The pod should work with minimal configuration — one API key should be enough
 
 If a user has no Anthropic key, the pod can still function with TEE-only models (Kimi K2.5 is excellent at tool calling, $0.60/M input) or a local model via Ollama. The experience degrades gracefully:
 
 ```
-Opus 4.6 (best) → Kimi K2.5/TEE (very good) → Local 70B (adequate) → No LLM (vault-only mode)
+Sonnet 4.5 (best) → Kimi K2.5/TEE (very good) → Local 70B (adequate) → No LLM (vault-only mode)
 ```
 
 ### Entity types
@@ -578,7 +578,7 @@ Molly connects her personal pod to TechCorp's org pod. Her work-context capsules
 
 Working today in the codebase:
 
-- **Pod layer**: Full pod with encrypted vault, Opus 4.6 agent, trust rules, Citadel scanning, UCAN emergency access, FHIR export, PIN protection
+- **Pod layer**: Full pod with encrypted vault, Sonnet 4.5 agent, trust rules, Citadel scanning, UCAN emergency access, FHIR export, PIN protection
 - **Pool layer**: Networks (pools), connections, 4-level visibility, context switching, sharing delegates, network encryption keys
 - **Public layer**: A2A agent card, pod identity endpoint, peer CRUD, cross-pod discovery, cross-pod gossip at public trust
 - **TEE routing**: Automatic routing of sensitive capsules through Tinfoil/Redpill/Phala enclaves
@@ -633,7 +633,7 @@ What the demo shows today:
 
 | Component | Status | TrustMesh Use |
 |-----------|--------|---------------|
-| Opus 4.6 | Production | Pod's brain — reasoning + tool calling |
+| Sonnet 4.5 | Production | Pod's brain — reasoning + tool calling |
 | TEE enclaves | Production (Tinfoil, Phala, Redpill) | Hardware-attested privacy for sensitive data |
 | A2A Protocol | Spec done (Linux Foundation) | Agent discovery + interop format |
 | did:key | W3C standard | Self-certifying pod identity |
@@ -1597,7 +1597,7 @@ No downtime concern for personal pods (one user). For org pods, use a blue-green
 | Pod starts with one command | `uv run uvicorn src.main:app` starts, serves `/health` | PASS |
 | User can create account, store capsules | POST /api/users, POST /api/capsules | PASS |
 | 4-level visibility enforced | Capsule access filtered by visibility level | PASS |
-| Agent answers queries (Opus 4.6) | POST /api/query returns LLM response | PASS |
+| Agent answers queries (Sonnet 4.5) | POST /api/query returns LLM response | PASS |
 | Citadel scans all input/output | Query response includes citadel scores | PASS |
 | TEE routes sensitive data | Health capsules processed through TEE | PASS |
 | UCAN emergency access | Token creation, validation, scope matching, audit | PASS |

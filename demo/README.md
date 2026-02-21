@@ -211,7 +211,7 @@ Query arrives
 
 | Sensitivity | Provider | Model |
 |-------------|----------|-------|
-| standard | Anthropic | Claude Haiku 4.5 (fast) / Opus 4.6 (default) |
+| standard | Anthropic | Claude Haiku 4.5 (fast) / Sonnet 4.5 (default) |
 | sensitive | Redpill TEE | GLM-4.7-flash (fast) / GLM-5 (default) / Kimi-K2-thinking (reasoning) |
 
 **Proof from server logs:**

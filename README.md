@@ -52,7 +52,7 @@ Open http://localhost:3050 and log in as any demo user.
 
 ## How It Works
 
-Every person gets a **personal AI agent** (powered by Claude Opus 4.6) that holds their knowledge in an **encrypted vault**. Knowledge is organized as **capsules** with access tiers:
+Every person gets a **personal AI agent** (powered by Claude Sonnet 4.5) that holds their knowledge in an **encrypted vault**. Knowledge is organized as **capsules** with access tiers:
 
 - **Open** — anyone can query (your bio, profession)
 - **Internal** — only members of shared trust networks (family medical info, work projects)
@@ -63,7 +63,7 @@ When someone queries your agent, the system:
 1. **Resolves trust** — are you connected? Do you share a network?
 2. **Scans input** — Citadel checks for prompt injection attacks
 3. **Retrieves knowledge** — semantic search over capsules you're allowed to see
-4. **Agent reasons** — Opus 4.6 decides what to share and how, based on trust context
+4. **Agent reasons** — Sonnet 4.5 decides what to share and how, based on trust context
 5. **Scans output** — Citadel checks for credential leaks or data exfiltration
 6. **Returns response** — with full audit trail (trust level, decision, latency, Citadel results)
 
@@ -144,11 +144,11 @@ uv run pytest tests/test_multi_pod.py -v   # Multi-pod integration (requires run
 | Layer | Stack |
 |-------|-------|
 | **Backend** | Python 3.12+, FastAPI, SQLAlchemy async, aiosqlite, ChromaDB, Voyage AI |
-| **Frontend** | Next.js 15, React, Tailwind CSS, D3.js, bun |
+| **Frontend** | Next.js 16, React, Tailwind CSS, D3.js, bun |
 | **Registry** | Next.js 16, better-sqlite3, @noble/ed25519, bun |
 | **Security** | [Citadel](https://github.com/TryMightyAI/citadel) (Go, ONNX), [Mighty](https://trymighty.ai/) (production) |
 | **Crypto** | AES-256-GCM, Argon2id, ed25519, HKDF, UCAN |
-| **AI** | Claude Opus 4.6 (agents), Voyage AI (embeddings) |
+| **AI** | Claude Sonnet 4.5 (agents), Voyage AI (embeddings) |
 
 ---
 
