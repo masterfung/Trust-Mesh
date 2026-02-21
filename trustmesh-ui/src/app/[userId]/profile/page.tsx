@@ -28,6 +28,7 @@ export default function ProfilePage() {
   const [bio, setBio] = useState<string | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
 
   // Derived values: use local state if edited, otherwise user data
   const currentName = displayName ?? user?.display_name ?? "";
@@ -39,10 +40,11 @@ export default function ProfilePage() {
   const hasChanges = displayName !== null || email !== null || bio !== null || avatarPreview !== null;
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setAvatarError("");
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 500_000) return;
-    if (!file.type.startsWith("image/")) return;
+    if (file.size > 500_000) { setAvatarError("Image must be under 500KB"); return; }
+    if (!file.type.startsWith("image/")) { setAvatarError("File must be an image"); return; }
     const reader = new FileReader();
     reader.onload = () => setAvatarPreview(reader.result as string);
     reader.readAsDataURL(file);
@@ -86,16 +88,16 @@ export default function ProfilePage() {
       <div className="space-y-8">
         {/* Avatar */}
         <div className="flex items-center gap-5">
-          <button onClick={() => fileInputRef.current?.click()} className="group relative">
-            <UserAvatar user={{ ...user, avatar_url: currentAvatar }} size="xl" />
-            <div className="absolute inset-0 rounded-xl bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+          <label className="group relative cursor-pointer">
+            <UserAvatar user={{ ...user, avatar_url: currentAvatar }} size="xl" className="pointer-events-none" />
+            <div className="absolute inset-0 rounded-xl bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
                 <circle cx="12" cy="13" r="4" />
               </svg>
             </div>
-          </button>
-          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarChange} />
+            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarChange} />
+          </label>
           <div>
             <p className="text-sm font-medium">{user.display_name}</p>
             <p className="text-xs text-muted-foreground">
@@ -105,6 +107,7 @@ export default function ProfilePage() {
             <button onClick={() => fileInputRef.current?.click()} className="text-xs text-accent hover:text-accent-hover mt-1 transition-colors">
               Change photo
             </button>
+            {avatarError && <p className="text-xs text-danger mt-1">{avatarError}</p>}
           </div>
         </div>
 
@@ -132,7 +135,7 @@ export default function ProfilePage() {
             placeholder="you@example.com"
             className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
           />
-          <p className="text-xs text-muted-foreground mt-1">Used for account recovery. Never shared with other pods.</p>
+          <p className="text-xs text-muted-foreground mt-1">Used for account recovery. Never shared with others.</p>
         </div>
 
         {/* Bio */}
@@ -175,7 +178,7 @@ export default function ProfilePage() {
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Public handle</span>
-              <span>{user.username ? `@${user.username}` : "Not set \u2014 Go Live on Pod page"}</span>
+              <span>{user.username ? `@${user.username}` : "Not set \u2014 Go Live in Settings"}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Created</span>

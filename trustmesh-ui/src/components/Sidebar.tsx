@@ -28,7 +28,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/onboard",
-    label: "Set Up Agent",
+    label: "My AI",
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.27A7 7 0 0 1 14 22h-4a7 7 0 0 1-6.73-3H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/>
@@ -38,7 +38,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/chat",
-    label: "Ask Agents",
+    label: "Chat",
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
@@ -47,7 +47,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/vault",
-    label: "Knowledge Vault",
+    label: "My Memories",
     requiresSetup: true,
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -57,7 +57,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/networks",
-    label: "Networks",
+    label: "Groups",
     requiresSetup: true,
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -68,7 +68,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/connections",
-    label: "Connections",
+    label: "People",
     requiresSetup: true,
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -109,7 +109,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/pod",
-    label: "Pod",
+    label: "Settings",
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
@@ -120,7 +120,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/audit",
-    label: "Audit Log",
+    label: "Activity",
     requiresSetup: true,
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -247,7 +247,7 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
               <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
               <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
             </svg>
-            Trust Graph
+            Relationships
           </Link>
         )}
         <button

@@ -47,7 +47,15 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     if (res.status === 401 && typeof window !== "undefined" && !path.includes("/auth/")) {
       window.location.href = "/";
     }
-    throw new Error(`API ${res.status}: ${body}`);
+    // Parse error body for clean message
+    let message: string;
+    try {
+      const parsed = JSON.parse(body);
+      message = parsed.detail || parsed.error || parsed.message || body;
+    } catch {
+      message = body || `Request failed`;
+    }
+    throw new Error(message);
   }
   return res.json();
 }

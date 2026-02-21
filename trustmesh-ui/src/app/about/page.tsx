@@ -268,7 +268,7 @@ function ProtocolFlowDiagram() {
     { num: "1", label: "Trust\nResolve", icon: "trust", color: "text-green-400", bg: "bg-green-500/10", border: "border-green-500/30", desc: "Connection + network trust analysis" },
     { num: "2", label: "Citadel\nInput Scan", icon: "shield", color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30", desc: "Text + multimodal injection detection" },
     { num: "3", label: "Semantic\nRetrieval", icon: "search", color: "text-blue-400", bg: "bg-blue-500/10", border: "border-blue-500/30", desc: "Vector search over encrypted capsules" },
-    { num: "4", label: "Opus 4.6\nReasoning", icon: "brain", color: "text-purple-400", bg: "bg-purple-500/10", border: "border-purple-500/30", desc: "Trust-aware response generation" },
+    { num: "4", label: "Sonnet 4.5\nReasoning", icon: "brain", color: "text-purple-400", bg: "bg-purple-500/10", border: "border-purple-500/30", desc: "Trust-aware response generation" },
     { num: "5", label: "Citadel\nOutput Scan", icon: "shield", color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30", desc: "Data exfiltration + leak detection" },
     { num: "6", label: "Audit &\nRespond", icon: "log", color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/30", desc: "Log decision + return response" },
   ];

@@ -234,7 +234,7 @@ export default function DocPage() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-6">
               {[
                 { label: "Identity", value: "DID + ed25519", sub: "Self-sovereign" },
-                { label: "Agent", value: "Claude Opus 4.6", sub: "Trust-aware AI" },
+                { label: "Agent", value: "Claude Sonnet 4.5", sub: "Trust-aware AI" },
                 { label: "Vault", value: "AES-256-GCM", sub: "Encrypted at rest" },
                 { label: "Protocol", value: "A2A + UCAN", sub: "Interoperable" },
               ].map((s) => (
@@ -282,7 +282,7 @@ curl http://localhost:8000/health`}</Code>
               ["TRUSTMESH_POD_NAME", "TrustMesh Pod", "Display name for your pod"],
               ["TRUSTMESH_POD_URL", "http://localhost:8000", "Public URL for federation"],
               ["TRUSTMESH_DB", "./trustmesh.db", "SQLite database path (each pod gets its own)"],
-              ["ANTHROPIC_API_KEY", "(required)", "For Claude Opus 4.6 agent responses"],
+              ["ANTHROPIC_API_KEY", "(required)", "For Claude Sonnet 4.5 agent responses"],
               ["VOYAGE_API_KEY", "(optional)", "Voyage AI embeddings (falls back to local)"],
               ["TRUSTMESH_POOL_SYNC_SECRET", "(generated)", "Shared secret for pool-sync federation auth"],
               ["TRUSTMESH_REGISTRY_URL", "http://localhost:8100", "Public agent registry URL"],
@@ -548,7 +548,7 @@ trustmesh mcp serve`}</Code>
           </P>
 
           <Code lang="text">{`Standard query (e.g. "what's my schedule?"):
-  Pod → Anthropic API → Claude Opus 4.6 → response
+  Pod → Anthropic API → Claude Sonnet 4.5 → response
   Best reasoning and tool calling
 
 Sensitive query (e.g. "what are my medications?"):
@@ -565,7 +565,7 @@ Offline / local query:
             still read your vault and manage your data.
           </P>
 
-          <Code lang="text">{`Claude Opus 4.6  →  TEE model  →  Local model  →  Vault-only mode
+          <Code lang="text">{`Claude Sonnet 4.5  →  TEE model  →  Local model  →  Vault-only mode
   (best)           (very good)    (adequate)       (no AI, still works)`}</Code>
 
           <H3>TEE providers</H3>

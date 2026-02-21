@@ -11,6 +11,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Box, User as UserIcon, Globe, Lock, Network as NetworkIcon,
   Copy, Check, Wifi, WifiOff, Plus, X, Loader2, Users, Radio,
+  ExternalLink, Clock, Info,
 } from "lucide-react";
 
 // ── Shared helpers ──
@@ -45,8 +46,8 @@ const ENTITY_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
 };
 
 const POOL_LABELS: Record<string, string> = {
-  standard: "Standard",
-  category_scoped: "Category Scoped",
+  standard: "Open Sharing",
+  category_scoped: "Topic-Based",
   public_registry: "Public",
 };
 
@@ -73,13 +74,13 @@ export default function PodPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold">Pod</h1>
+            <h1 className="text-2xl font-bold">Settings</h1>
             <Badge variant="outline" className="gap-1.5 text-success border-success/30">
               <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
               Online
             </Badge>
           </div>
-          <p className="text-muted-foreground text-sm mt-0.5">Identity, trust pools, and federation.</p>
+          <p className="text-muted-foreground text-sm mt-0.5">Your identity, groups, and connected organizations.</p>
         </div>
         {/* Quick stats */}
         <div className="flex items-center gap-4 text-sm text-muted-foreground">
@@ -120,19 +121,37 @@ export default function PodPage() {
 // ── Identity Tab ──
 
 function PodIdentityCard({ podInfo }: { podInfo?: { pod_name: string; pod_url: string; protocol: string; agent_count: number } }) {
-  if (!podInfo) return <Card className="animate-pulse h-28" />;
+  if (!podInfo) {
+    return (
+      <Card>
+        <CardContent className="py-8 text-center">
+          <Loader2 className="size-5 animate-spin text-muted-foreground mx-auto mb-2" />
+          <p className="text-xs text-muted-foreground">Loading pod info...</p>
+        </CardContent>
+      </Card>
+    );
+  }
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-sm"><Box className="size-4 text-accent" /> Pod Identity</CardTitle>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm"><Box className="size-4 text-accent" /> Pod</CardTitle>
+        <CardDescription>Your local pod instance running on this device.</CardDescription>
       </CardHeader>
       <CardContent>
-        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
-          <div><dt className="text-muted-foreground text-xs">Name</dt><dd className="font-medium">{podInfo.pod_name}</dd></div>
-          <div><dt className="text-muted-foreground text-xs">Protocol</dt><dd className="font-medium">{podInfo.protocol}</dd></div>
-          <div><dt className="text-muted-foreground text-xs">URL</dt><dd className="font-mono text-xs">{podInfo.pod_url}</dd></div>
-          <div><dt className="text-muted-foreground text-xs">Agents</dt><dd className="font-medium">{podInfo.agent_count} registered</dd></div>
-        </dl>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="rounded-lg bg-muted/30 p-3">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-1">Name</p>
+            <p className="text-sm font-semibold">{podInfo.pod_name}</p>
+          </div>
+          <div className="rounded-lg bg-muted/30 p-3">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-1">Agents</p>
+            <p className="text-sm font-semibold">{podInfo.agent_count} registered</p>
+          </div>
+          <div className="col-span-2 rounded-lg bg-muted/30 p-3">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-1">URL</p>
+            <code className="text-xs font-mono text-muted-foreground">{podInfo.pod_url}</code>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );
@@ -155,46 +174,54 @@ function AgentIdentityCard({ userId, currentUser, agentCard, podInfo }: {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  if (!currentUser) return <Card className="animate-pulse h-28" />;
+  if (!currentUser) {
+    return (
+      <Card>
+        <CardContent className="py-8 text-center">
+          <Loader2 className="size-5 animate-spin text-muted-foreground mx-auto mb-2" />
+          <p className="text-xs text-muted-foreground">Loading agent identity...</p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   const entityType = currentUser.user_type || "person";
   const variant = ENTITY_VARIANT[entityType] || "secondary";
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-sm">
           <UserIcon className="size-4 text-accent" />
-          Agent Identity
+          Your Agent
           <Badge variant={variant} className="capitalize text-[10px]">{entityType}</Badge>
         </CardTitle>
+        <CardDescription>Your AI assistant&apos;s identity on the network.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         {did && (
-          <div>
-            <label className="text-xs text-muted-foreground block mb-1">DID</label>
+          <div className="rounded-lg bg-muted/30 p-3">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-1.5">Decentralized Identifier (DID)</p>
             <div className="flex items-center gap-2">
-              <code className="flex-1 text-xs bg-muted/50 rounded-md px-3 py-2 font-mono truncate">{did}</code>
-              <button onClick={copyDid} className="p-2 rounded-md hover:bg-muted/50 transition-colors text-muted-foreground hover:text-foreground">
-                {copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
+              <code className="flex-1 text-xs font-mono truncate text-muted-foreground">{did}</code>
+              <button onClick={copyDid} className="p-1.5 rounded-md hover:bg-muted/50 transition-colors text-muted-foreground hover:text-foreground shrink-0">
+                {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
               </button>
             </div>
           </div>
         )}
         {agentCard && (
-          <div>
-            <label className="text-xs text-muted-foreground block mb-1">Agent Card</label>
-            <div className="bg-muted/30 rounded-md p-3">
-              <p className="text-sm font-medium">{agentCard.name}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{agentCard.description}</p>
-              {agentCard.skills?.length > 0 && (
-                <div className="mt-2 flex gap-1.5 flex-wrap">
-                  {agentCard.skills.map((s) => (
-                    <Badge key={s.id} variant="outline" className="text-[10px]">{s.name}</Badge>
-                  ))}
-                </div>
-              )}
-            </div>
+          <div className="rounded-lg bg-muted/30 p-3">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-1.5">Agent Card</p>
+            <p className="text-sm font-medium">{agentCard.name}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{agentCard.description}</p>
+            {agentCard.skills?.length > 0 && (
+              <div className="mt-2 flex gap-1.5 flex-wrap">
+                {agentCard.skills.map((s) => (
+                  <Badge key={s.id} variant="outline" className="text-[10px]">{s.name}</Badge>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </CardContent>
@@ -204,11 +231,13 @@ function AgentIdentityCard({ userId, currentUser, agentCard, podInfo }: {
 
 function DiscoverableToggle({ userId, currentUser, queryClient }: {
   userId: string;
-  currentUser?: { is_discoverable?: boolean; username?: string | null };
+  currentUser?: { is_discoverable?: boolean; username?: string | null; user_type?: string };
   queryClient: ReturnType<typeof useQueryClient>;
 }) {
   const isDiscoverable = currentUser?.is_discoverable ?? false;
   const currentHandle = currentUser?.username || null;
+  const entityType = currentUser?.user_type || "person";
+  const isOrgOrGov = entityType === "organization" || entityType === "government";
   const [showConfirm, setShowConfirm] = useState(false);
   const [handle, setHandle] = useState("");
   const [handleStatus, setHandleStatus] = useState<{ available?: boolean; reason?: string; checking?: boolean } | null>(null);
@@ -238,7 +267,7 @@ function DiscoverableToggle({ userId, currentUser, queryClient }: {
     return () => { if (checkTimerRef.current) clearTimeout(checkTimerRef.current); };
   }, [handle, userId, formatError]);
 
-  // Go private mutation (existing flow)
+  // Go private mutation
   const goPrivate = useMutation({
     mutationFn: () => api.updateUser(userId, { is_discoverable: false }),
     onSuccess: () => {
@@ -260,35 +289,97 @@ function DiscoverableToggle({ userId, currentUser, queryClient }: {
 
   const isPending = goPrivate.isPending || claimHandle.isPending;
 
+  const registryUrl = typeof window !== "undefined"
+    ? (localStorage.getItem("trustmesh_registry_url") || "http://localhost:8100")
+    : "http://localhost:8100";
+
   return (
     <Card>
-      <CardContent className="pt-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            {isDiscoverable ? <Globe className="size-5 text-success" /> : <Lock className="size-5 text-muted-foreground" />}
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          {isDiscoverable ? <Globe className="size-4 text-success" /> : <Lock className="size-4 text-muted-foreground" />}
+          Visibility
+        </CardTitle>
+        <CardDescription>
+          Control whether your agent profile appears in the public registry.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Current status banner */}
+        <div className={cn(
+          "rounded-lg p-4",
+          isDiscoverable ? "bg-success/5 border border-success/20" : "bg-muted/30 border border-border"
+        )}>
+          <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium">
+              <p className="text-sm font-semibold">
                 {isDiscoverable ? (
-                  <>Public{currentHandle && <span className="text-accent ml-1.5">@{currentHandle}</span>}</>
-                ) : "Private Mode"}
+                  <>Live{currentHandle && <span className="text-accent ml-1.5">@{currentHandle}</span>}</>
+                ) : "Private"}
               </p>
-              <p className="text-xs text-muted-foreground">
-                {isDiscoverable ? "Visible in the public registry" : "Only visible to connections and pool members"}
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {isDiscoverable
+                  ? "Anyone can find your agent in the public registry and send queries."
+                  : "Your agent is hidden from the public registry. Only people you connect with directly or share a pool with can reach you."}
               </p>
             </div>
+            <label className="relative cursor-pointer shrink-0 ml-4">
+              <input type="checkbox" checked={isDiscoverable} onChange={() => setShowConfirm(true)} disabled={isPending} className="sr-only peer" />
+              <div className="w-11 h-6 bg-muted rounded-full peer-checked:bg-success transition-colors" />
+              <div className="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-transform peer-checked:translate-x-5" />
+            </label>
           </div>
-          <label className="relative cursor-pointer">
-            <input type="checkbox" checked={isDiscoverable} onChange={() => setShowConfirm(true)} disabled={isPending} className="sr-only peer" />
-            <div className="w-11 h-6 bg-muted rounded-full peer-checked:bg-success transition-colors" />
-            <div className="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-transform peer-checked:translate-x-5" />
-          </label>
+
+          {/* Registry preview link when live */}
+          {isDiscoverable && (
+            <a
+              href={registryUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 mt-3 text-xs text-accent hover:text-accent-hover transition-colors"
+            >
+              <ExternalLink className="size-3" />
+              View your profile in the public registry
+            </a>
+          )}
         </div>
+
+        {/* Explainer: what private means */}
+        {!isDiscoverable && !showConfirm && (
+          <div className="space-y-2 text-xs text-muted-foreground">
+            <p className="font-medium text-foreground text-sm">What can people see?</p>
+            <div className="grid gap-2">
+              <div className="flex items-start gap-2">
+                <Check className="size-3.5 text-success shrink-0 mt-0.5" />
+                <span><span className="font-medium text-foreground">Connections</span> — people you&apos;ve connected with can query your agent</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <Check className="size-3.5 text-success shrink-0 mt-0.5" />
+                <span><span className="font-medium text-foreground">Pool members</span> — people in your shared groups can see pool-scoped info</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <X className="size-3.5 text-danger shrink-0 mt-0.5" />
+                <span><span className="font-medium text-foreground">Public registry</span> — your agent will not appear in search results</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <X className="size-3.5 text-danger shrink-0 mt-0.5" />
+                <span><span className="font-medium text-foreground">Strangers</span> — cannot find or query your agent at all</span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Go Private confirmation */}
         {showConfirm && isDiscoverable && (
-          <div className="mt-4 rounded-lg border border-warning/30 bg-warning/5 p-4 space-y-3">
-            <p className="text-sm font-medium">Go private? Your agent will be removed from the public registry.</p>
-            <p className="text-xs text-muted-foreground">Only your connections and pool members will be able to find you.</p>
+          <div className="rounded-lg border border-warning/30 bg-warning/5 p-4 space-y-3">
+            <p className="text-sm font-medium">Go private?</p>
+            <p className="text-xs text-muted-foreground">
+              Your agent will be removed from the public registry immediately. Existing connections and pool memberships are not affected.
+            </p>
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Clock className="size-3 shrink-0" />
+              Removal takes effect instantly &mdash; your profile disappears from the registry within seconds.
+            </div>
             <div className="flex gap-2">
               <button onClick={() => goPrivate.mutate()} disabled={isPending}
                 className="px-3 py-1.5 text-sm font-medium rounded-md bg-muted hover:bg-muted/80 text-foreground transition-colors">
@@ -304,15 +395,14 @@ function DiscoverableToggle({ userId, currentUser, queryClient }: {
 
         {/* Go Live — claim a handle */}
         {showConfirm && !isDiscoverable && (
-          <div className="mt-4 rounded-lg border border-accent/30 bg-accent/5 p-4 space-y-4">
+          <div className="rounded-lg border border-accent/30 bg-accent/5 p-4 space-y-4">
             <div>
-              <p className="text-sm font-medium">Go Live — Pick Your Handle</p>
+              <p className="text-sm font-medium">Go Live &mdash; Pick Your Handle</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Choose a unique public handle. People will find you as <span className="text-accent font-medium">@{handle || "yourname"}</span> in the registry.
+                Choose a unique public handle. Anyone can find you as <span className="text-accent font-medium">@{handle || "yourname"}</span> in the registry.
               </p>
             </div>
 
-            {/* Handle input */}
             <div>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-accent font-medium text-sm">@</span>
@@ -331,42 +421,27 @@ function DiscoverableToggle({ userId, currentUser, queryClient }: {
                   )}
                   autoFocus
                 />
-                {/* Status indicator */}
                 <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                  {handleStatus?.checking && (
-                    <Loader2 className="size-4 animate-spin text-muted-foreground" />
-                  )}
-                  {handleStatus?.available === true && !handleStatus.checking && (
-                    <Check className="size-4 text-success" />
-                  )}
-                  {handleStatus?.available === false && !handleStatus.checking && (
-                    <X className="size-4 text-danger" />
-                  )}
+                  {handleStatus?.checking && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
+                  {handleStatus?.available === true && !handleStatus.checking && <Check className="size-4 text-success" />}
+                  {handleStatus?.available === false && !handleStatus.checking && <X className="size-4 text-danger" />}
                 </div>
               </div>
-              {/* Feedback text */}
               <div className="mt-1.5 min-h-[18px]">
                 {formatError && <p className="text-[11px] text-danger">{formatError}</p>}
-                {!formatError && handleStatus?.available === true && (
-                  <p className="text-[11px] text-success">@{handle} is available</p>
-                )}
-                {!formatError && handleStatus?.available === false && (
-                  <p className="text-[11px] text-danger">{handleStatus.reason || "Not available"}</p>
-                )}
-                {!formatError && !handleStatus && handle.length >= 2 && (
-                  <p className="text-[11px] text-muted-foreground">Checking availability...</p>
-                )}
+                {!formatError && handleStatus?.available === true && <p className="text-[11px] text-success">@{handle} is available</p>}
+                {!formatError && handleStatus?.available === false && <p className="text-[11px] text-danger">{handleStatus.reason || "Not available"}</p>}
+                {!formatError && !handleStatus && handle.length >= 2 && <p className="text-[11px] text-muted-foreground">Checking...</p>}
               </div>
             </div>
 
-            {/* Actions */}
             <div className="flex gap-2">
               <button
                 onClick={() => claimHandle.mutate()}
                 disabled={isPending || !handleStatus?.available || !!formatError}
                 className="px-4 py-2 text-sm font-medium rounded-md bg-accent hover:bg-accent-hover text-accent-fg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {claimHandle.isPending ? "Claiming..." : "Claim @" + (handle || "...")}
+                {claimHandle.isPending ? "Claiming..." : `Claim @${handle || "..."}`}
               </button>
               <button
                 onClick={() => { setShowConfirm(false); setHandle(""); setHandleStatus(null); }}
@@ -375,15 +450,47 @@ function DiscoverableToggle({ userId, currentUser, queryClient }: {
                 Cancel
               </button>
             </div>
-            {claimHandle.isError && (
-              <p className="text-xs text-danger">{(claimHandle.error as Error).message}</p>
-            )}
+            {claimHandle.isError && <p className="text-xs text-danger">{(claimHandle.error as Error).message}</p>}
 
-            <p className="text-[11px] text-muted-foreground">
-              Your name, handle, and pod URL will be publicly visible. You can go private again at any time.
-            </p>
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Clock className="size-3 shrink-0" />
+              Your profile appears in the registry instantly after claiming your handle.
+            </div>
           </div>
         )}
+
+        {/* How discovery works */}
+        <div className="rounded-lg bg-muted/20 p-3 space-y-2">
+          <p className="text-xs font-medium text-foreground flex items-center gap-1.5">
+            <Info className="size-3.5 text-muted-foreground" />
+            How discovery works
+          </p>
+          <div className="text-[11px] text-muted-foreground space-y-1.5 leading-relaxed">
+            <p>
+              The <a href={registryUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-accent-hover underline underline-offset-2">public registry</a> is
+              a searchable directory of all live agents across the network. Other pods can browse it to find agents to connect with.
+            </p>
+            <p>
+              {isOrgOrGov ? (
+                <>
+                  <span className="font-medium text-foreground capitalize">{entityType}</span> accounts are listed in the registry by default
+                  because they provide services that others need to discover. You can still go private, but this means your services
+                  won&apos;t appear in search results.
+                </>
+              ) : (
+                <>
+                  <span className="font-medium text-foreground">People</span> start private by default &mdash; you choose when to go live.
+                  Organizations and government entities are discoverable by default since they provide services others need to find.
+                </>
+              )}
+            </p>
+            <p>
+              <span className="font-medium text-foreground">Propagation:</span> Changes are instant. Going live registers
+              your profile immediately. Going private sends a delete to the registry &mdash; your profile is removed within seconds.
+              Pods also re-sync with the registry on every startup.
+            </p>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );

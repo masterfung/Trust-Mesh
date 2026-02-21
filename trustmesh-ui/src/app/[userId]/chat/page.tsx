@@ -371,7 +371,7 @@ export default function ChatPage() {
         {/* Info banner */}
         <div className="mb-4 p-3 bg-accent/5 border border-accent/15 rounded-xl">
           <p className="text-xs text-muted-foreground">
-            <span className="font-medium text-accent">Your private agent</span> — sees all your capsules and can save new knowledge to your vault. Type <span className="font-medium text-accent">@name</span> to query another person&apos;s agent directly.
+            <span className="font-medium text-accent">Your private agent</span> — sees all your memories and can save new knowledge to your vault. Type <span className="font-medium text-accent">@name</span> to ask another person&apos;s agent directly.
           </p>
         </div>
 
@@ -451,7 +451,7 @@ export default function ChatPage() {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
           </svg>
-          Your agent has full access to all your capsules. Trust level determines what others share back.
+          Your agent has full access to all your memories. Your relationship determines what others share back.
         </p>
       </form>
 
@@ -504,7 +504,7 @@ export default function ChatPage() {
       {/* History */}
       {history && history.length > 0 && (
         <div>
-          <h2 className="text-sm font-semibold text-muted-foreground mb-3">Query History</h2>
+          <h2 className="text-sm font-semibold text-muted-foreground mb-3">Chat History</h2>
           <div className="space-y-3">
             {history.map((r: QueryResult) => (
               <QueryResultCard key={r.id} result={r} users={users ?? []} currentUserId={userId} />
@@ -754,7 +754,7 @@ function MentionInput({
           {filteredUsers.length > 0 && (
             <>
               <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-card-border bg-card-hover/50">
-                Your Network
+                People You Know
               </div>
               {filteredUsers.slice(0, 5).map((u, i) => {
                 const isConnected = connectedIds.has(u.id);
@@ -826,7 +826,7 @@ function MentionInput({
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                 </svg>
-                Public Registry
+                Public Directory
               </div>
               {registryResults.slice(0, 4).map((r) => {
                 const globalIdx = filteredUsers.length + registryResults.indexOf(r);
@@ -872,7 +872,7 @@ function MentionInput({
           {/* Search hint when no registry results yet */}
           {mentionQuery.length >= 2 && registryResults.length === 0 && filteredUsers.length > 0 && (
             <div className="px-3 py-1.5 text-[10px] text-muted-foreground/50 border-t border-card-border">
-              Searching public registry...
+              Searching public directory...
             </div>
           )}
         </div>
@@ -951,7 +951,11 @@ function QueryResultCard({
             <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
           </svg>
           <span className="font-semibold text-foreground">
-            {isSent ? toUser?.display_name : "your"}&apos;s agent
+            {result.from_user_id === result.to_user_id
+              ? "Your agent"
+              : isSent
+                ? `${toUser?.display_name || "Unknown"}'s agent`
+                : "your agent"}
           </span>
           {streaming && (
             <span className="flex items-center gap-1.5 text-accent">
@@ -1048,7 +1052,7 @@ function QueryResultCard({
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                 </svg>
-                Cross-pod query
+                Remote query
               </span>
             )}
             {result.shared_networks.length > 0 && (
@@ -1066,7 +1070,10 @@ function QueryResultCard({
                 result.trust_level === "connected" ? "text-blue-400" :
                 "text-zinc-400"
               }`}>
-                {result.trust_level} trust
+                {result.trust_level === "network" ? "group member" :
+                 result.trust_level === "connected" ? "connected" :
+                 result.trust_level === "private" ? "private" :
+                 result.trust_level}
               </span>
             )}
             {result.latency_ms > 0 && <span>{result.latency_ms}ms</span>}

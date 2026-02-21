@@ -102,7 +102,7 @@ export function PodSwitcher({ userName }: { userName?: string }) {
       <div className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-card-hover border border-card-border">
         <span className="w-2 h-2 rounded-full bg-accent" />
         <span className="truncate font-medium">
-          {userName ? `${userName}'s Pod` : "Local Pod"} (:8000)
+          {userName ? `${userName}'s Space` : "My Space"}
         </span>
       </div>
     );
@@ -118,7 +118,7 @@ export function PodSwitcher({ userName }: { userName?: string }) {
       >
         <span className={`w-2 h-2 rounded-full ${switching ? "bg-amber-400 animate-pulse" : statuses[Number(currentPort)] !== false ? "bg-green-400" : "bg-red-400"}`} />
         <span className="truncate font-medium">
-          {switching ? "Switching..." : `${currentPod?.name || "Pod"} (:${currentPort})`}
+          {switching ? "Switching..." : `${currentPod?.name || "Space"} (:${currentPort})`}
         </span>
         <svg className={`w-3 h-3 ml-auto transition-transform ${open ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <polyline points="6 9 12 15 18 9" />
@@ -133,11 +133,11 @@ export function PodSwitcher({ userName }: { userName?: string }) {
             className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-card-hover transition-colors"
           >
             <span className="w-2 h-2 rounded-full bg-accent" />
-            <span className="font-medium">{userName ? `${userName}'s Pod` : "Single Pod"} (:8000)</span>
+            <span className="font-medium">{userName ? `${userName}'s Space` : "My Space"} (:8000)</span>
           </button>
 
           <div className="border-t border-card-border my-1" />
-          <p className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">Federation Pods</p>
+          <p className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">Other Spaces</p>
           {PODS.map((pod) => {
             const badge = TYPE_BADGE[pod.type];
             const isActive = current === `http://localhost:${pod.port}`;

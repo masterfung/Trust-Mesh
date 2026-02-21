@@ -118,18 +118,18 @@ export default function Home() {
             <div className="text-center mb-8 md:mb-12">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-accent/10 border border-accent/20 text-accent text-xs font-medium mb-6">
                 <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-                Powered by Claude Opus 4.6
+                Powered by Claude Sonnet 4.5
               </div>
               <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold tracking-tight mb-4">
                 <span className="text-gradient">TrustMesh</span>
               </h1>
               <p className="text-base sm:text-lg md:text-xl text-foreground max-w-2xl mx-auto leading-relaxed font-medium">
-                The trust layer for personal AI agents.
+                Share what matters with people you trust.
               </p>
               <p className="text-sm sm:text-base text-muted-foreground max-w-xl mx-auto leading-relaxed mt-3">
-                Everyone gets an encrypted vault and an AI agent powered by Opus 4.6.
-                Agents collaborate across trust boundaries — sharing what&apos;s needed,
-                protecting everything else. One command to start. Zero configuration.
+                Everyone gets a private collection of memories and an AI assistant powered by Sonnet 4.5.
+                Your assistant works with people you trust — sharing what&apos;s needed,
+                protecting everything else. Simple to start. Zero configuration.
               </p>
             </div>
 
@@ -139,7 +139,7 @@ export default function Home() {
                 { icon: "\uD83D\uDD10", label: "Your data, encrypted" },
                 { icon: "\uD83E\uDD16", label: "Personal AI agent" },
                 { icon: "\uD83D\uDC65", label: "You choose who sees what" },
-                { icon: "\uD83D\uDEE1\uFE0F", label: "Citadel Security", href: "https://trymighty.ai" },
+                { icon: "\uD83D\uDEE1\uFE0F", label: "Protected by AI security", href: "https://trymighty.ai" },
               ].map((f) => (
                 "href" in f && f.href ? (
                   <a
@@ -193,10 +193,10 @@ export default function Home() {
       {/* Footer */}
       <footer className="py-4 sm:py-6 px-4 border-t border-card-border text-center space-y-1">
         <p className="text-xs text-muted-foreground">
-          Built with love by <a href="https://github.com/masterfung" target="_blank" rel="noopener noreferrer" className="text-accent hover:text-accent-hover transition-colors">@masterfung</a> &middot; Powered by Claude Opus 4.6
+          Built with love by <a href="https://github.com/masterfung" target="_blank" rel="noopener noreferrer" className="text-accent hover:text-accent-hover transition-colors">@masterfung</a> &middot; Powered by Claude Sonnet 4.5
         </p>
         <p className="text-xs text-muted-foreground">
-          AES-256-GCM Encryption &middot; <a href="https://trymighty.ai" target="_blank" rel="noopener noreferrer" className="text-red-400 hover:text-red-300 transition-colors">Citadel Security</a>
+          End-to-end encrypted &middot; <a href="https://trymighty.ai" target="_blank" rel="noopener noreferrer" className="text-red-400 hover:text-red-300 transition-colors">Protected by AI security</a>
         </p>
       </footer>
     </div>
@@ -328,9 +328,9 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
 
   return (
     <div className="bg-card border border-card-border rounded-2xl p-5 sm:p-6 shadow-xl shadow-black/20">
-      <h2 className="text-lg sm:text-xl font-bold mb-1">Create Your Pod</h2>
+      <h2 className="text-lg sm:text-xl font-bold mb-1">Get Started</h2>
       <p className="text-xs sm:text-sm text-muted-foreground mb-5">
-        Your own AI agent and encrypted vault. Private by default.
+        Your own AI assistant and private memories. Private by default.
       </p>
 
       {error && (
@@ -405,7 +405,7 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
           ) : password.length > 0 ? (
             <p className="text-xs text-green-400 mt-1">Password meets complexity requirements</p>
           ) : (
-            <p className="text-xs text-muted-foreground mt-1">Encrypts your vault with AES-256-GCM</p>
+            <p className="text-xs text-muted-foreground mt-1">Protects your private memories with end-to-end encryption</p>
           )}
         </div>
 
@@ -416,7 +416,7 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
             type="text"
             value={bio}
             onChange={(e) => setBio(e.target.value)}
-            placeholder="A brief intro for your agent to know you..."
+            placeholder="A brief intro so your AI assistant can help you better..."
             className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
           />
         </div>
@@ -431,9 +431,9 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
           {mutation.isPending ? (
             <span className="flex items-center justify-center gap-2">
               <Loader2 className="animate-spin" size={16} />
-              Creating your pod...
+              Creating your account...
             </span>
-          ) : "Create Pod"}
+          ) : "Create Account"}
         </button>
         <button
           onClick={onDone}

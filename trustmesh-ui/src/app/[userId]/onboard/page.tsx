@@ -332,7 +332,7 @@ export default function OnboardPage() {
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
           </svg>
           <p className="text-xs text-green-400/80">
-            Everything is encrypted (AES-256-GCM) in your personal vault. You control who sees what.
+            Everything is encrypted and secure. You control who sees what.
           </p>
         </div>
 
@@ -391,7 +391,7 @@ export default function OnboardPage() {
         {savedCapsules.length > 0 && (
           <div className="bg-card border border-card-border rounded-2xl p-4 flex-1 overflow-y-auto">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              Saved to Vault ({savedCapsules.length})
+              Saved ({savedCapsules.length})
             </p>
             <div className="space-y-2">
               {savedCapsules.map((cap, i) => (
@@ -434,7 +434,7 @@ export default function OnboardPage() {
             <div>
               <h2 className="text-sm font-semibold">Your Agent</h2>
               <p className="text-[11px] text-muted-foreground">
-                {isStreaming ? "Typing..." : `${savedCapsules.length} items saved to vault`}
+                {isStreaming ? "Typing..." : `${savedCapsules.length} items saved`}
               </p>
             </div>
           </div>

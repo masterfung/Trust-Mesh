@@ -9,7 +9,7 @@ import { matchesContext } from "@/lib/context";
 
 const CAPSULE_TYPES = ["memory", "skill", "procedure", "schedule", "preference", "contact"];
 const TIERS = ["public", "network", "private"];
-const TIER_FILTER_LABELS: Record<string, string> = { public: "open", network: "shared", private: "private" };
+const TIER_FILTER_LABELS: Record<string, string> = { public: "everyone", network: "shared", private: "only me" };
 
 const TYPE_DESCRIPTIONS: Record<string, string> = {
   memory: "Events, conversations, observations",
@@ -71,14 +71,14 @@ export default function VaultPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold">Knowledge Vault</h1>
+            <h1 className="text-2xl font-bold">My Memories</h1>
             {capsules && (
               <span className="text-xs bg-card-hover text-muted-foreground px-2.5 py-1 rounded-lg font-medium">
-                {capsules.length} capsules
+                {capsules.length} memories
               </span>
             )}
           </div>
-          <p className="text-muted-foreground text-sm">Your encrypted knowledge capsules &mdash; AES-256-GCM protected</p>
+          <p className="text-muted-foreground text-sm">Your saved memories &mdash; encrypted and secure</p>
         </div>
         <button
           onClick={() => { setShowForm(!showForm); setEditingCapsule(null); }}
@@ -88,7 +88,7 @@ export default function VaultPage() {
               : "bg-accent hover:bg-accent-hover text-accent-fg hover:shadow-lg hover:shadow-accent/20"
           }`}
         >
-          {showForm ? "Cancel" : "+ Add Capsule"}
+          {showForm ? "Cancel" : "+ Save Something New"}
         </button>
       </div>
 
@@ -111,7 +111,7 @@ export default function VaultPage() {
           type="text"
           value={search}
           onChange={(e) => { setSearch(e.target.value); setShowCount(20); }}
-          placeholder="Search capsules..."
+          placeholder="Search memories..."
           className="w-full bg-card border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground"
         />
       </div>
@@ -152,7 +152,7 @@ export default function VaultPage() {
 
       {/* Capsule List */}
       {isLoading ? (
-        <div className="text-muted-foreground animate-pulse text-center py-12">Loading vault...</div>
+        <div className="text-muted-foreground animate-pulse text-center py-12">Loading memories...</div>
       ) : (
         <div className="space-y-2">
           {visible?.map((c: Capsule) => (
@@ -190,7 +190,7 @@ export default function VaultPage() {
                   <p className="text-sm mt-4 whitespace-pre-wrap leading-relaxed text-muted-foreground bg-background rounded-xl p-4">{c.content}</p>
                   <div className="flex items-center gap-4 mt-3 text-[11px] text-muted-foreground">
                     <span>Type: {c.capsule_type}</span>
-                    <span>Freshness: {c.freshness}</span>
+                    <span>Last updated: {c.freshness}</span>
                     {c.expires_at && <span>Expires: {new Date(c.expires_at).toLocaleDateString()}</span>}
                     {c.network_names && c.network_names.length > 0 && (
                       <span>Shared with: {c.network_names.join(", ")}</span>
@@ -233,14 +233,14 @@ export default function VaultPage() {
           {!filtered?.length && (
             <div className="text-center py-12">
               <p className="text-muted-foreground text-sm">
-                {search ? "No capsules match your search." : "No capsules match this filter."}
+                {search ? "No memories match your search." : "No memories match this filter."}
               </p>
               {!search && (
                 <button
                   onClick={() => { setTypeFilter("all"); setTierFilter("all"); setShowForm(true); }}
                   className="mt-3 text-accent text-sm hover:text-accent-hover transition-colors"
                 >
-                  Add your first capsule &rarr;
+                  Add your first memory &rarr;
                 </button>
               )}
             </div>
@@ -250,6 +250,21 @@ export default function VaultPage() {
     </div>
   );
 }
+
+const TIER_EXPLANATIONS: Record<string, { label: string; detail: string }> = {
+  public: {
+    label: "Visible to everyone",
+    detail: "Anyone who queries your agent can see this — including strangers and cross-pod requests.",
+  },
+  network: {
+    label: "Shared with groups",
+    detail: "Only members of the groups you select below can see this memory.",
+  },
+  private: {
+    label: "Only you",
+    detail: "Only your own agent can access this. No one else — not even connections — can see it.",
+  },
+};
 
 function CapsuleForm({
   userId,
@@ -263,11 +278,30 @@ function CapsuleForm({
   onDone: () => void;
 }) {
   const isEdit = !!capsule;
+  const originalTier = capsule?.tier || "private";
   const [type, setType] = useState(capsule?.capsule_type || "memory");
   const [title, setTitle] = useState(capsule?.title || "");
   const [content, setContent] = useState(capsule?.content || "");
   const [tier, setTier] = useState(capsule?.tier || "private");
   const [selectedNetworks, setSelectedNetworks] = useState<string[]>(capsule?.network_ids || []);
+  const [showVisibilityConfirm, setShowVisibilityConfirm] = useState(false);
+
+  // Track if visibility is being widened (more public than before)
+  const tierOrder = { private: 0, network: 1, public: 2 } as Record<string, number>;
+  const isWidening = (tierOrder[tier] ?? 0) > (tierOrder[originalTier] ?? 0);
+
+  const doSave = () => {
+    mutation.mutate();
+  };
+
+  const handleSave = () => {
+    // If widening visibility, show confirmation first
+    if (isWidening && !showVisibilityConfirm) {
+      setShowVisibilityConfirm(true);
+      return;
+    }
+    doSave();
+  };
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -291,12 +325,12 @@ function CapsuleForm({
 
   return (
     <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
-      <h2 className="text-base font-semibold mb-1">{isEdit ? "Edit Capsule" : "Add Knowledge Capsule"}</h2>
-      <p className="text-xs text-muted-foreground mb-5">{isEdit ? `Editing "${capsule!.title}" — changes are re-encrypted automatically.` : "Your agent will use this knowledge when responding to queries."}</p>
+      <h2 className="text-base font-semibold mb-1">{isEdit ? "Edit Memory" : "Save Something New"}</h2>
+      <p className="text-xs text-muted-foreground mb-5">{isEdit ? `Editing "${capsule!.title}" — changes are saved automatically.` : "Your AI assistant will use this when answering questions."}</p>
 
       {/* Type Selection */}
       <div className="mb-4">
-        <label className="block text-sm font-medium text-muted-foreground mb-2">Capsule Type</label>
+        <label className="block text-sm font-medium text-muted-foreground mb-2">Type</label>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
           {CAPSULE_TYPES.map((t) => (
             <button
@@ -325,7 +359,7 @@ function CapsuleForm({
             <button
               key={t}
               type="button"
-              onClick={() => setTier(t)}
+              onClick={() => { setTier(t); setShowVisibilityConfirm(false); }}
               className={`flex-1 p-3 rounded-xl text-center transition-all ${
                 tier === t
                   ? "bg-accent/10 border-2 border-accent"
@@ -334,11 +368,15 @@ function CapsuleForm({
             >
               <TrustBadge tier={t} />
               <span className="text-[10px] text-muted-foreground block mt-1.5">
-                {t === "public" ? "Open to anyone" : t === "network" ? "Shared with groups" : "Only you"}
+                {TIER_EXPLANATIONS[t]?.label || t}
               </span>
             </button>
           ))}
         </div>
+        {/* Tier detail explanation */}
+        <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">
+          {TIER_EXPLANATIONS[tier]?.detail}
+        </p>
       </div>
 
       {/* Title */}
@@ -360,7 +398,7 @@ function CapsuleForm({
           value={content}
           onChange={(e) => setContent(e.target.value)}
           rows={5}
-          placeholder="The knowledge your agent will hold and share..."
+          placeholder="What do you want to remember?"
           className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm resize-y placeholder:text-muted-foreground"
         />
       </div>
@@ -390,27 +428,62 @@ function CapsuleForm({
               </label>
             ))}
             {!networks.length && (
-              <p className="text-xs text-muted-foreground">Create a network first to share capsules.</p>
+              <p className="text-xs text-muted-foreground">Create a group first to share memories.</p>
             )}
           </div>
         </div>
       )}
 
-      <button
-        onClick={() => mutation.mutate()}
-        disabled={!title.trim() || !content.trim() || mutation.isPending}
-        className="w-full bg-accent hover:bg-accent-hover text-accent-fg font-semibold py-3 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/20"
-      >
-        {mutation.isPending ? (
-          <span className="flex items-center justify-center gap-2">
-            <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-            </svg>
-            {isEdit ? "Saving..." : "Encrypting & storing..."}
-          </span>
-        ) : isEdit ? "Save Changes" : "Add to Vault"}
-      </button>
+      {/* Visibility widening confirmation */}
+      {showVisibilityConfirm && isWidening && (
+        <div className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-4 space-y-2">
+          <p className="text-sm font-medium">
+            {tier === "public" ? "Make this memory public?" : "Share this memory with groups?"}
+          </p>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            {tier === "public"
+              ? "This memory will be visible to anyone who queries your agent — including people outside your connections and pools. This cannot be undone without manually changing it back."
+              : "This memory will be visible to members of the selected groups. They can access it through their agents."}
+          </p>
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={doSave}
+              disabled={mutation.isPending}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-accent hover:bg-accent-hover text-accent-fg transition-colors disabled:opacity-40"
+            >
+              {mutation.isPending ? "Saving..." : "Yes, save"}
+            </button>
+            <button
+              onClick={() => setShowVisibilityConfirm(false)}
+              className="px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Go back
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!showVisibilityConfirm && (
+        <button
+          onClick={handleSave}
+          disabled={!title.trim() || !content.trim() || mutation.isPending}
+          className="w-full bg-accent hover:bg-accent-hover text-accent-fg font-semibold py-3 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/20"
+        >
+          {mutation.isPending ? (
+            <span className="flex items-center justify-center gap-2">
+              <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              Saving...
+            </span>
+          ) : isEdit ? "Save Changes" : "Save Memory"}
+        </button>
+      )}
+
+      {mutation.isError && (
+        <p className="text-xs text-danger mt-2">{(mutation.error as Error).message}</p>
+      )}
     </div>
   );
 }

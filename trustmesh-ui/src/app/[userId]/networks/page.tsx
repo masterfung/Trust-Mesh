@@ -18,9 +18,9 @@ const NETWORK_TYPE_CONFIG: Record<string, { icon: string; color: string }> = {
 
 const POOL_TYPES = ["standard", "category_scoped", "public_registry"];
 const POOL_TYPE_CONFIG: Record<string, { label: string; color: string; description: string }> = {
-  standard: { label: "Standard", color: "bg-zinc-500/15 text-zinc-400 border-zinc-500/25", description: "All shared capsules visible to members" },
-  category_scoped: { label: "Category Scoped", color: "bg-purple-500/15 text-purple-400 border-purple-500/25", description: "Only capsules in selected categories are visible" },
-  public_registry: { label: "Public Registry", color: "bg-cyan-500/15 text-cyan-400 border-cyan-500/25", description: "Open discovery — anyone can find this pool" },
+  standard: { label: "Open Sharing", color: "bg-zinc-500/15 text-zinc-400 border-zinc-500/25", description: "All shared memories visible to members" },
+  category_scoped: { label: "Topic-Based", color: "bg-purple-500/15 text-purple-400 border-purple-500/25", description: "Only memories in selected topics are visible" },
+  public_registry: { label: "Public", color: "bg-cyan-500/15 text-cyan-400 border-cyan-500/25", description: "Open discovery — anyone can find this group" },
 };
 
 const JOIN_POLICIES = ["open", "request_to_join", "invite_only"];
@@ -54,14 +54,14 @@ export default function NetworksPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold">Networks</h1>
+            <h1 className="text-2xl font-bold">Groups</h1>
             {networks && (
               <span className="text-xs bg-card-hover text-muted-foreground px-2.5 py-1 rounded-lg font-medium">
-                {networks.length} networks
+                {networks.length} groups
               </span>
             )}
           </div>
-          <p className="text-muted-foreground text-sm">Trust groups for sharing knowledge capsules. Ask your agent to discover public groups!</p>
+          <p className="text-muted-foreground text-sm">Groups for sharing knowledge and memories. Ask your agent to discover public groups!</p>
         </div>
         <button
           onClick={() => setShowForm(!showForm)}
@@ -71,7 +71,7 @@ export default function NetworksPage() {
               : "bg-accent hover:bg-accent-hover text-accent-fg hover:shadow-lg hover:shadow-accent/20"
           }`}
         >
-          {showForm ? "Cancel" : "+ Create Network"}
+          {showForm ? "Cancel" : "+ Create Group"}
         </button>
       </div>
 
@@ -88,7 +88,7 @@ export default function NetworksPage() {
 
       {/* My Networks */}
       {isLoading ? (
-        <div className="text-muted-foreground animate-pulse text-center py-12">Loading networks...</div>
+        <div className="text-muted-foreground animate-pulse text-center py-12">Loading groups...</div>
       ) : (
         <div className="space-y-3">
           {networks?.map((n: Network) => {
@@ -191,12 +191,12 @@ export default function NetworksPage() {
           })}
           {!networks?.length && (
             <div className="text-center py-12">
-              <p className="text-muted-foreground text-sm">No networks yet.</p>
+              <p className="text-muted-foreground text-sm">No groups yet.</p>
               <button
                 onClick={() => setShowForm(true)}
                 className="mt-3 text-accent text-sm hover:text-accent-hover transition-colors"
               >
-                Create your first network &rarr;
+                Create your first group &rarr;
               </button>
             </div>
           )}
@@ -264,7 +264,7 @@ function NetworkForm({ userId, connections, onDone }: { userId: string; connecti
 
   return (
     <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
-      <h2 className="text-base font-semibold mb-4">Create Network</h2>
+      <h2 className="text-base font-semibold mb-4">Create Group</h2>
 
       {/* Type Selection */}
       <div className="mb-4">
@@ -315,7 +315,7 @@ function NetworkForm({ userId, connections, onDone }: { userId: string; connecti
 
       {/* Pool Type Selection */}
       <div className="mb-4">
-        <label className="block text-sm font-medium text-muted-foreground mb-2">Pool Type</label>
+        <label className="block text-sm font-medium text-muted-foreground mb-2">Sharing Mode</label>
         <div className="grid grid-cols-3 gap-2">
           {POOL_TYPES.map((pt) => {
             const config = POOL_TYPE_CONFIG[pt];
@@ -341,7 +341,7 @@ function NetworkForm({ userId, connections, onDone }: { userId: string; connecti
       {/* Category checkboxes (only for category_scoped) */}
       {poolType === "category_scoped" && (
         <div className="mb-4">
-          <label className="block text-sm font-medium text-muted-foreground mb-2">Shared Categories</label>
+          <label className="block text-sm font-medium text-muted-foreground mb-2">Topics to Share</label>
           <div className="flex gap-2 flex-wrap">
             {CAPSULE_CATEGORIES.map((cat) => (
               <button
@@ -358,7 +358,7 @@ function NetworkForm({ userId, connections, onDone }: { userId: string; connecti
               </button>
             ))}
           </div>
-          <p className="text-[11px] text-muted-foreground mt-1.5">Members will only see capsules in these categories.</p>
+          <p className="text-[11px] text-muted-foreground mt-1.5">Members will only see memories in these topics.</p>
         </div>
       )}
 
@@ -390,14 +390,14 @@ function NetworkForm({ userId, connections, onDone }: { userId: string; connecti
 
       {/* Expiry date picker */}
       <div className="mb-4">
-        <label className="block text-sm font-medium text-muted-foreground mb-1.5">Pool Duration (optional)</label>
+        <label className="block text-sm font-medium text-muted-foreground mb-1.5">Expires (optional)</label>
         <input
           type="datetime-local"
           value={expiresAt}
           onChange={(e) => setExpiresAt(e.target.value)}
           className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm text-foreground [color-scheme:dark]"
         />
-        <p className="text-[11px] text-muted-foreground mt-1">Network will become inactive after this date.</p>
+        <p className="text-[11px] text-muted-foreground mt-1">Group will become inactive after this date.</p>
         {expiresAt && (
           <button
             type="button"
@@ -424,8 +424,8 @@ function NetworkForm({ userId, connections, onDone }: { userId: string; connecti
             <div className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow-sm transition-transform peer-checked:translate-x-4" />
           </div>
           <div>
-            <span className="text-sm font-medium block">Public Network</span>
-            <span className="text-[11px] text-muted-foreground">Allow others to discover and request to join this network</span>
+            <span className="text-sm font-medium block">Public Group</span>
+            <span className="text-[11px] text-muted-foreground">Allow others to discover and request to join this group</span>
           </div>
         </label>
       </div>
@@ -453,7 +453,7 @@ function NetworkForm({ userId, connections, onDone }: { userId: string; connecti
           </div>
           <p className="text-[11px] text-muted-foreground mt-1.5">
             {joinPolicy === "open" && "Anyone can join instantly without approval."}
-            {joinPolicy === "request_to_join" && "Join requests must be approved by the network owner."}
+            {joinPolicy === "request_to_join" && "Join requests must be approved by the group owner."}
             {joinPolicy === "invite_only" && "Only the owner can invite new members."}
           </p>
         </div>
@@ -464,7 +464,7 @@ function NetworkForm({ userId, connections, onDone }: { userId: string; connecti
         disabled={!name.trim() || mutation.isPending}
         className="w-full bg-accent hover:bg-accent-hover text-accent-fg font-semibold py-3 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/20"
       >
-        {mutation.isPending ? "Creating..." : "Create Network"}
+        {mutation.isPending ? "Creating..." : "Create Group"}
       </button>
 
       {/* Public Registry confirmation dialog */}
@@ -475,9 +475,9 @@ function NetworkForm({ userId, connections, onDone }: { userId: string; connecti
           setShowPublicConfirm(false);
           mutation.mutate();
         }}
-        title="Make this network publicly discoverable?"
-        description="Public Registry networks are visible to anyone on the TrustMesh network. Members and shared capsules will be discoverable by external agents."
-        confirmLabel="Create Public Network"
+        title="Make this group publicly discoverable?"
+        description="Public groups are visible to anyone on the TrustMesh network. Members and shared memories will be discoverable by others."
+        confirmLabel="Create Public Group"
         variant="default"
         loading={mutation.isPending}
       />
@@ -572,7 +572,7 @@ function NetworkMemberRow({
           setShowConfirm(false);
         }}
         title={`Remove ${member.display_name}?`}
-        description={`This will remove them from this network. They will lose shared-level access to capsules shared with this group.`}
+        description={`This will remove them from this group. They will lose access to memories shared here.`}
         confirmLabel="Remove"
         variant="danger"
         loading={removeMutation.isPending}
@@ -634,7 +634,7 @@ function AddMemberToNetwork({
           if (confirmUser) mutation.mutate(confirmUser.id);
         }}
         title={`Add ${confirmUser?.display_name}?`}
-        description={`This will give ${confirmUser?.display_name} access to all capsules shared with this network.`}
+        description={`This will give ${confirmUser?.display_name} access to all memories shared with this group.`}
         confirmLabel="Add Member"
         variant="default"
         loading={mutation.isPending}

@@ -34,7 +34,7 @@ const TIER_ICONS: Record<string, React.ReactNode> = {
 };
 
 const TIER_LABELS: Record<string, string> = {
-  public: "Open",
+  public: "Public",
   network: "Shared",
   connected: "Connected",
   private: "Private",

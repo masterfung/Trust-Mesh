@@ -95,7 +95,7 @@ export default function AuditPage() {
     <div className="max-w-4xl mx-auto space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-foreground">Audit Log</h1>
+        <h1 className="text-2xl font-bold text-foreground">Activity Log</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Security events, emergency access, and data sharing history
         </p>
@@ -124,7 +124,7 @@ export default function AuditPage() {
       {/* Timeline */}
       {isLoading ? (
         <div className="flex items-center justify-center py-20">
-          <div className="text-muted-foreground animate-pulse">Loading audit logs...</div>
+          <div className="text-muted-foreground animate-pulse">Loading activity...</div>
         </div>
       ) : !logs || logs.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -132,7 +132,7 @@ export default function AuditPage() {
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
             <path d="M9 12l2 2 4-4"/>
           </svg>
-          <p className="text-muted-foreground font-medium">No audit events yet</p>
+          <p className="text-muted-foreground font-medium">No activity yet</p>
           <p className="text-sm text-muted-foreground mt-1">Security events will appear here as they occur</p>
         </div>
       ) : (
@@ -211,7 +211,7 @@ function AuditCard({ entry, userId }: { entry: AuditLogEntry; userId: string }) 
             )}
             {entry.capsule_ids_accessed.length > 0 && (
               <p className="text-[10px] text-muted-foreground">
-                {entry.capsule_ids_accessed.length} capsule{entry.capsule_ids_accessed.length !== 1 ? "s" : ""} accessed
+                {entry.capsule_ids_accessed.length} {entry.capsule_ids_accessed.length !== 1 ? "memories" : "memory"} accessed
               </p>
             )}
             {entry.details && "practitioner_name" in entry.details && (

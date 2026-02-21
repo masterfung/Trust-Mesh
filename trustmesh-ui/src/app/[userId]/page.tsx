@@ -65,7 +65,7 @@ export default function Dashboard() {
 
   const stats = [
     {
-      label: "Knowledge Capsules",
+      label: "Memories",
       value: capsules?.length ?? 0,
       href: `/${userId}/vault`,
       icon: (
@@ -76,7 +76,7 @@ export default function Dashboard() {
       color: "text-accent",
     },
     {
-      label: "Networks",
+      label: "Groups",
       value: networks?.length ?? 0,
       href: `/${userId}/networks`,
       icon: (
@@ -197,8 +197,8 @@ export default function Dashboard() {
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
                 </svg>
               </div>
-              <p className="text-sm font-medium mb-0.5">Add knowledge manually</p>
-              <p className="text-xs text-muted-foreground">Store info in your encrypted vault</p>
+              <p className="text-sm font-medium mb-0.5">Add a memory</p>
+              <p className="text-xs text-muted-foreground">Store info in your encrypted memories</p>
             </Link>
             <Link
               href={`/${userId}/discover`}
@@ -232,10 +232,10 @@ export default function Dashboard() {
               <div className="flex items-center gap-2 mt-2">
                 <span className="inline-flex items-center gap-1 text-[10px] text-accent bg-accent/10 px-2 py-0.5 rounded-full font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-                  Claude Opus 4.6
+                  Claude Sonnet 4.5
                 </span>
                 <span className="text-[10px] text-muted-foreground">
-                  {capsules?.length ?? 0} capsules loaded
+                  {capsules?.length ?? 0} memories loaded
                 </span>
               </div>
             </div>
@@ -252,7 +252,7 @@ export default function Dashboard() {
       {!isNewUser && health && (
         <div className="flex flex-wrap items-center gap-3 mb-6 px-1">
           {[
-            { label: "Anthropic", ok: health.providers.anthropic, detail: "Claude Opus 4.6" },
+            { label: "Anthropic", ok: health.providers.anthropic, detail: "Claude Sonnet 4.5" },
             { label: "TEE", ok: health.providers.tee.enabled, detail: health.providers.tee.provider ? `via ${health.providers.tee.provider}` : "not configured" },
             { label: "Web Search", ok: health.providers.tavily, detail: "Tavily" },
             { label: "Citadel", ok: (health.providers.citadel as Record<string, unknown>).active ?? health.providers.citadel.reachable, detail: health.providers.citadel.reachable ? "sidecar active" : (health.providers.citadel as Record<string, unknown>).heuristic_active ? "heuristic active" : health.providers.citadel.configured ? "configured, offline" : "not configured" },
@@ -337,7 +337,7 @@ export default function Dashboard() {
 
       {/* Trust Distribution */}
       <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
-        <h2 className="text-sm font-semibold mb-4">Knowledge by Trust Tier</h2>
+        <h2 className="text-sm font-semibold mb-4">Sharing Overview</h2>
         <div className="flex gap-4">
           {Object.entries(tierCounts).map(([tier, count]) => {
             const total = capsules?.length ?? 1;
@@ -366,7 +366,7 @@ export default function Dashboard() {
         {/* Recent Knowledge */}
         <div className="bg-card border border-card-border rounded-2xl p-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold">Recent Knowledge</h2>
+            <h2 className="text-sm font-semibold">Recent Memories</h2>
             <Link href={`/${userId}/vault`} className="text-xs text-accent hover:text-accent-hover transition-colors">
               View all &rarr;
             </Link>
@@ -380,7 +380,7 @@ export default function Dashboard() {
               </div>
             ))}
             {!capsules?.length && (
-              <p className="text-sm text-muted-foreground text-center py-6">No capsules yet. Add knowledge to your vault.</p>
+              <p className="text-sm text-muted-foreground text-center py-6">No memories yet. Add something to get started.</p>
             )}
           </div>
         </div>
@@ -388,7 +388,7 @@ export default function Dashboard() {
         {/* Networks */}
         <div className="bg-card border border-card-border rounded-2xl p-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold">Your Networks</h2>
+            <h2 className="text-sm font-semibold">Your Groups</h2>
             <Link href={`/${userId}/networks`} className="text-xs text-accent hover:text-accent-hover transition-colors">
               Manage &rarr;
             </Link>
@@ -413,7 +413,7 @@ export default function Dashboard() {
               </div>
             ))}
             {!networks?.length && (
-              <p className="text-sm text-muted-foreground text-center py-6">No networks yet.</p>
+              <p className="text-sm text-muted-foreground text-center py-6">No groups yet.</p>
             )}
           </div>
         </div>

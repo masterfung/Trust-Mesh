@@ -69,7 +69,7 @@ export default function ConnectionsPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold">Connections</h1>
+          <h1 className="text-2xl font-bold">People</h1>
           <p className="text-muted-foreground text-sm">People you trust and share knowledge with</p>
         </div>
         <button
