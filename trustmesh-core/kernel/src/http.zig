@@ -10,7 +10,75 @@
 const std = @import("std");
 const http = std.http;
 const net = std.net;
+const podos = @import("podos");
 const router = @import("router.zig");
+
+// ═══════════════════════════════════════════
+//  SESSION STORE (set by server_main for proxy auth)
+// ═══════════════════════════════════════════
+
+var _session_store: ?*podos.session.SessionStore = null;
+
+/// Called by server_main to give the proxy layer access to sessions.
+pub fn setSessionStore(store: *podos.session.SessionStore) void {
+    _session_store = store;
+}
+
+const Sha256 = std.crypto.hash.sha2.Sha256;
+
+/// Compute session fingerprint matching Python's _compute_fingerprint().
+fn computeFingerprint(ctx_headers: []const u8, buf: *[64]u8) []const u8 {
+    // Extract User-Agent and client IP from raw headers
+    var ua: []const u8 = "";
+    var it = http.HeaderIterator.init(ctx_headers);
+    while (it.next()) |hdr| {
+        if (std.ascii.eqlIgnoreCase(hdr.name, "user-agent")) {
+            ua = hdr.value;
+            break;
+        }
+    }
+    // IP: always "unknown" for now (socket peer not available in proxy path)
+    const ip = "unknown";
+
+    var h = Sha256.init(.{});
+    h.update(ua);
+    h.update("|");
+    h.update(ip);
+    const digest = h.finalResult();
+
+    const hex_chars = "0123456789abcdef";
+    for (digest, 0..) |byte, i| {
+        buf[i * 2] = hex_chars[byte >> 4];
+        buf[i * 2 + 1] = hex_chars[byte & 0x0f];
+    }
+    return buf[0..64];
+}
+
+/// Try to validate the session cookie and return the user_id.
+fn validateProxySession(head_buf: []const u8) ?[]const u8 {
+    const store = _session_store orelse return null;
+
+    // Extract cookie header
+    var cookie_val: ?[]const u8 = null;
+    var it = http.HeaderIterator.init(head_buf);
+    while (it.next()) |hdr| {
+        if (std.ascii.eqlIgnoreCase(hdr.name, "cookie")) {
+            cookie_val = hdr.value;
+            break;
+        }
+    }
+    const cookies = cookie_val orelse return null;
+
+    // Find trustmesh_session cookie
+    const token = parseCookieValue(cookies, "trustmesh_session") orelse return null;
+
+    // Compute fingerprint
+    var fp_buf: [64]u8 = undefined;
+    const fingerprint = computeFingerprint(head_buf, &fp_buf);
+
+    // Validate session
+    return store.validateSession(token, fingerprint);
+}
 
 // ═══════════════════════════════════════════
 //  CONFIG
@@ -373,6 +441,14 @@ fn proxyToPython(
         }
     }
 
+    // ── Zig-verified session → inject X-Verified-User-Id for Python ──
+    // This is the core of "Zig owns sessions, Python trusts the header".
+    // Python on :9000 is localhost-only, so this header can't be spoofed externally.
+    if (validateProxySession(head_buf_copy)) |user_id| {
+        const uid_dup = try allocator.dupe(u8, user_id);
+        try fwd_headers.append(allocator, .{ .name = "x-verified-user-id", .value = uid_dup });
+    }
+
     // Make proxy request via std.http.Client (0.15.2 API)
     var client = http.Client{ .allocator = allocator };
     defer client.deinit();
@@ -403,13 +479,24 @@ fn proxyToPython(
     defer resp_headers.deinit(allocator);
 
     // Forward response headers from Python (skip hop-by-hop + SEC-09: strip internal headers)
+    // IMPORTANT: Also skip content-length — Zig's respond() adds it automatically from the body
+    // length. Forwarding Python's content-length creates duplicate headers which Chrome rejects
+    // with ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_LENGTH.
+    // Skip security headers that Zig adds in SECURITY_HEADERS to avoid duplicates.
     var resp_it = response.head.iterateHeaders();
     while (resp_it.next()) |hdr| {
         if (std.ascii.eqlIgnoreCase(hdr.name, "transfer-encoding")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "content-length")) continue;
         if (std.ascii.eqlIgnoreCase(hdr.name, "connection")) continue;
         if (std.ascii.eqlIgnoreCase(hdr.name, "server")) continue;
         if (std.ascii.eqlIgnoreCase(hdr.name, "x-powered-by")) continue;
         if (std.ascii.eqlIgnoreCase(hdr.name, "x-process-time")) continue;
+        // Skip security headers that Zig adds itself (prevents duplicates)
+        if (std.ascii.eqlIgnoreCase(hdr.name, "x-content-type-options")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "x-frame-options")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "strict-transport-security")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "referrer-policy")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "permissions-policy")) continue;
         // Dupe header strings into arena since response reader invalidates them
         const name_dup = try allocator.dupe(u8, hdr.name);
         const val_dup = try allocator.dupe(u8, hdr.value);
