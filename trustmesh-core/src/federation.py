@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # This pod's identity (configurable per instance)
 POD_NAME = os.getenv("TRUSTMESH_POD_NAME", "TrustMesh Pod")
-POD_URL = os.getenv("TRUSTMESH_POD_URL", "http://localhost:8000")
+POD_URL = os.getenv("TRUSTMESH_POD_URL", "http://localhost:9000")
 REGISTRY_URL = os.getenv("TRUSTMESH_REGISTRY_URL", "")
 
 # Timeout for cross-pod HTTP calls

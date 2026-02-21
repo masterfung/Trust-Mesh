@@ -20,7 +20,7 @@ const RouteEntry = struct {
 
 // Static route table — registered at startup.
 // We keep a fixed-size array to avoid allocator dependency at global scope.
-const MAX_ROUTES = 64;
+const MAX_ROUTES = 96;
 var routes: [MAX_ROUTES]RouteEntry = undefined;
 var route_count: usize = 0;
 

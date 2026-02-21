@@ -9,8 +9,17 @@ transit_bridge = pytest.importorskip("src.transit_bridge")
 
 @pytest.fixture(autouse=True)
 def _init_transit():
-    """Ensure transit engine is initialized and clean between tests."""
-    transit_bridge._ensure_init()
+    """Ensure transit engine is initialized and clean between tests.
+
+    Force-reinitializes if the engine was deinited by another test file
+    (e.g., test_seed_validation calling seed() which may deinit/reinit).
+    """
+    # Force reinit: mark as uninitialized so _ensure_init() actually calls init()
+    if not transit_bridge._initialized:
+        transit_bridge._initialized = False
+        transit_bridge._ensure_init()
+    else:
+        transit_bridge._ensure_init()
     yield
     # Clean up test users
     for uid in ["test-user-1", "test-user-2", "test-user-3", "unknown-user"]:

@@ -88,6 +88,12 @@ pub const Config = struct {
     listen_port: u16 = 8000,
     python_port: u16 = 9000,
     python_host: []const u8 = "127.0.0.1",
+    /// Shared secret injected into proxy requests as X-Internal-Proxy-Secret.
+    /// Python middleware validates this to ensure requests come through Zig.
+    /// Set from PODOS_PROXY_SECRET env var. Empty = disabled (dev only).
+    proxy_secret: []const u8 = "",
+    /// Read timeout in seconds for client connections (anti-slowloris).
+    read_timeout_secs: u32 = 30,
 };
 
 // Allowed CORS origins: localhost ports 3000-3100 + any 8001-8016 (multi-pod)
@@ -449,6 +455,11 @@ fn proxyToPython(
         try fwd_headers.append(allocator, .{ .name = "x-verified-user-id", .value = uid_dup });
     }
 
+    // C2: Inject shared proxy secret so Python can verify requests came through Zig.
+    if (config.proxy_secret.len > 0) {
+        try fwd_headers.append(allocator, .{ .name = "x-internal-proxy-secret", .value = config.proxy_secret });
+    }
+
     // Make proxy request via std.http.Client (0.15.2 API)
     var client = http.Client{ .allocator = allocator };
     defer client.deinit();
@@ -537,6 +548,17 @@ fn proxyToPython(
 
 pub fn handleConnection(conn: net.Server.Connection, config: *const Config) void {
     defer conn.stream.close();
+
+    // C1: Set read timeout to prevent slowloris attacks.
+    // A slow client can't hold a thread indefinitely.
+    if (config.read_timeout_secs > 0) {
+        const timeout_us: i64 = @as(i64, config.read_timeout_secs) * 1_000_000;
+        const timeout = std.posix.timeval{
+            .sec = @intCast(@divTrunc(timeout_us, 1_000_000)),
+            .usec = @intCast(@mod(timeout_us, 1_000_000)),
+        };
+        std.posix.setsockopt(conn.stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+    }
 
     // Create arena for this connection's lifetime
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);

@@ -180,9 +180,25 @@ reset_collection = reset_collections
 
 
 def close_fts():
-    """Close the Zig-side DB connection. Called on shutdown."""
+    """Close the Zig-side DB connection. Called on shutdown.
+
+    Also resets cached handles in trust.py and credential_bridge
+    to prevent stale pointer segfaults.
+    """
     global _db_handle
     if _db_handle is not None:
         lib = _get_lib()
         lib.podos_db_close(_db_handle)
         _db_handle = None
+    # Reset any modules that cache our DB handle
+    try:
+        from src.trust import reset_db_handle
+        reset_db_handle()
+    except ImportError:
+        pass
+    try:
+        from src import credential_bridge
+        credential_bridge._db_handle = None
+        credential_bridge._initialized = False
+    except (ImportError, AttributeError):
+        pass

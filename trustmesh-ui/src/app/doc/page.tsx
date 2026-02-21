@@ -153,7 +153,7 @@ export default function DocPage() {
             <span className="text-xs text-foreground/40 font-mono hidden sm:inline">docs</span>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            <a href="http://localhost:8100" target="_blank" rel="noopener noreferrer" className="text-xs text-foreground/50 hover:text-foreground transition-colors px-2 sm:px-3 py-1.5 rounded-lg hover:bg-card-hover">Registry</a>
+            <a href="http://localhost:9100" target="_blank" rel="noopener noreferrer" className="text-xs text-foreground/50 hover:text-foreground transition-colors px-2 sm:px-3 py-1.5 rounded-lg hover:bg-card-hover">Registry</a>
             <Link href="/about" className="text-xs text-foreground/50 hover:text-foreground transition-colors px-2 sm:px-3 py-1.5 rounded-lg hover:bg-card-hover hidden sm:inline-flex">Why TrustMesh?</Link>
             <Link href="/" className="text-xs bg-accent text-accent-fg px-3 py-1.5 rounded-lg font-medium hover:bg-accent-hover transition-colors">Demo</Link>
           </div>
@@ -259,17 +259,17 @@ uv sync
 uv run python -m src.seed
 
 # 3. Start the pod
-uv run uvicorn src.main:app --reload --port 8000`}</Code>
+uv run uvicorn src.main:app --reload --port 9000`}</Code>
 
-          <P>Your pod is now running at <InlineCode>http://localhost:8000</InlineCode>. Check it:</P>
+          <P>Your pod is now running at <InlineCode>http://localhost:9000</InlineCode>. Check it:</P>
           <Code lang="bash">{`# Pod identity
-curl http://localhost:8000/api/pod
+curl http://localhost:9000/api/pod
 
 # A2A agent card (how other pods find you)
-curl http://localhost:8000/.well-known/agent-card.json
+curl http://localhost:9000/.well-known/agent-card.json
 
 # Health check
-curl http://localhost:8000/health`}</Code>
+curl http://localhost:9000/health`}</Code>
 
           <Callout type="tip">
             <strong>Dev mode:</strong> Use <InlineCode>./dev.sh start</InlineCode> from the repo root to start both backend and frontend automatically.
@@ -280,12 +280,12 @@ curl http://localhost:8000/health`}</Code>
             headers={["Variable", "Default", "Purpose"]}
             rows={[
               ["TRUSTMESH_POD_NAME", "TrustMesh Pod", "Display name for your pod"],
-              ["TRUSTMESH_POD_URL", "http://localhost:8000", "Public URL for federation"],
+              ["TRUSTMESH_POD_URL", "http://localhost:9000", "Public URL for federation"],
               ["TRUSTMESH_DB", "./trustmesh.db", "SQLite database path (each pod gets its own)"],
               ["ANTHROPIC_API_KEY", "(required)", "For Claude Sonnet 4.5 agent responses"],
               ["VOYAGE_API_KEY", "(optional)", "Voyage AI embeddings (falls back to local)"],
               ["TRUSTMESH_POOL_SYNC_SECRET", "(generated)", "Shared secret for pool-sync federation auth"],
-              ["TRUSTMESH_REGISTRY_URL", "http://localhost:8100", "Public agent registry URL"],
+              ["TRUSTMESH_REGISTRY_URL", "http://localhost:9100", "Public agent registry URL"],
               ["TAVILY_API_KEY", "(optional)", "Web search tool for agents"],
             ]}
           />
@@ -303,7 +303,7 @@ uv sync   # installs the 'trustmesh' CLI command`}</Code>
 
           <H3>Authentication</H3>
           <Code lang="bash">{`# Log in to a pod (saves session to ~/.trustmesh/session)
-trustmesh login --pod http://localhost:8000
+trustmesh login --pod http://localhost:9000
 
 # Check connection status
 trustmesh status
@@ -364,7 +364,7 @@ trustmesh pod info
 trustmesh pod peers
 
 # Connect to another pod
-trustmesh pod connect http://localhost:8001
+trustmesh pod connect http://localhost:9001
 
 # Disconnect from a peer (cascades ghost cleanup)
 trustmesh pod disconnect <peer-id>
@@ -644,36 +644,36 @@ Offline / local query:
           <H3>1. Start two pods on different ports</H3>
           <Code lang="bash">{`# Terminal 1: Johnson Family Pod
 TRUSTMESH_POD_NAME="Johnson Family" \\
-TRUSTMESH_POD_URL=http://localhost:8000 \\
+TRUSTMESH_POD_URL=http://localhost:9000 \\
 TRUSTMESH_DB=./pod_a.db \\
-uv run uvicorn src.main:app --port 8000
+uv run uvicorn src.main:app --port 9000
 
 # Terminal 2: Hospital Pod
 TRUSTMESH_POD_NAME="Riverside Hospital" \\
-TRUSTMESH_POD_URL=http://localhost:8001 \\
+TRUSTMESH_POD_URL=http://localhost:9001 \\
 TRUSTMESH_DB=./pod_b.db \\
 uv run uvicorn src.main:app --port 8001`}</Code>
 
           <H3>2. Connect them</H3>
           <Code lang="bash">{`# Pod A connects to Pod B (bidirectional — Pod B learns about Pod A too)
-curl -X POST http://localhost:8000/api/pod/peers \\
+curl -X POST http://localhost:9000/api/pod/peers \\
   -H "Content-Type: application/json" \\
-  -d '{"url": "http://localhost:8001"}'
+  -d '{"url": "http://localhost:9001"}'
 
 # Verify: Pod B now lists Pod A as a peer
-curl http://localhost:8001/api/pod/peers`}</Code>
+curl http://localhost:9001/api/pod/peers`}</Code>
 
           <H3>3. Discover agents across federation</H3>
           <Code lang="bash">{`# From Pod A: see all agents (local + remote)
-curl http://localhost:8000/api/pod/discover`}</Code>
+curl http://localhost:9000/api/pod/discover`}</Code>
 
           <H3>4. Cross-pod query</H3>
           <Code lang="bash">{`# Query a user on Pod B from Pod A
-curl -X POST http://localhost:8001/api/pod/query \\
+curl -X POST http://localhost:9001/api/pod/query \\
   -H "Content-Type: application/json" \\
   -d '{
     "from_did": "did:key:z6Mk...",
-    "from_pod": "http://localhost:8000",
+    "from_pod": "http://localhost:9000",
     "to_username": "dr_lee",
     "question": "What services do you provide?"
   }'`}</Code>
@@ -723,7 +723,7 @@ Layer 5: A2A agent card. Any compatible agent can connect.`}</Code>
           <Code lang="json">{`{
   "name": "Johnson Family Pod Agent",
   "description": "TrustMesh pod agent for Johnson Family Pod",
-  "url": "http://localhost:8000/api/pod/a2a",
+  "url": "http://localhost:9000/api/pod/a2a",
   "version": "0.1.0",
   "capabilities": {
     "streaming": false,
@@ -748,7 +748,7 @@ Layer 5: A2A agent card. Any compatible agent can connect.`}</Code>
   "defaultOutputModes": ["text"],
   "trustmesh": {
     "pod_name": "Johnson Family Pod",
-    "pod_url": "http://localhost:8000",
+    "pod_url": "http://localhost:9000",
     "protocol": "trustmesh/0.1",
     "did": "did:key:z6Mk...",
     "public_key_b64": "..."

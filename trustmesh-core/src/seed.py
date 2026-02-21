@@ -1965,7 +1965,7 @@ async def seed():
             is_discoverable=False,
             is_demo=False,
             is_remote=True,
-            remote_pod_url="http://localhost:8001",
+            remote_pod_url="http://localhost:9001",
             remote_did="did:key:z6MkPartnerAlex",
         )
         db.add(ghost)

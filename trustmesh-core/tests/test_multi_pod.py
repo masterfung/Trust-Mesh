@@ -12,24 +12,24 @@ Prerequisites:
 import httpx
 import pytest
 
-REGISTRY_URL = "http://localhost:8100"
+REGISTRY_URL = "http://localhost:9100"
 PODS = {
-    "sarah":   8001,
-    "mike":    8002,
-    "emma":    8003,
-    "grandma": 8004,
-    "dr_chen": 8005,
-    "tom":     8006,
-    "lisa":    8007,
-    "priya":   8008,
-    "james":   8009,
-    "maria":   8010,
-    "techcorp": 8011,
-    "hospital": 8012,
-    "music":    8013,
-    "city":     8014,
-    "insurance": 8015,
-    "dance":    8016,
+    "sarah":   9001,
+    "mike":    9002,
+    "emma":    9003,
+    "grandma": 9004,
+    "dr_chen": 9005,
+    "tom":     9006,
+    "lisa":    9007,
+    "priya":   9008,
+    "james":   9009,
+    "maria":   9010,
+    "techcorp": 9011,
+    "hospital": 9012,
+    "music":    9013,
+    "city":     9014,
+    "insurance": 9015,
+    "dance":    9016,
 }
 
 
@@ -45,7 +45,7 @@ def _is_pod_running(port: int) -> bool:
 
 # Skip all tests if pods aren't running
 pytestmark = pytest.mark.skipif(
-    not _is_pod_running(8001),
+    not _is_pod_running(9001),
     reason="Multi-pod federation not running. Start with: ./multi-pod.sh start && ./multi-pod.sh orchestrate"
 )
 
@@ -106,18 +106,18 @@ class TestPeerConnections:
     """Test that peer connections were established."""
 
     def test_sarah_has_peers(self, client):
-        r = client.get("http://localhost:8001/api/pod/peers")
+        r = client.get("http://localhost:9001/api/pod/peers")
         assert r.status_code == 200
         peers = r.json()["peers"]
         assert len(peers) >= 2  # At least mike, emma, grandma, tom
 
     def test_dr_chen_has_hospital_peer(self, client):
-        r = client.get("http://localhost:8005/api/pod/peers")
+        r = client.get("http://localhost:9005/api/pod/peers")
         assert r.status_code == 200
         peers = r.json()["peers"]
         peer_ports = [p["url"].split(":")[-1] for p in peers]
         # Dr. Chen should be peered with hospital (8012)
-        assert "8012" in peer_ports or len(peers) >= 1
+        assert "9012" in peer_ports or len(peers) >= 1
 
 
 class TestPoolSync:
@@ -126,7 +126,7 @@ class TestPoolSync:
     def test_sarah_has_johnsons_pool(self, client):
         """Sarah's pod should have 'The Johnsons' network."""
         # Login first to get session
-        r = client.post("http://localhost:8001/api/auth/login", json={
+        r = client.post("http://localhost:9001/api/auth/login", json={
             "username": "molly", "password": "TrustMesh-demo-2026",
         })
         if r.status_code != 200:
@@ -134,7 +134,7 @@ class TestPoolSync:
 
         # List networks
         user_id = r.json()["id"]
-        r = client.get(f"http://localhost:8001/api/users/{user_id}/networks")
+        r = client.get(f"http://localhost:9001/api/users/{user_id}/networks")
         assert r.status_code == 200
         networks = r.json()
         names = [n["name"] for n in networks]
@@ -142,14 +142,14 @@ class TestPoolSync:
 
     def test_dr_chen_has_er_team_pool(self, client):
         """Dr. Chen's pod should have 'Riverside ER Team' network."""
-        r = client.post("http://localhost:8005/api/auth/login", json={
+        r = client.post("http://localhost:9005/api/auth/login", json={
             "username": "dr_lee", "password": "TrustMesh-demo-2026",
         })
         if r.status_code != 200:
             pytest.skip("Cannot login to Dr. Chen's pod")
 
         user_id = r.json()["id"]
-        r = client.get(f"http://localhost:8005/api/users/{user_id}/networks")
+        r = client.get(f"http://localhost:9005/api/users/{user_id}/networks")
         assert r.status_code == 200
         networks = r.json()
         names = [n["name"] for n in networks]
@@ -161,7 +161,7 @@ class TestCrossPodQuery:
 
     def test_public_query_to_sarah(self, client):
         """An anonymous cross-pod query to Sarah's pod should get public data only."""
-        r = client.post("http://localhost:8001/api/pod/query", json={
+        r = client.post("http://localhost:9001/api/pod/query", json={
             "from_did": "did:key:z6MkTestAnonymous",
             "from_pod": "http://localhost:9999",
             "to_username": "molly",

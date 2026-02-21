@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.auth import get_current_user_id
 
 from src.csrf import CSRFMiddleware
-from src.middleware import RateLimitHeadersMiddleware
+from src.middleware import ProxySecretMiddleware, RateLimitHeadersMiddleware
 from sqlalchemy import select, or_
 
 from src.crypto import decrypt, derive_vault_key, public_key_to_b64
@@ -200,14 +200,16 @@ app = FastAPI(
 )
 
 app.add_middleware(RateLimitHeadersMiddleware)
+app.add_middleware(ProxySecretMiddleware)
 app.add_middleware(CSRFMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3050", "http://localhost:3000",
+        "http://localhost:9000",  # User's own pod
         # Multi-pod federation: allow cross-pod requests from any localhost port
-        *[f"http://localhost:{p}" for p in range(8001, 8017)],
-        "http://localhost:8100",  # Public registry
+        *[f"http://localhost:{p}" for p in range(9001, 9017)],
+        "http://localhost:9100",  # Public registry
     ],
     allow_credentials=True,
     allow_methods=["*"],

@@ -22,7 +22,9 @@ from ctypes import c_uint32
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
 
 from src.auth import get_current_user_id, get_optional_user_id
 
@@ -1068,33 +1070,66 @@ class TriggerConfig(BaseModel):
     absence_event_type: Optional[str] = None  # for absence trigger
     absence_deadline_ms: Optional[int] = None
 
+    @field_validator("kind")
+    @classmethod
+    def validate_kind(cls, v: str) -> str:
+        if v not in ("manual", "time", "event", "absence"):
+            raise ValueError("kind must be one of: manual, time, event, absence")
+        return v
+
+    @field_validator("cron")
+    @classmethod
+    def validate_cron(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        # Basic 5-field cron syntax check: min hour dom month dow
+        fields = v.strip().split()
+        if len(fields) != 5:
+            raise ValueError("cron must have exactly 5 fields: min hour dom month dow")
+        # Validate each field allows only safe characters
+        cron_field_re = re.compile(r"^[0-9*,/\-]+$")
+        for i, field in enumerate(fields):
+            if not cron_field_re.match(field):
+                raise ValueError(f"Invalid cron field {i}: {field}")
+        # Enforce minimum interval of 5 minutes (C5)
+        min_field = fields[0]
+        if min_field.startswith("*/"):
+            try:
+                interval = int(min_field[2:])
+                if interval < 5:
+                    raise ValueError("Cron interval must be >= 5 minutes")
+            except ValueError as e:
+                if "Cron interval" in str(e):
+                    raise
+        return v
+
 
 class DependencyConfig(BaseModel):
-    entry_id: str  # UUID string
-    required_state: int = 3  # EntryState.ACTIVE
+    entry_id: str = Field(..., max_length=36)
+    required_state: int = Field(3, ge=0, le=9)  # EntryState enum
     is_hard: bool = True
 
 
 class HookConfig(BaseModel):
-    action: int = 1  # HookActionKind.NOTIFY
-    phase: int = 0  # HookPhase.PRE
-    prompt: str = ""
-    timeout_ms: int = 30000
-    max_retries: int = 0
+    action: int = Field(1, ge=0, le=3)  # HookActionKind enum
+    phase: int = Field(0, ge=0, le=2)  # HookPhase enum
+    prompt: str = Field("", max_length=2000)
+    timeout_ms: int = Field(30000, ge=1000, le=300000)
+    max_retries: int = Field(0, ge=0, le=5)
 
 
 class CreateEntryRequest(BaseModel):
     label: str = Field(..., max_length=128)
     category: str = Field("general", max_length=32)
-    entry_type: int = 0  # EntryType.EVENT
-    visibility: int = 3  # Visibility.PRIVATE
+    entry_type: int = Field(0, ge=0, le=5)  # EntryType enum: 0-5
+    visibility: int = Field(3, ge=0, le=3)  # Visibility enum: 0-3
     salience: float = Field(0.5, ge=0.0, le=1.0)
     window_start_ms: Optional[int] = None
     window_end_ms: Optional[int] = None
     activation_trigger: Optional[TriggerConfig] = None
     deactivation_trigger: Optional[TriggerConfig] = None
-    dependencies: list[DependencyConfig] = []
-    hooks: list[HookConfig] = []
+    dependencies: list[DependencyConfig] = Field(default_factory=list, max_length=20)
+    hooks: list[HookConfig] = Field(default_factory=list, max_length=10)
 
 
 class PushEventRequest(BaseModel):
@@ -1104,7 +1139,7 @@ class PushEventRequest(BaseModel):
 
 
 class TransitionRequest(BaseModel):
-    new_state: int  # EntryState enum value
+    new_state: int = Field(..., ge=0, le=9)  # EntryState enum value
 
 
 class HookCompleteRequest(BaseModel):
@@ -1307,6 +1342,16 @@ async def create_entry(
     )
 
     engine = _get_engine()
+
+    # C5: Per-user entry cap (50 entries)
+    MAX_ENTRIES_PER_USER = 50
+    all_ids = engine.get_all_entry_ids()
+    if len(all_ids) >= MAX_ENTRIES_PER_USER:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Entry limit reached ({MAX_ENTRIES_PER_USER})",
+        )
+
     builder = EntryBuilder()
     builder.set_label(req.label)
     builder.set_category(req.category)
@@ -1374,7 +1419,7 @@ async def create_entry(
         if int(req.visibility) == int(Visibility.INTERNAL):
             event = {
                 "event_id": str(uuid.uuid4()),
-                "source_pod": os.getenv("TRUSTMESH_POD_URL", "http://localhost:8000"),
+                "source_pod": os.getenv("TRUSTMESH_POD_URL", "http://localhost:9000"),
                 "source_entry_id": str(entry_id),
                 "event_type": "entry_created",
                 "entry_data": {
@@ -1461,7 +1506,7 @@ async def transition_entry(
         if vis is not None and int(vis) == int(Visibility.INTERNAL):
             event = {
                 "event_id": str(uuid.uuid4()),
-                "source_pod": os.getenv("TRUSTMESH_POD_URL", "http://localhost:8000"),
+                "source_pod": os.getenv("TRUSTMESH_POD_URL", "http://localhost:9000"),
                 "source_entry_id": str(eid),
                 "event_type": "entry_state_changed",
                 "entry_data": {"id": str(eid), "state": int(state_after) if state_after is not None else 0},

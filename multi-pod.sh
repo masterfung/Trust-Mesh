@@ -33,7 +33,7 @@ DATA_DIR="$BACKEND_DIR/data/pods"
 LOG_DIR="$ROOT/.multipod-logs"
 PID_DIR="$ROOT/.multipod-pids"
 
-REGISTRY_PORT=8100
+REGISTRY_PORT=9100
 FRONTEND_PORT=3050
 CITADEL_PORT=3001
 
@@ -42,22 +42,22 @@ POOL_SYNC_SECRET_FILE="$ROOT/.multipod-secret"
 
 # Pod definitions: key port
 PODS=(
-  "sarah:8001"
-  "mike:8002"
-  "emma:8003"
-  "grandma:8004"
-  "dr_chen:8005"
-  "tom:8006"
-  "lisa:8007"
-  "priya:8008"
-  "james:8009"
-  "maria:8010"
-  "techcorp:8011"
-  "hospital:8012"
-  "music:8013"
-  "city:8014"
-  "insurance:8015"
-  "dance:8016"
+  "sarah:9001"
+  "mike:9002"
+  "emma:9003"
+  "grandma:9004"
+  "dr_chen:9005"
+  "tom:9006"
+  "lisa:9007"
+  "priya:9008"
+  "james:9009"
+  "maria:9010"
+  "techcorp:9011"
+  "hospital:9012"
+  "music:9013"
+  "city:9014"
+  "insurance:9015"
+  "dance:9016"
 )
 
 # Display names for status output
@@ -278,18 +278,18 @@ cmd_start() {
   nohup bun dev --port $REGISTRY_PORT > "$LOG_DIR/registry.log" 2>&1 &
   echo $! > "$PID_DIR/registry.pid"
 
-  # 2a. Start user's own pod on :8000 (fresh DB — no demo users to avoid registry dupes)
+  # 2a. Start user's own pod on :9000 (fresh DB — no demo users to avoid registry dupes)
   cd "$BACKEND_DIR"
-  _kill_port 8000
+  _kill_port 9000
   TRUSTMESH_POD_NAME="My Pod" \
-  TRUSTMESH_POD_URL="http://localhost:8000" \
+  TRUSTMESH_POD_URL="http://localhost:9000" \
   TRUSTMESH_DB="$DATA_DIR/user.db" \
   TRUSTMESH_POOL_SYNC_SECRET="$TRUSTMESH_POOL_SYNC_SECRET" \
   TRUSTMESH_REGISTRY_URL="http://localhost:${REGISTRY_PORT}" \
   CITADEL_URL="${CITADEL_URL}" \
-  nohup uv run uvicorn src.main:app --reload --port 8000 > "$LOG_DIR/user.log" 2>&1 &
+  nohup uv run uvicorn src.main:app --reload --port 9000 > "$LOG_DIR/user.log" 2>&1 &
   echo $! > "$PID_DIR/user.pid"
-  echo "  Started :8000  Your Pod (sign up / login here)"
+  echo "  Started :9000  Your Pod (sign up / login here)"
 
   # 2b. Start 16 demo pods
   for entry in "${PODS[@]}"; do
@@ -330,7 +330,7 @@ cmd_start() {
   if _wait_for_health "http://localhost:$REGISTRY_PORT/api/health" 20; then
     echo -n " registry"
   fi
-  if _wait_for_health "http://localhost:8001/health" 30; then
+  if _wait_for_health "http://localhost:9001/health" 30; then
     echo -n " pods"
   fi
   if _wait_for_health "http://localhost:$FRONTEND_PORT" 20; then
@@ -345,8 +345,8 @@ cmd_start() {
     echo "  Citadel:   $CITADEL_URL (ML security scanning)"
   fi
   echo "  Registry:  http://localhost:$REGISTRY_PORT"
-  echo "  Your Pod:  http://localhost:8000  (sign up / login)"
-  echo "  Demo Pods: http://localhost:8001 - http://localhost:8016"
+  echo "  Your Pod:  http://localhost:9000  (sign up / login)"
+  echo "  Demo Pods: http://localhost:9001 - http://localhost:9016"
   echo "  Frontend:  http://localhost:$FRONTEND_PORT"
   echo ""
   echo "  Next: ./multi-pod.sh orchestrate"
@@ -374,7 +374,7 @@ cmd_stop() {
 
   # Stop user's own pod
   _kill_pid "$PID_DIR/user.pid" "user pod"
-  _kill_port 8000
+  _kill_port 9000
 
   # Stop all demo pods
   for entry in "${PODS[@]}"; do
@@ -414,10 +414,10 @@ cmd_status() {
   fi
 
   # User's own pod
-  if curl -sf "http://localhost:8000/health" > /dev/null 2>&1; then
-    printf "  %-8s %-25s %s\n" ":8000" "Your Pod" "ONLINE"
+  if curl -sf "http://localhost:9000/health" > /dev/null 2>&1; then
+    printf "  %-8s %-25s %s\n" ":9000" "Your Pod" "ONLINE"
   else
-    printf "  %-8s %-25s %s\n" ":8000" "Your Pod" "OFFLINE"
+    printf "  %-8s %-25s %s\n" ":9000" "Your Pod" "OFFLINE"
   fi
 
   # Demo pods

@@ -4,19 +4,27 @@
 // Routes migrate here one group at a time (Phase 3b/3c).
 //
 // Environment variables read at startup:
-//   PODOS_PORT         Public port (default: 8000)
-//   PODOS_PYTHON_PORT  Python backend port (default: 9000)
-//   PODOS_DB_PATH      SQLite DB path (default: ./trustmesh.db)
+//   PODOS_PORT           Public port (default: 8000)
+//   PODOS_PYTHON_PORT    Python backend port (default: 9000)
+//   PODOS_DB_PATH        SQLite DB path (default: ./trustmesh.db)
+//   PODOS_PROXY_SECRET   Shared secret for proxy→Python auth (C2)
 
 const std = @import("std");
 const podos = @import("podos");
 // http, router, auth_handler are in the same module as server_main (root module)
 const http_mod = @import("http.zig");
 const router = @import("router.zig");
+const common_handler = @import("handlers/common.zig");
 const auth_handler = @import("handlers/auth.zig");
 const cred_handler = @import("handlers/credentials.zig");
 const onboard_handler = @import("handlers/onboard.zig");
 const memory_handler = @import("handlers/memory.zig");
+const notifications_handler = @import("handlers/notifications.zig");
+const audit_handler = @import("handlers/audit.zig");
+const pin_handler = @import("handlers/pin.zig");
+const users_handler = @import("handlers/users.zig");
+const connections_handler = @import("handlers/connections.zig");
+const capsules_handler = @import("handlers/capsules.zig");
 
 // ── Globals ──
 var _gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -77,6 +85,9 @@ pub fn main() !void {
     // ── Give proxy layer access to session store (for X-Verified-User-Id injection) ──
     http_mod.setSessionStore(&sess_store);
 
+    // ── Common handler utilities (shared session store for requireAuth) ──
+    common_handler.setSessionStore(&sess_store);
+
     // ── Register native route handlers ──
     // Phase 3b: Auth routes (login, logout, me)
     auth_handler.setDatabase(&database);
@@ -104,11 +115,46 @@ pub fn main() !void {
     memory_handler.setRateLimiter(&rate_limiter);
     memory_handler.registerRoutes();
 
+    // Notifications (polling hot path)
+    notifications_handler.setDatabase(&database);
+    notifications_handler.registerRoutes();
+
+    // Audit log reads
+    audit_handler.setDatabase(&database);
+    audit_handler.registerRoutes();
+
+    // PIN management
+    pin_handler.setDatabase(&database);
+    pin_handler.setRateLimiter(&rate_limiter);
+    pin_handler.registerRoutes();
+
+    // User reads (page load hot path)
+    users_handler.setDatabase(&database);
+    users_handler.registerRoutes();
+
+    // Connection reads (dashboard hot path)
+    connections_handler.setDatabase(&database);
+    connections_handler.registerRoutes();
+
+    // Capsule CRUD (vault hot path)
+    capsules_handler.setDatabase(&database);
+    capsules_handler.setTransitEngine(&transit_engine);
+    capsules_handler.registerRoutes();
+
     // ── Start HTTP server ──
+    // C2: Read proxy shared secret from environment
+    const proxy_secret = getEnvStr(allocator, "PODOS_PROXY_SECRET", "");
+    if (proxy_secret.len > 0) {
+        std.log.info("  Proxy secret: configured ({d} bytes)", .{proxy_secret.len});
+    } else {
+        std.log.warn("  Proxy secret: NOT SET (Python backend unprotected)", .{});
+    }
+
     const config = http_mod.Config{
         .listen_port = listen_port,
         .python_port = python_port,
         .python_host = "127.0.0.1",
+        .proxy_secret = proxy_secret,
     };
 
     var http_server = http_mod.Server.init(config);

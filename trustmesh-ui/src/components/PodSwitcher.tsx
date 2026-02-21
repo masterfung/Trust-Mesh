@@ -15,22 +15,22 @@ interface PodEntry {
 }
 
 const PODS: Omit<PodEntry, "online">[] = [
-  { key: "molly",               port: 8001, name: "Molly Johnson",            type: "person",       username: "molly" },
-  { key: "peter",               port: 8002, name: "Peter Johnson",            type: "person",       username: "peter" },
-  { key: "jane",                port: 8003, name: "Jane Johnson",             type: "person",       username: "jane" },
-  { key: "grandmarose",         port: 8004, name: "Grandma Rose",             type: "person",       username: "grandmarose" },
-  { key: "dr_lee",              port: 8005, name: "Dr. Sarah Lee",            type: "person",       username: "dr_lee" },
-  { key: "kyle",                port: 8006, name: "Kyle Rivera",              type: "person",       username: "kyle" },
-  { key: "amy",                 port: 8007, name: "Amy Torres",               type: "person",       username: "amy" },
-  { key: "dorothy",             port: 8008, name: "Dorothy Park",             type: "person",       username: "dorothy" },
-  { key: "nurse_davis",         port: 8009, name: "Nurse Rachel Davis",       type: "person",       username: "nurse_davis" },
-  { key: "emt_johnson",         port: 8010, name: "EMT Mike Johnson",         type: "person",       username: "emt_johnson" },
-  { key: "sparkleclean",        port: 8011, name: "SparkleClean",             type: "organization", username: "sparkleclean" },
-  { key: "riverside_hospital",  port: 8012, name: "Riverside Hospital",       type: "organization", username: "riverside_hospital" },
-  { key: "acetutor",            port: 8013, name: "AceTutor SAT Prep",        type: "organization", username: "acetutor" },
-  { key: "riverside_gov",       port: 8014, name: "City of Riverside",        type: "government",   username: "riverside_gov" },
-  { key: "handypro",            port: 8015, name: "HandyPro",                 type: "organization", username: "handypro" },
-  { key: "riverside_ambulance", port: 8016, name: "Riverside Ambulance",      type: "organization", username: "riverside_ambulance" },
+  { key: "molly",               port: 9001, name: "Molly Johnson",            type: "person",       username: "molly" },
+  { key: "peter",               port: 9002, name: "Peter Johnson",            type: "person",       username: "peter" },
+  { key: "jane",                port: 9003, name: "Jane Johnson",             type: "person",       username: "jane" },
+  { key: "grandmarose",         port: 9004, name: "Grandma Rose",             type: "person",       username: "grandmarose" },
+  { key: "dr_lee",              port: 9005, name: "Dr. Sarah Lee",            type: "person",       username: "dr_lee" },
+  { key: "kyle",                port: 9006, name: "Kyle Rivera",              type: "person",       username: "kyle" },
+  { key: "amy",                 port: 9007, name: "Amy Torres",               type: "person",       username: "amy" },
+  { key: "dorothy",             port: 9008, name: "Dorothy Park",             type: "person",       username: "dorothy" },
+  { key: "nurse_davis",         port: 9009, name: "Nurse Rachel Davis",       type: "person",       username: "nurse_davis" },
+  { key: "emt_johnson",         port: 9010, name: "EMT Mike Johnson",         type: "person",       username: "emt_johnson" },
+  { key: "sparkleclean",        port: 9011, name: "SparkleClean",             type: "organization", username: "sparkleclean" },
+  { key: "riverside_hospital",  port: 9012, name: "Riverside Hospital",       type: "organization", username: "riverside_hospital" },
+  { key: "acetutor",            port: 9013, name: "AceTutor SAT Prep",        type: "organization", username: "acetutor" },
+  { key: "riverside_gov",       port: 9014, name: "City of Riverside",        type: "government",   username: "riverside_gov" },
+  { key: "handypro",            port: 9015, name: "HandyPro",                 type: "organization", username: "handypro" },
+  { key: "riverside_ambulance", port: 9016, name: "Riverside Ambulance",      type: "organization", username: "riverside_ambulance" },
 ];
 
 const TYPE_BADGE: Record<string, { label: string; className: string }> = {
@@ -48,9 +48,9 @@ export function PodSwitcher({ userName }: { userName?: string }) {
     setCurrent(getPodUrl());
   }, []);
 
-  const currentPort = current.match(/:(\d+)/)?.[1] || "8000";
+  const currentPort = current.match(/:(\d+)/)?.[1] || "9000";
   const currentPod = PODS.find(p => p.port === Number(currentPort));
-  const isMultiPod = currentPort !== "8000";
+  const isMultiPod = currentPort !== "9000";
 
   // Only check pod statuses when in multi-pod mode and dropdown is opened
   const checkStatuses = useCallback(async () => {
@@ -129,11 +129,11 @@ export function PodSwitcher({ userName }: { userName?: string }) {
         <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-card border border-card-border rounded-lg shadow-xl max-h-80 overflow-y-auto">
           {/* Back to single-pod */}
           <button
-            onClick={() => { setPodUrl("http://localhost:8000"); setCurrent("http://localhost:8000"); setOpen(false); window.location.reload(); }}
+            onClick={() => { setPodUrl("http://localhost:9000"); setCurrent("http://localhost:9000"); setOpen(false); window.location.reload(); }}
             className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-card-hover transition-colors"
           >
             <span className="w-2 h-2 rounded-full bg-accent" />
-            <span className="font-medium">{userName ? `${userName}'s Space` : "My Space"} (:8000)</span>
+            <span className="font-medium">{userName ? `${userName}'s Space` : "My Space"} (:9000)</span>
           </button>
 
           <div className="border-t border-card-border my-1" />

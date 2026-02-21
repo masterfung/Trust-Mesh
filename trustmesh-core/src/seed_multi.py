@@ -33,24 +33,24 @@ from src.seed import CAPSULES, DEMO_PASSWORD, SERVICE_PROVIDERS, USERS
 
 # Map plan names to existing seed usernames
 POD_ENTITIES = {
-    # People (ports 8001-8010)
-    "sarah":    {"port": 8001, "username": "molly",        "type": "person"},   # "Molly" = Sarah in plan
-    "mike":     {"port": 8002, "username": "peter",        "type": "person"},   # "Peter" = Mike in plan
-    "emma":     {"port": 8003, "username": "jane",         "type": "person"},   # "Jane" = Emma in plan
-    "grandma":  {"port": 8004, "username": "grandmarose",  "type": "person"},
-    "dr_chen":  {"port": 8005, "username": "dr_lee",       "type": "person"},   # Dr. Lee = Dr. Chen in plan
-    "tom":      {"port": 8006, "username": "kyle",         "type": "person"},   # Kyle = Tom the plumber in plan
-    "lisa":     {"port": 8007, "username": "amy",          "type": "person"},   # Amy = Lisa Rodriguez in plan
-    "priya":    {"port": 8008, "username": "dorothy",      "type": "person"},   # Dorothy = Priya Patel in plan
-    "james":    {"port": 8009, "username": "nurse_davis",  "type": "person"},   # Nurse Davis = James Wilson
-    "maria":    {"port": 8010, "username": "emt_johnson",  "type": "person"},   # EMT Johnson = Maria Santos
-    # Organizations (ports 8011-8016)
-    "techcorp":  {"port": 8011, "username": "sparkleclean",        "type": "organization"},
-    "hospital":  {"port": 8012, "username": "riverside_hospital",  "type": "organization"},
-    "music":     {"port": 8013, "username": "acetutor",            "type": "organization"},
-    "city":      {"port": 8014, "username": "riverside_gov",       "type": "government"},
-    "insurance": {"port": 8015, "username": "handypro",            "type": "organization"},
-    "dance":     {"port": 8016, "username": "riverside_ambulance", "type": "organization"},
+    # People (ports 9001-9010)
+    "sarah":    {"port": 9001, "username": "molly",        "type": "person"},   # "Molly" = Sarah in plan
+    "mike":     {"port": 9002, "username": "peter",        "type": "person"},   # "Peter" = Mike in plan
+    "emma":     {"port": 9003, "username": "jane",         "type": "person"},   # "Jane" = Emma in plan
+    "grandma":  {"port": 9004, "username": "grandmarose",  "type": "person"},
+    "dr_chen":  {"port": 9005, "username": "dr_lee",       "type": "person"},   # Dr. Lee = Dr. Chen in plan
+    "tom":      {"port": 9006, "username": "kyle",         "type": "person"},   # Kyle = Tom the plumber in plan
+    "lisa":     {"port": 9007, "username": "amy",          "type": "person"},   # Amy = Lisa Rodriguez in plan
+    "priya":    {"port": 9008, "username": "dorothy",      "type": "person"},   # Dorothy = Priya Patel in plan
+    "james":    {"port": 9009, "username": "nurse_davis",  "type": "person"},   # Nurse Davis = James Wilson
+    "maria":    {"port": 9010, "username": "emt_johnson",  "type": "person"},   # EMT Johnson = Maria Santos
+    # Organizations (ports 9011-9016)
+    "techcorp":  {"port": 9011, "username": "sparkleclean",        "type": "organization"},
+    "hospital":  {"port": 9012, "username": "riverside_hospital",  "type": "organization"},
+    "music":     {"port": 9013, "username": "acetutor",            "type": "organization"},
+    "city":      {"port": 9014, "username": "riverside_gov",       "type": "government"},
+    "insurance": {"port": 9015, "username": "handypro",            "type": "organization"},
+    "dance":     {"port": 9016, "username": "riverside_ambulance", "type": "organization"},
 }
 
 # Build lookup maps

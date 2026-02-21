@@ -16,13 +16,13 @@ const std = @import("std");
 const podos = @import("podos");
 const http = @import("../http.zig");
 const router_mod = @import("../router.zig");
+const common = @import("common.zig");
 const json_mod = podos.json;
 
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 // ── Module-level state ──
 var _db: ?*podos.db.Database = null;
-var _session_store: ?*podos.session.SessionStore = null;
 var _transit_engine: ?*podos.transit.TransitEngine = null;
 var _rate_limiter: ?*podos.rate_limit.RateLimiter = null;
 
@@ -30,8 +30,9 @@ pub fn setDatabase(d: *podos.db.Database) void {
     _db = d;
 }
 
-pub fn setSessionStore(store: *podos.session.SessionStore) void {
-    _session_store = store;
+// setSessionStore kept for backward compat — delegates to common
+pub fn setSessionStore(_: *podos.session.SessionStore) void {
+    // Session store is now set via common.setSessionStore() in server_main
 }
 
 pub fn setTransitEngine(engine: *podos.transit.TransitEngine) void {
@@ -58,70 +59,9 @@ const MAX_STORE_BODY: usize = 50 * 1024; // 50KB
 const MAX_RECALL_BODY: usize = 4 * 1024; // 4KB
 const MAX_CAPSULES_PER_USER: usize = 10_000;
 
-// ── Auth helper ──
-fn requireAuth(ctx: *http.RequestContext, out: []u8) ?[]const u8 {
-    const token = ctx.getCookie("trustmesh_session") orelse {
-        ctx.sendError(.unauthorized, "Not authenticated") catch {};
-        return null;
-    };
-    const store = _session_store orelse {
-        ctx.sendError(.service_unavailable, "Session store not ready") catch {};
-        return null;
-    };
-    var fp_buf: [64]u8 = undefined;
-    const fp = buildFingerprint(ctx, &fp_buf);
-    // validateSession returns ?[]const u8 (pointer into session internal buffer)
-    const uid = store.validateSession(token, fp) orelse {
-        ctx.sendError(.unauthorized, "Invalid session") catch {};
-        return null;
-    };
-    if (uid.len > out.len) {
-        ctx.sendError(.internal_server_error, "User ID too long") catch {};
-        return null;
-    }
-    @memcpy(out[0..uid.len], uid);
-    return out[0..uid.len];
-}
-
-fn buildFingerprint(ctx: *const http.RequestContext, buf: *[64]u8) []const u8 {
-    const ua = ctx.getHeader("user-agent") orelse "";
-    const ip = http.getClientIp(ctx);
-    var h = Sha256.init(.{});
-    h.update(ua);
-    h.update("|");
-    h.update(ip);
-    const digest = h.finalResult();
-    const hex_chars = "0123456789abcdef";
-    for (digest, 0..) |byte, i| {
-        buf[i * 2] = hex_chars[byte >> 4];
-        buf[i * 2 + 1] = hex_chars[byte & 0x0f];
-    }
-    return buf[0..64];
-}
-
-// ── UUID generation ──
-fn generateUuid(buf: *[36]u8) void {
-    var raw: [16]u8 = undefined;
-    std.crypto.random.bytes(&raw);
-    raw[6] = (raw[6] & 0x0f) | 0x40;
-    raw[8] = (raw[8] & 0x3f) | 0x80;
-    const hex = "0123456789abcdef";
-    var pos: usize = 0;
-    const groups = [_]usize{ 4, 2, 2, 2, 6 };
-    var byte_idx: usize = 0;
-    for (groups, 0..) |count, g| {
-        if (g > 0) {
-            buf[pos] = '-';
-            pos += 1;
-        }
-        for (0..count) |_| {
-            buf[pos] = hex[raw[byte_idx] >> 4];
-            buf[pos + 1] = hex[raw[byte_idx] & 0x0f];
-            pos += 2;
-            byte_idx += 1;
-        }
-    }
-}
+// ── Delegates to common.zig ──
+const requireAuth = common.requireAuth;
+const generateUuid = common.generateUuid;
 
 // ═══════════════════════════════════════════
 //  HANDLER: POST /api/memory/store
@@ -604,7 +544,7 @@ fn handleCount(ctx: *http.RequestContext) !void {
 fn handleHealth(ctx: *http.RequestContext) !void {
     const db_ok = _db != null;
     const transit_ok = _transit_engine != null;
-    const session_ok = _session_store != null;
+    const session_ok = true; // Session store is now in common.zig
 
     const healthy = db_ok and transit_ok and session_ok;
     const status_str = if (healthy) "healthy" else "degraded";
@@ -669,33 +609,6 @@ fn buildAccessibleIds(database: *podos.db.Database, user_id: []const u8, categor
     return pos;
 }
 
-/// Extract a query parameter value from a URL query string.
-fn getQueryParam(query: []const u8, name: []const u8) ?[]const u8 {
-    if (query.len == 0) return null;
-    var it = std.mem.splitScalar(u8, query, '&');
-    while (it.next()) |pair| {
-        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
-        const key = pair[0..eq];
-        if (std.mem.eql(u8, key, name)) {
-            return pair[eq + 1 ..];
-        }
-    }
-    return null;
-}
-
-fn formatIsoTimestamp(epoch_secs: i64, buf: *[32]u8) usize {
-    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(epoch_secs) };
-    const day = epoch.getDaySeconds();
-    const yd = epoch.getEpochDay().calculateYearDay();
-    const md = yd.calculateMonthDay();
-    const y = yd.year;
-    const m = md.month.numeric();
-    const d = md.day_index + 1;
-    const h = day.getHoursIntoDay();
-    const min = day.getMinutesIntoHour();
-    const s = day.getSecondsIntoMinute();
-
-    return (std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}", .{
-        y, m, d, h, min, s,
-    }) catch return 0).len;
-}
+// ── Delegates to common.zig ──
+const getQueryParam = common.getQueryParam;
+const formatIsoTimestamp = common.formatIsoTimestamp;

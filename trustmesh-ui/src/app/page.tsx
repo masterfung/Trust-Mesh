@@ -20,6 +20,7 @@ function validatePasswordComplexity(pw: string): string | null {
 function validateName(name: string): string | null {
   if (!name.trim()) return null;
   if (!/^[A-Za-z][A-Za-z \-'.]+$/.test(name.trim())) return "Letters only (spaces, hyphens, apostrophes OK)";
+  if (name.trim().split(/\s+/).length < 2) return "Please enter first and last name";
   return null;
 }
 
@@ -58,7 +59,7 @@ export default function Home() {
             Docs
           </Link>
           <a
-            href="http://localhost:8100"
+            href="http://localhost:9100"
             target="_blank"
             rel="noopener noreferrer"
             className="hidden sm:block text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1.5 rounded-lg hover:bg-card"
@@ -342,7 +343,7 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
       <div className="space-y-4 mb-5">
         {/* Avatar */}
         <div className="flex items-center gap-4">
-          <label className="cursor-pointer group relative">
+          <label htmlFor="avatar-upload" className="cursor-pointer group relative">
             <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-background border-2 border-dashed border-card-border group-hover:border-accent/50 transition-colors flex items-center justify-center overflow-hidden">
               {avatarPreview ? (
                 <img src={avatarPreview} alt="Avatar" className="w-full h-full object-cover" />
@@ -352,17 +353,19 @@ function SignupForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => 
                 </svg>
               )}
             </div>
-            <input type="file" accept="image/*" className="hidden" onChange={handleAvatarChange} />
+            <input id="avatar-upload" type="file" accept="image/*" className="hidden" onChange={handleAvatarChange} />
           </label>
           <div>
             <p className="text-sm font-medium">Profile photo</p>
-            <p className="text-xs text-muted-foreground">Optional (max 500KB)</p>
+            <p className="text-xs text-muted-foreground">
+              <label htmlFor="avatar-upload" className="cursor-pointer text-accent hover:text-accent-hover transition-colors">Upload photo</label> &middot; max 500KB
+            </p>
           </div>
         </div>
 
         {/* Name */}
         <div>
-          <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Your Name</label>
+          <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Full Name</label>
           <input
             type="text"
             value={displayName}

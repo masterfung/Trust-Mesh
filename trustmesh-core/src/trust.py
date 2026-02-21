@@ -24,18 +24,28 @@ def _get_lib():
 
 
 def _get_db_handle():
-    """Get the Zig-side DB handle (shared with FTS5)."""
+    """Get the Zig-side DB handle (shared with FTS5).
+
+    Always reads live from embeddings to avoid stale pointer if FTS was
+    closed and reinited (e.g., in tests).
+    """
     global _db_handle
-    if _db_handle is None:
-        from src.embeddings import _db_handle as fts_handle
-        _db_handle = fts_handle
-    return _db_handle
+    if _db_handle is not None:
+        return _db_handle
+    from src import embeddings
+    return embeddings._db_handle
 
 
 def set_db_handle(handle):
     """Set the DB handle (called from lifespan after FTS init)."""
     global _db_handle
     _db_handle = handle
+
+
+def reset_db_handle():
+    """Clear cached handle so next call re-reads from embeddings."""
+    global _db_handle
+    _db_handle = None
 
 
 async def _is_ghost_stale(db: AsyncSession, user_id: str) -> bool:

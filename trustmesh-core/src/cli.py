@@ -1,7 +1,7 @@
 """TrustMesh CLI — power-user interface to TrustMesh pods.
 
 Usage:
-    trustmesh login --pod http://localhost:8000
+    trustmesh login --pod http://localhost:9000
     trustmesh status
     trustmesh vault search "allergies"
     trustmesh agent ask "What does Peter like to eat?"
@@ -132,7 +132,7 @@ def _api(method: str, path: str, session: dict | None = None, **kwargs) -> dict:
 
 def _find_multipod_for_username(username: str) -> str | None:
     """If multi-pod is running, find the pod port for a given username."""
-    for port in range(8001, 8017):
+    for port in range(9001, 9017):
         try:
             resp = httpx.get(f"http://localhost:{port}/api/pod", timeout=1.0)
             if resp.status_code == 200:
@@ -147,7 +147,7 @@ def _find_multipod_for_username(username: str) -> str | None:
 def _any_multipod_running() -> list[tuple[int, str]]:
     """Quick scan: return list of (port, pod_name) for running multi-pods."""
     found = []
-    for port in range(8001, 8017):
+    for port in range(9001, 9017):
         try:
             resp = httpx.get(f"http://localhost:{port}/health", timeout=0.5)
             if resp.status_code == 200:
@@ -161,7 +161,7 @@ def _any_multipod_running() -> list[tuple[int, str]]:
 
 @app.command()
 def login(
-    pod: str = typer.Option("http://localhost:8000", "--pod", "-p", help="Pod URL"),
+    pod: str = typer.Option("http://localhost:9000", "--pod", "-p", help="Pod URL"),
     user: str = typer.Option(None, "--user", "-u", help="Username"),
 ):
     """Authenticate with a TrustMesh pod."""
@@ -182,8 +182,8 @@ def login(
             )
         except (httpx.ConnectError, httpx.TimeoutException):
             # If default port failed, check if multi-pod is running
-            if pod_url == "http://localhost:8000" and _any_multipod_running():
-                console.print(f"[yellow]No pod on :8000, but multi-pod federation is running.[/yellow]")
+            if pod_url == "http://localhost:9000" and _any_multipod_running():
+                console.print(f"[yellow]No pod on :9000, but multi-pod federation is running.[/yellow]")
                 # Try to find the right pod for this username
                 match = _find_multipod_for_username(user)
                 if match:
@@ -327,7 +327,7 @@ def status():
         console.print(f"\n[bold]Federation:[/bold] [dim]agent card unavailable[/dim]")
 
     # Registry connectivity
-    registry_url = os.environ.get("TRUSTMESH_REGISTRY_URL", "http://localhost:8100")
+    registry_url = os.environ.get("TRUSTMESH_REGISTRY_URL", "http://localhost:9100")
     try:
         reg_resp = httpx.get(f"{registry_url}/api/agents", timeout=5)
         if reg_resp.status_code == 200:
@@ -356,7 +356,7 @@ def status():
 
 @app.command()
 def init(
-    pod: str = typer.Option("http://localhost:8000", "--pod", "-p", help="Pod URL"),
+    pod: str = typer.Option("http://localhost:9000", "--pod", "-p", help="Pod URL"),
     username: str = typer.Option(None, "--username", "-u", help="Username for the new account"),
     display_name: str = typer.Option(None, "--display-name", "-n", help="Display name"),
     user_type: str = typer.Option("person", "--type", "-t", help="Entity type: person, organization, government"),
@@ -480,7 +480,7 @@ def pods():
     table.add_column("Login command", style="dim")
 
     found = 0
-    for port in range(8001, 8017):
+    for port in range(9001, 9017):
         url = f"http://localhost:{port}"
         try:
             resp = httpx.get(f"{url}/api/pod", timeout=1.5)
@@ -1217,7 +1217,7 @@ def pod_golive():
 def registry_list():
     """List agents in the public registry."""
     # Registry is public — no session required
-    registry_url = os.environ.get("TRUSTMESH_REGISTRY_URL", "http://localhost:8100")
+    registry_url = os.environ.get("TRUSTMESH_REGISTRY_URL", "http://localhost:9100")
     try:
         resp = httpx.get(f"{registry_url}/api/agents", timeout=10)
         data = resp.json()
@@ -1252,7 +1252,7 @@ def registry_list():
 @reg_app.command("search")
 def registry_search(query: str = typer.Argument(..., help="Search query")):
     """Search the public registry for agents."""
-    registry_url = os.environ.get("TRUSTMESH_REGISTRY_URL", "http://localhost:8100")
+    registry_url = os.environ.get("TRUSTMESH_REGISTRY_URL", "http://localhost:9100")
     try:
         resp = httpx.get(f"{registry_url}/api/search", params={"q": query}, timeout=10)
         data = resp.json()

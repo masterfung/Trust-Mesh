@@ -2,7 +2,7 @@
 # TrustMesh dev environment — start, stop, and manage backend + frontend + Citadel.
 #
 # Usage:
-#   ./dev.sh start    # Seed DB + start backend (8000) + frontend (3050)
+#   ./dev.sh start    # Seed DB + start backend (9000) + frontend (3050)
 #   ./dev.sh stop     # Stop all processes cleanly
 #   ./dev.sh restart  # Stop then start
 #   ./dev.sh status   # Show running processes
@@ -27,13 +27,13 @@ BACKEND_LOG="$ROOT/.backend.log"
 FRONTEND_LOG="$ROOT/.frontend.log"
 CITADEL_LOG="$ROOT/.citadel.log"
 ZIG_SERVER_LOG="$ROOT/.zig-server.log"
-BACKEND_PORT=8000
+BACKEND_PORT=9000
 FRONTEND_PORT=3050
 CITADEL_PORT=3001
-PYTHON_PORT=9000
+PYTHON_PORT=9500
 
 # Set TRUSTMESH_ZIG_HTTP=1 to enable Zig HTTP proxy (Phase 3).
-# When enabled: Zig server on :8000, Python FastAPI on :9000.
+# When enabled: Zig server on :9000, Python FastAPI on :9500.
 # Default: 0 (Python-only mode for safety).
 ZIG_HTTP="${TRUSTMESH_ZIG_HTTP:-0}"
 ZIG_SERVER_BIN="$KERNEL_DIR/zig-out/bin/podos-server"
@@ -255,6 +255,12 @@ cmd_start() {
   local python_listen_port=$BACKEND_PORT
   if [[ "$ZIG_HTTP" == "1" ]]; then
     python_listen_port=$PYTHON_PORT
+  fi
+
+  # C2: Generate proxy shared secret when Zig HTTP is enabled
+  if [[ "$ZIG_HTTP" == "1" ]]; then
+    export PODOS_PROXY_SECRET=$(openssl rand -hex 32)
+    echo "  Proxy secret: generated (${#PODOS_PROXY_SECRET} chars)"
   fi
 
   # Start Python backend

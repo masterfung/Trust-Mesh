@@ -22,26 +22,26 @@ FEDERATION_HEADERS = {"X-Pool-Sync-Secret": POOL_SYNC_SECRET} if POOL_SYNC_SECRE
 
 # ── Pod topology ──
 
-REGISTRY_URL = "http://localhost:8100"
+REGISTRY_URL = "http://localhost:9100"
 
 # Same mapping as seed_multi.py
 PODS = {
-    "sarah":     {"port": 8001, "username": "molly",       "display_name": "Molly Johnson"},
-    "mike":      {"port": 8002, "username": "peter",       "display_name": "Peter Johnson"},
-    "emma":      {"port": 8003, "username": "jane",        "display_name": "Jane Johnson"},
-    "grandma":   {"port": 8004, "username": "grandmarose", "display_name": "Grandma Rose"},
-    "dr_chen":   {"port": 8005, "username": "dr_lee",      "display_name": "Dr. Sarah Lee"},
-    "tom":       {"port": 8006, "username": "kyle",        "display_name": "Kyle Rivera"},
-    "lisa":      {"port": 8007, "username": "amy",         "display_name": "Amy Torres"},
-    "priya":     {"port": 8008, "username": "dorothy",     "display_name": "Dorothy Park"},
-    "james":     {"port": 8009, "username": "nurse_davis", "display_name": "Nurse Rachel Davis"},
-    "maria":     {"port": 8010, "username": "emt_johnson", "display_name": "EMT Mike Johnson"},
-    "techcorp":  {"port": 8011, "username": "sparkleclean",       "display_name": "SparkleClean Residential"},
-    "hospital":  {"port": 8012, "username": "riverside_hospital", "display_name": "Riverside General Hospital"},
-    "music":     {"port": 8013, "username": "acetutor",           "display_name": "AceTutor SAT Prep"},
-    "city":      {"port": 8014, "username": "riverside_gov",      "display_name": "City of Riverside"},
-    "insurance": {"port": 8015, "username": "handypro",           "display_name": "HandyPro Home Services"},
-    "dance":     {"port": 8016, "username": "riverside_ambulance","display_name": "Riverside City Ambulance"},
+    "sarah":     {"port": 9001, "username": "molly",       "display_name": "Molly Johnson"},
+    "mike":      {"port": 9002, "username": "peter",       "display_name": "Peter Johnson"},
+    "emma":      {"port": 9003, "username": "jane",        "display_name": "Jane Johnson"},
+    "grandma":   {"port": 9004, "username": "grandmarose", "display_name": "Grandma Rose"},
+    "dr_chen":   {"port": 9005, "username": "dr_lee",      "display_name": "Dr. Sarah Lee"},
+    "tom":       {"port": 9006, "username": "kyle",        "display_name": "Kyle Rivera"},
+    "lisa":      {"port": 9007, "username": "amy",         "display_name": "Amy Torres"},
+    "priya":     {"port": 9008, "username": "dorothy",     "display_name": "Dorothy Park"},
+    "james":     {"port": 9009, "username": "nurse_davis", "display_name": "Nurse Rachel Davis"},
+    "maria":     {"port": 9010, "username": "emt_johnson", "display_name": "EMT Mike Johnson"},
+    "techcorp":  {"port": 9011, "username": "sparkleclean",       "display_name": "SparkleClean Residential"},
+    "hospital":  {"port": 9012, "username": "riverside_hospital", "display_name": "Riverside General Hospital"},
+    "music":     {"port": 9013, "username": "acetutor",           "display_name": "AceTutor SAT Prep"},
+    "city":      {"port": 9014, "username": "riverside_gov",      "display_name": "City of Riverside"},
+    "insurance": {"port": 9015, "username": "handypro",           "display_name": "HandyPro Home Services"},
+    "dance":     {"port": 9016, "username": "riverside_ambulance","display_name": "Riverside City Ambulance"},
 }
 
 def pod_url(key: str) -> str:

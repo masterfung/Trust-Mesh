@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
 import { useParams, useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Markdown } from "@/components/Markdown";
 
 interface Message {
@@ -15,14 +15,15 @@ interface SavedCapsule {
   title: string;
   capsule_type: string;
   tier: string;
+  category?: string;
 }
 
 // Topics the agent gathers — progress tracker
 const ONBOARD_STEPS = [
-  { key: "about", label: "About You", icon: "U", description: "Job, skills, interests" },
-  { key: "people", label: "Your People", icon: "P", description: "Family, household, contacts" },
-  { key: "prefs", label: "Preferences", icon: "H", description: "Allergies, diet, likes" },
-  { key: "goals", label: "Goals", icon: "G", description: "What you want from TrustMesh" },
+  { key: "work", label: "Work & Life", icon: "W", description: "Job, location, daily life" },
+  { key: "health", label: "Health & Body", icon: "H", description: "Allergies, diet, conditions" },
+  { key: "family", label: "Family & Home", icon: "F", description: "Household, pets, key people" },
+  { key: "goals", label: "Goals & Interests", icon: "G", description: "Hobbies, what you want help with" },
 ];
 
 // Suggestion chips shown after each agent response to guide the user
@@ -33,22 +34,22 @@ const QUICK_RESPONSES: Record<string, string[]> = {
     "I'm a parent and homemaker",
     "I'm retired",
   ],
-  people: [
-    "I live with my partner and kids",
-    "I live alone",
-    "I have a large extended family",
-    "Skip this for now",
-  ],
-  prefs: [
+  health: [
     "I have food allergies",
     "No restrictions, I'm easy",
     "I'm vegetarian",
     "Skip this for now",
   ],
+  family: [
+    "I live with my partner and kids",
+    "I live alone",
+    "I have a large extended family",
+    "Skip this for now",
+  ],
   goals: [
     "Share health info with family",
-    "Find local services",
     "Keep my life organized",
+    "Help me find local services",
     "All of the above!",
   ],
   general: [
@@ -61,9 +62,28 @@ const QUICK_RESPONSES: Record<string, string[]> = {
 function inferPhase(messageCount: number, capsuleCount: number): string {
   if (messageCount <= 2) return "start";
   if (capsuleCount >= 3) return "goals";
-  if (capsuleCount >= 2) return "prefs";
-  if (capsuleCount >= 1) return "people";
+  if (capsuleCount >= 2) return "family";
+  if (capsuleCount >= 1) return "health";
   return "general";
+}
+
+/** Map a capsule's type + category to a progress step key */
+function capsuleToStepKey(cap: SavedCapsule): string | null {
+  const cat = (cap.category || "").toLowerCase();
+  const type = (cap.capsule_type || "").toLowerCase();
+
+  // Work & Life
+  if (type === "skill" || cat === "work") return "work";
+  // Health & Body
+  if (cat === "health" || (type === "preference" && /allerg|diet|medic|health|exercise|condition/i.test(cap.title))) return "health";
+  // Family & Home
+  if (type === "contact" || cat === "family" || cat === "social") return "family";
+  // Goals & Interests
+  if (cat === "personal" || cat === "goals" || /hobby|hobbies|goal|interest|help/i.test(cap.title)) return "goals";
+
+  // Fallback: try to bucket by preference type
+  if (type === "preference") return "goals";
+  return null;
 }
 
 const CAPSULE_ICONS: Record<string, string> = {
@@ -83,6 +103,7 @@ const CAPSULE_COLORS: Record<string, string> = {
 export default function OnboardPage() {
   const { userId } = useParams<{ userId: string }>();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -93,17 +114,26 @@ export default function OnboardPage() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { data: user } = useQuery({
     queryKey: ["user", userId],
     queryFn: () => api.getUser(userId),
   });
 
+  const goToDashboard = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["capsules", userId] });
+    queryClient.invalidateQueries({ queryKey: ["user", userId] });
+    router.push(`/${userId}`);
+  }, [queryClient, router, userId]);
+
   // Web Speech API — voice input
   const hasSpeech = typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
 
   const toggleVoice = useCallback(() => {
     if (isListening && recognitionRef.current) {
+      // Manual stop — clear silence timer, stop recognition
+      if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
       recognitionRef.current.stop();
       setIsListening(false);
       return;
@@ -115,12 +145,20 @@ export default function OnboardPage() {
     if (!SR) return;
 
     const recognition = new SR();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-US";
     recognitionRef.current = recognition;
 
     let finalTranscript = "";
+
+    const resetSilenceTimer = () => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => {
+        // 4-second silence — stop recording, leave text in textarea for review
+        recognition.stop();
+      }, 4000);
+    };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
@@ -134,26 +172,23 @@ export default function OnboardPage() {
         }
       }
       setInput(finalTranscript + interim);
-      if (inputRef.current) {
-        inputRef.current.style.height = "auto";
-        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
-      }
+      resetSilenceTimer();
     };
 
     recognition.onend = () => {
+      if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
       setIsListening(false);
-      if (finalTranscript.trim()) {
-        sendMessage(finalTranscript.trim());
-        finalTranscript = "";
-      }
+      // Don't auto-send — leave text in textarea for user to review and submit
     };
 
     recognition.onerror = () => {
+      if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
       setIsListening(false);
     };
 
     recognition.start();
     setIsListening(true);
+    resetSilenceTimer();
   }, [isListening]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-scroll to bottom
@@ -166,12 +201,17 @@ export default function OnboardPage() {
     if (!isStreaming) inputRef.current?.focus();
   }, [isStreaming]);
 
-  // Auto-resize textarea
+  // Auto-resize textarea when input changes (covers voice input + typing)
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.style.height = "auto";
+      inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 200) + "px";
+    }
+  }, [input]);
+
+  // Auto-resize textarea on change event
   const handleTextareaInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
-    const el = e.target;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 120) + "px";
   }, []);
 
   const sendMessage = async (userMessage: string) => {
@@ -227,6 +267,7 @@ export default function OnboardPage() {
                       title: action.title || "Untitled",
                       capsule_type: action.capsule_type || "memory",
                       tier: action.tier || "private",
+                      category: action.category,
                     },
                   ]);
                 }
@@ -280,7 +321,9 @@ export default function OnboardPage() {
 
   const phase = inferPhase(messages.length, savedCapsules.length);
   const suggestions = QUICK_RESPONSES[phase] || QUICK_RESPONSES.general;
-  const completedSteps = Math.min(savedCapsules.length, ONBOARD_STEPS.length);
+  const completedStepKeys = new Set(
+    savedCapsules.map(capsuleToStepKey).filter((k): k is string => k !== null)
+  );
 
   // ── Pre-start welcome ──
   if (!started) {
@@ -345,7 +388,7 @@ export default function OnboardPage() {
             Start Conversation
           </button>
           <button
-            onClick={() => router.push(`/${userId}`)}
+            onClick={() => goToDashboard()}
             className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             I&apos;ll do this later
@@ -364,21 +407,19 @@ export default function OnboardPage() {
         <div className="bg-card border border-card-border rounded-2xl p-4 mb-4">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Progress</p>
           <div className="space-y-2.5">
-            {ONBOARD_STEPS.map((step, i) => {
-              const done = i < completedSteps;
-              const active = i === completedSteps;
+            {ONBOARD_STEPS.map((step) => {
+              const done = completedStepKeys.has(step.key);
               return (
                 <div key={step.key} className="flex items-center gap-2.5">
                   <div className={`w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-bold transition-all ${
                     done ? "bg-green-500/15 text-green-400" :
-                    active ? "bg-accent/15 text-accent ring-1 ring-accent/30" :
                     "bg-card-hover text-muted-foreground/50"
                   }`}>
                     {done ? (
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                     ) : step.icon}
                   </div>
-                  <span className={`text-xs ${done ? "text-green-400" : active ? "text-foreground font-medium" : "text-muted-foreground/50"}`}>
+                  <span className={`text-xs ${done ? "text-green-400" : "text-muted-foreground/50"}`}>
                     {step.label}
                   </span>
                 </div>
@@ -413,7 +454,7 @@ export default function OnboardPage() {
 
         {/* Done button */}
         <button
-          onClick={() => router.push(`/${userId}`)}
+          onClick={() => goToDashboard()}
           className="mt-4 w-full py-2.5 text-xs font-medium text-muted-foreground hover:text-foreground bg-card border border-card-border rounded-xl hover:bg-card-hover transition-all"
         >
           Go to Dashboard
@@ -447,7 +488,7 @@ export default function OnboardPage() {
               </span>
             )}
             <button
-              onClick={() => router.push(`/${userId}`)}
+              onClick={() => goToDashboard()}
               className="lg:hidden px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground bg-card border border-card-border rounded-lg hover:bg-card-hover transition-all"
             >
               Dashboard
@@ -553,7 +594,7 @@ export default function OnboardPage() {
               onKeyDown={handleKeyDown}
               placeholder={isListening ? "Listening..." : isStreaming ? "Agent is thinking..." : "Type or tap the mic to talk..."}
               disabled={isStreaming}
-              className="flex-1 bg-transparent border-none px-2 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 resize-none min-h-[36px] max-h-[120px]"
+              className="flex-1 bg-transparent border-none px-2 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 resize-none min-h-[36px] max-h-[200px] overflow-y-auto"
             />
             <button
               type="submit"

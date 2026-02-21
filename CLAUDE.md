@@ -18,7 +18,7 @@ TrustMesh is a trust-aware knowledge sharing platform for personal AI agents. Fa
 
 ### Quick Start (recommended)
 ```bash
-./dev.sh start    # Seed DB (if needed) + start backend (8000) + frontend (3050)
+./dev.sh start    # Seed DB (if needed) + start backend (9000) + frontend (3050)
 ./dev.sh stop     # Stop both cleanly
 ./dev.sh restart  # Stop then start
 ./dev.sh status   # Show running processes
@@ -32,7 +32,7 @@ TrustMesh is a trust-aware knowledge sharing platform for personal AI agents. Fa
 cd trustmesh-core
 uv sync                                    # Install deps
 uv run python -m src.seed                  # Seed demo data
-uv run uvicorn src.main:app --reload --port 8000
+uv run uvicorn src.main:app --reload --port 9000
 
 # Frontend
 cd trustmesh-ui
@@ -119,6 +119,15 @@ For production multimodal AI security (text, images, PDFs, tool calls), see [Mig
 - 4 roles: `attending_physician`, `er_nurse`, `paramedic`, `admin`
 - `capsule_matches_scope()` checks category + keyword matching against role scope
 
+### Zig HTTP Server (Dual Mode)
+- Enable with `TRUSTMESH_ZIG_HTTP=1 ./dev.sh start`
+- Zig listens on `:9000`, Python on `:9500` (internal)
+- 36 native Zig routes (auth, memory, credentials, onboard, notifications, audit, pin, users, connections, capsules)
+- Unhandled routes proxied to Python with `X-Internal-Proxy-Secret` header
+- `ProxySecretMiddleware` in Python rejects direct `:9000` access when secret is set
+- Connection timeout: 30s `SO_RCVTIMEO` prevents slowloris
+- Handler pattern: `handlers/{module}.zig` — module-level state, `registerRoutes()`, `requireAuth()` from `common.zig`
+
 ### Frontend API Client
 - `trustmesh-ui/src/lib/api.ts` - central `apiFetch()` wrapper
 - All requests include `credentials: "include"` for cookies
@@ -145,6 +154,8 @@ For production multimodal AI security (text, images, PDFs, tool calls), see [Mig
 | `src/seed.py` | Demo data seeder (Johnson family scenario) |
 | `src/transit_bridge.py` | Zig transit engine ctypes wrappers — vault key storage, encrypt/decrypt |
 | `src/main.py` | App startup, CORS, security headers, route registration |
+| `src/middleware.py` | Rate limit headers + proxy secret validation |
+| `tests/bench_hot_path.py` | Performance benchmark for hot-path endpoints |
 
 ## Common Gotchas
 
@@ -153,7 +164,8 @@ For production multimodal AI security (text, images, PDFs, tool calls), see [Mig
 - Demo password is `DEMO_PASSWORD` constant in `src/seed.py` - only used for `is_demo=True` users
 - FTS5 search uses SQLite (Zig kernel) — no ChromaDB, no external service needed
 - `tests/conftest.py` sets `TRUSTMESH_DEV_MODE=1` and `TRUSTMESH_DISABLE_CSRF=1` for test environments
-- `drop_db()` calls `close_fts()` to reset the Zig FTS handle — prevents stale connection errors
+- `close_fts()` resets Zig FTS handle + cascades to `trust.py` and `credential_bridge` caches to prevent stale pointer segfaults
+- Tests that reinit the DB must call `close_fts()` first, then `init_fts()` after — never delete the DB file (use `drop_db()` instead)
 - [Citadel](https://github.com/TryMightyAI/citadel) Go sidecar is optional — Python heuristic fallback handles scanning without it (circuit breaker: 3 failures in 60s skips Citadel for 60s)
 - `./dev.sh citadel` does first-time ML setup (HuggingFace model download + ONNX build)
 - `./dev.sh start` auto-starts Citadel if the binary exists in `citadel-ref/`

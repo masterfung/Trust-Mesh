@@ -65,7 +65,7 @@ def _make_client(session: dict | None) -> httpx.Client:
             timeout=60.0,
         )
     # Fallback: no auth, use env var
-    base = os.getenv("TRUSTMESH_API_URL", "http://localhost:8000")
+    base = os.getenv("TRUSTMESH_API_URL", "http://localhost:9000")
     return httpx.Client(base_url=base, timeout=60.0)
 
 
@@ -424,7 +424,7 @@ def create_mcp_server(session: dict | None = None) -> FastMCP:
             result = _api(_s(),"GET", path)
         except Exception:
             # Fallback to external registry
-            registry_url = os.environ.get("TRUSTMESH_REGISTRY_URL", "http://localhost:8100")
+            registry_url = os.environ.get("TRUSTMESH_REGISTRY_URL", "http://localhost:9100")
             try:
                 resp = httpx.get(f"{registry_url}/api/search", params={"q": query or ""}, timeout=10)
                 result = resp.json()

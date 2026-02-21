@@ -80,6 +80,9 @@ async def intake_step(user_id: str, data: IntakeMessage,
                     tool_context=tool_context,
                 )
 
+                # Commit capsules saved by the agent tools
+                await db.commit()
+
                 # Stream the response in chunks for a nice UX
                 chunk_size = 4
                 words = response_text.split(" ")

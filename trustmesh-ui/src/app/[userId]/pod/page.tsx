@@ -290,8 +290,8 @@ function DiscoverableToggle({ userId, currentUser, queryClient }: {
   const isPending = goPrivate.isPending || claimHandle.isPending;
 
   const registryUrl = typeof window !== "undefined"
-    ? (localStorage.getItem("trustmesh_registry_url") || "http://localhost:8100")
-    : "http://localhost:8100";
+    ? (localStorage.getItem("trustmesh_registry_url") || "http://localhost:9100")
+    : "http://localhost:9100";
 
   return (
     <Card>
