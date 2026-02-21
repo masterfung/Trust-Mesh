@@ -43,6 +43,8 @@ screenshots/
 .frontend.pid
 .citadel.log
 .citadel.pid
+.zig-server.log
+.zig-server.pid
 trustmesh-core/trustmesh.db.snapshot
 
 # Multi-pod artifacts
