@@ -1,8 +1,13 @@
-"""Model router — routes to Anthropic or TEE providers based on sensitivity.
+"""Model router — routes to Gemini, Anthropic, or TEE providers based on sensitivity.
 
-Both Tinfoil and Redpill are OpenAI-compatible APIs running in Trusted Execution
-Environments (TEEs). We use them for sensitive data (medical, financial, private)
-where the model provider literally cannot see your plaintext.
+Routing priority (first available wins):
+  sensitive  → TEE (Tinfoil / Redpill)   — opaque execution, can't see plaintext
+  standard   → Gemini (via OpenAI-compat) — if GOOGLE_API_KEY is set
+  standard   → Anthropic                  — fallback when no GOOGLE_API_KEY
+
+All providers use Anthropic-format messages as the internal canonical format.
+The router converts to whatever each provider expects and normalises responses
+back to a unified ModelResponse before returning.
 
 Usage:
     router = get_router()
@@ -11,7 +16,7 @@ Usage:
         system="You are a helpful agent.",
         model="default",          # "default", "fast", or "reasoning"
         sensitivity="standard",   # "standard" or "sensitive"
-        tools=None,               # Anthropic-format tool defs
+        tools=None,               # Anthropic-format tool defs (input_schema key)
         max_tokens=1024,
     )
     # response is always a ModelResponse — same shape regardless of provider.
@@ -54,6 +59,16 @@ ANTHROPIC_MODELS = {
     "fast": "claude-haiku-4-5-20251001",
 }
 
+# Gemini models via OpenAI-compatible endpoint
+# https://generativelanguage.googleapis.com/v1beta/openai/
+GEMINI_MODELS = {
+    "default": "gemini-2.5-flash",
+    "reasoning": "gemini-2.5-pro",
+    "fast": "gemini-2.5-flash",
+    "vision": "gemini-2.5-flash",
+}
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
 # TEE models — all run inside Trusted Execution Environments (TDX/GPU enclaves).
 # Provider literally cannot see your plaintext. Use for medical, financial, private data.
 #
@@ -84,10 +99,17 @@ REDPILL_MODELS = {
 }
 
 
-# ── Format converters (Anthropic <-> OpenAI) ──────────────────
+# ── Format converters (Anthropic <-> OpenAI/Gemini) ───────────
+#
+# Gemini's OpenAI-compatible endpoint accepts the same wire format as OpenAI,
+# so we reuse the same converters for both — no separate Gemini converter needed.
 
 def _anthropic_tools_to_openai(tools: list[dict]) -> list[dict]:
-    """Convert Anthropic tool format to OpenAI function-calling format."""
+    """Convert Anthropic tool format to OpenAI/Gemini function-calling format.
+
+    Anthropic:  {"name": ..., "description": ..., "input_schema": {...}}
+    OpenAI/Gemini: {"type": "function", "function": {"name": ..., "parameters": {...}}}
+    """
     openai_tools = []
     for t in tools:
         openai_tools.append({
@@ -102,9 +124,9 @@ def _anthropic_tools_to_openai(tools: list[dict]) -> list[dict]:
 
 
 def _anthropic_messages_to_openai(messages: list[dict], system: str = "") -> list[dict]:
-    """Convert Anthropic message format to OpenAI format.
+    """Convert Anthropic message format to OpenAI/Gemini format.
 
-    Handles tool_use and tool_result blocks.
+    Handles tool_use and tool_result blocks in multi-turn tool loops.
     """
     openai_msgs = []
     if system:
@@ -121,7 +143,7 @@ def _anthropic_messages_to_openai(messages: list[dict], system: str = "") -> lis
 
         # Anthropic content blocks (list)
         if isinstance(content, list):
-            # Check if it's tool_result blocks (from user after tool_use)
+            # tool_result blocks (user turn after tool calls)
             if content and isinstance(content[0], dict) and content[0].get("type") == "tool_result":
                 for block in content:
                     openai_msgs.append({
@@ -163,10 +185,9 @@ def _anthropic_messages_to_openai(messages: list[dict], system: str = "") -> lis
                             })
 
                 assistant_msg: dict = {"role": "assistant"}
-                if text_parts:
-                    assistant_msg["content"] = "\n".join(text_parts)
-                else:
-                    assistant_msg["content"] = None
+                # Some providers reject null content when tool_calls are present;
+                # use empty string instead.
+                assistant_msg["content"] = "\n".join(text_parts) if text_parts else ""
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
                 openai_msgs.append(assistant_msg)
@@ -179,7 +200,7 @@ def _anthropic_messages_to_openai(messages: list[dict], system: str = "") -> lis
 
 
 def _openai_response_to_model_response(response) -> ModelResponse:
-    """Convert an OpenAI chat completion response to our unified ModelResponse."""
+    """Convert an OpenAI/Gemini chat completion response to our unified ModelResponse."""
     choice = response.choices[0]
     message = choice.message
 
@@ -219,25 +240,55 @@ def _anthropic_response_to_model_response(response) -> ModelResponse:
 # ── Router ─────────────────────────────────────────────────────
 
 class ModelRouter:
-    """Routes LLM calls to Anthropic or TEE providers."""
+    """Routes LLM calls to Gemini, Anthropic, or TEE providers.
+
+    Routing:
+      sensitive  → TEE provider  (Tinfoil or Redpill, if configured)
+      standard   → Gemini        (if GOOGLE_API_KEY set)
+      standard   → Anthropic     (fallback)
+    """
 
     def __init__(self):
         self._anthropic: anthropic.AsyncAnthropic | None = None
-        self._tee_client = None  # AsyncOpenAI
+        self._gemini_client = None   # AsyncOpenAI → Gemini compat endpoint
+        self._gemini_models: dict = {}
+        self._tee_client = None      # AsyncOpenAI → TEE provider
         self._tee_provider: str | None = None
         self._tee_models: dict = {}
         self._init_clients()
 
     def _init_clients(self):
         """Initialize available clients from env vars."""
-        # Anthropic (always available if key set)
+        # Anthropic (fallback — always try)
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if api_key:
             self._anthropic = anthropic.AsyncAnthropic(api_key=api_key)
 
-        # TEE provider (Tinfoil or Redpill)
-        primary = os.getenv("TEE_PRIMARY_PROVIDER", "tinfoil")
+        # Gemini (standard path — preferred over Anthropic when key is set)
+        self._init_gemini()
 
+        # TEE provider (sensitive path — Tinfoil or Redpill)
+        self._init_tee()
+
+    def _init_gemini(self):
+        """Initialize Gemini via its OpenAI-compatible endpoint."""
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            return
+        try:
+            from openai import AsyncOpenAI
+            self._gemini_client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=GEMINI_BASE_URL,
+            )
+            self._gemini_models = GEMINI_MODELS
+            log.info("Gemini provider initialized (OpenAI-compat endpoint)")
+        except ImportError:
+            log.warning("openai package not installed — Gemini unavailable")
+
+    def _init_tee(self):
+        """Initialize TEE provider (Tinfoil or Redpill)."""
+        primary = os.getenv("TEE_PRIMARY_PROVIDER", "tinfoil")
         providers = {
             "tinfoil": {
                 "key_env": "TINFOIL_API_KEY",
@@ -251,7 +302,6 @@ class ModelRouter:
             },
         }
 
-        # Try primary first, then fallback
         for provider_name in [primary, "redpill" if primary == "tinfoil" else "tinfoil"]:
             cfg = providers.get(provider_name)
             if not cfg:
@@ -269,11 +319,12 @@ class ModelRouter:
                     log.info(f"TEE provider initialized: {provider_name} at {cfg['base_url']}")
                     break
                 except ImportError:
-                    log.warning("openai package not installed — TEE providers unavailable. pip install openai")
+                    log.warning("openai package not installed — TEE providers unavailable")
                     break
 
-        if not self._tee_client:
-            log.info("No TEE provider configured — all requests route to Anthropic")
+    @property
+    def has_gemini(self) -> bool:
+        return self._gemini_client is not None
 
     @property
     def has_tee(self) -> bool:
@@ -282,6 +333,44 @@ class ModelRouter:
     @property
     def tee_provider_name(self) -> str | None:
         return self._tee_provider
+
+    # ── Public interface ───────────────────────────────────────
+
+    async def complete(
+        self,
+        messages: list[dict],
+        system: str = "",
+        model: str = "default",
+        sensitivity: str = "standard",
+        tools: list[dict] | None = None,
+        max_tokens: int = 1024,
+    ) -> ModelResponse:
+        """Route a completion to the appropriate provider.
+
+        Args:
+            messages: Anthropic-format messages (internal canonical format).
+            system: System prompt string.
+            model: "default", "fast", or "reasoning".
+            sensitivity: "standard" (Gemini/Anthropic) or "sensitive" (TEE).
+            tools: Anthropic-format tool definitions (input_schema key).
+            max_tokens: Max output tokens.
+
+        Returns:
+            Unified ModelResponse — same shape regardless of provider.
+        """
+        if sensitivity == "sensitive" and self._tee_client:
+            tee_model = self._tee_models.get(model, self._tee_models.get("default", model))
+            log.warning(f"[ROUTING] sensitivity={sensitivity} → TEE ({self._tee_provider}, {tee_model})")
+            return await self._tee_complete(messages, system, model, tools, max_tokens)
+
+        if self._gemini_client:
+            gemini_model = self._gemini_models.get(model, self._gemini_models.get("default", model))
+            log.warning(f"[ROUTING] → Gemini ({gemini_model})")
+            return await self._gemini_complete(messages, system, model, tools, max_tokens)
+
+        anthro_model = ANTHROPIC_MODELS.get(model, model)
+        log.warning(f"[ROUTING] → Anthropic ({anthro_model})")
+        return await self._anthropic_complete(messages, system, model, tools, max_tokens)
 
     async def stream_complete(
         self,
@@ -299,40 +388,42 @@ class ModelRouter:
         Yields:
             str chunks of the response text.
         """
-        use_tee = sensitivity == "sensitive" and self._tee_client is not None
-
-        if use_tee:
-            tee_model = self._tee_models.get(model, self._tee_models.get("default", model))
-            log.warning(f"[ROUTING-STREAM] sensitivity={sensitivity} → TEE ({self._tee_provider}, model={tee_model})")
+        if sensitivity == "sensitive" and self._tee_client:
             async for chunk in self._tee_stream(messages, system, model, max_tokens):
                 yield chunk
+        elif self._gemini_client:
+            async for chunk in self._gemini_stream(messages, system, model, max_tokens):
+                yield chunk
         else:
-            anthro_model = ANTHROPIC_MODELS.get(model, model)
-            log.warning(f"[ROUTING-STREAM] sensitivity={sensitivity} → Anthropic ({anthro_model})")
             async for chunk in self._anthropic_stream(messages, system, model, max_tokens):
                 yield chunk
 
-    async def _anthropic_stream(self, messages, system, model, max_tokens):
-        """Stream from Anthropic API."""
-        if not self._anthropic:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
+    # ── Provider implementations ───────────────────────────────
 
-        model_id = ANTHROPIC_MODELS.get(model, model)
+    async def _gemini_complete(self, messages, system, model, tools, max_tokens) -> ModelResponse:
+        """Call Gemini via OpenAI-compatible endpoint.
+
+        Reuses all existing Anthropic→OpenAI converters since Gemini's compat
+        endpoint accepts the same wire format as OpenAI.
+        """
+        model_id = self._gemini_models.get(model, self._gemini_models.get("default", model))
+        openai_messages = _anthropic_messages_to_openai(messages, system)
+
         kwargs: dict = {
             "model": model_id,
             "max_tokens": max_tokens,
-            "messages": messages,
+            "messages": openai_messages,
         }
-        if system:
-            kwargs["system"] = system
+        if tools:
+            kwargs["tools"] = _anthropic_tools_to_openai(tools)
+            kwargs["tool_choice"] = "auto"
 
-        async with self._anthropic.messages.stream(**kwargs) as stream:
-            async for text in stream.text_stream:
-                yield text
+        response = await self._gemini_client.chat.completions.create(**kwargs)
+        return _openai_response_to_model_response(response)
 
-    async def _tee_stream(self, messages, system, model, max_tokens):
-        """Stream from TEE provider (OpenAI-compatible)."""
-        model_id = self._tee_models.get(model, self._tee_models.get("default", model))
+    async def _gemini_stream(self, messages, system, model, max_tokens):
+        """Stream from Gemini via OpenAI-compatible endpoint."""
+        model_id = self._gemini_models.get(model, self._gemini_models.get("default", model))
         openai_messages = _anthropic_messages_to_openai(messages, system)
 
         kwargs: dict = {
@@ -342,49 +433,15 @@ class ModelRouter:
             "stream": True,
         }
 
-        stream = await self._tee_client.chat.completions.create(**kwargs)
+        stream = await self._gemini_client.chat.completions.create(**kwargs)
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
 
-    async def complete(
-        self,
-        messages: list[dict],
-        system: str = "",
-        model: str = "default",
-        sensitivity: str = "standard",
-        tools: list[dict] | None = None,
-        max_tokens: int = 1024,
-    ) -> ModelResponse:
-        """Route a completion to the appropriate provider.
-
-        Args:
-            messages: Anthropic-format messages (the codebase standard).
-            system: System prompt.
-            model: "default", "fast", or "reasoning".
-            sensitivity: "standard" (Anthropic) or "sensitive" (TEE).
-            tools: Anthropic-format tool definitions.
-            max_tokens: Max output tokens.
-
-        Returns:
-            Unified ModelResponse.
-        """
-        use_tee = sensitivity == "sensitive" and self._tee_client is not None
-
-        if use_tee:
-            tee_model = self._tee_models.get(model, self._tee_models.get("default", model))
-            log.warning(f"[ROUTING] sensitivity={sensitivity} → TEE ({self._tee_provider}, model={tee_model})")
-            return await self._tee_complete(messages, system, model, tools, max_tokens)
-        anthro_model = ANTHROPIC_MODELS.get(model, model)
-        log.warning(f"[ROUTING] sensitivity={sensitivity} → Anthropic ({anthro_model})")
-        return await self._anthropic_complete(messages, system, model, tools, max_tokens)
-
-    async def _anthropic_complete(
-        self, messages, system, model, tools, max_tokens,
-    ) -> ModelResponse:
+    async def _anthropic_complete(self, messages, system, model, tools, max_tokens) -> ModelResponse:
         """Call Anthropic API."""
         if not self._anthropic:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
+            raise RuntimeError("No LLM provider configured. Set GOOGLE_API_KEY or ANTHROPIC_API_KEY.")
 
         model_id = ANTHROPIC_MODELS.get(model, model)
         kwargs: dict = {
@@ -400,9 +457,25 @@ class ModelRouter:
         response = await self._anthropic.messages.create(**kwargs)
         return _anthropic_response_to_model_response(response)
 
-    async def _tee_complete(
-        self, messages, system, model, tools, max_tokens,
-    ) -> ModelResponse:
+    async def _anthropic_stream(self, messages, system, model, max_tokens):
+        """Stream from Anthropic API."""
+        if not self._anthropic:
+            raise RuntimeError("No LLM provider configured. Set GOOGLE_API_KEY or ANTHROPIC_API_KEY.")
+
+        model_id = ANTHROPIC_MODELS.get(model, model)
+        kwargs: dict = {
+            "model": model_id,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        if system:
+            kwargs["system"] = system
+
+        async with self._anthropic.messages.stream(**kwargs) as stream:
+            async for text in stream.text_stream:
+                yield text
+
+    async def _tee_complete(self, messages, system, model, tools, max_tokens) -> ModelResponse:
         """Call TEE provider (OpenAI-compatible API)."""
         model_id = self._tee_models.get(model, self._tee_models.get("default", model))
         openai_messages = _anthropic_messages_to_openai(messages, system)
@@ -418,6 +491,23 @@ class ModelRouter:
 
         response = await self._tee_client.chat.completions.create(**kwargs)
         return _openai_response_to_model_response(response)
+
+    async def _tee_stream(self, messages, system, model, max_tokens):
+        """Stream from TEE provider (OpenAI-compatible API)."""
+        model_id = self._tee_models.get(model, self._tee_models.get("default", model))
+        openai_messages = _anthropic_messages_to_openai(messages, system)
+
+        kwargs: dict = {
+            "model": model_id,
+            "max_tokens": max_tokens,
+            "messages": openai_messages,
+            "stream": True,
+        }
+
+        stream = await self._tee_client.chat.completions.create(**kwargs)
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
 
 
 # ── Singleton ──────────────────────────────────────────────────
