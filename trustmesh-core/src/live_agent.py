@@ -178,6 +178,7 @@ async def run_live_session(
             parts=[types.Part(text=system_instruction)],
         ),
         tools=[types.Tool(function_declarations=declarations)] if declarations else [],
+        output_audio_transcription=types.AudioTranscriptionConfig(),
     )
 
     model = LIVE_MODEL
@@ -268,8 +269,17 @@ async def _forward_gemini_to_client(session, websocket: WebSocket, tool_context)
                     "data": base64.b64encode(response.data).decode(),
                 })
 
-            # Text (transcript or model output)
-            if response.text:
+            # Agent speech transcript (from output_audio_transcription)
+            if response.server_content:
+                sc = response.server_content
+                if sc.output_transcription and sc.output_transcription.text:
+                    await websocket.send_json({
+                        "type": "text",
+                        "text": sc.output_transcription.text,
+                    })
+
+            # Fallback: plain text from model
+            elif response.text:
                 await websocket.send_json({"type": "text", "text": response.text})
 
             # Tool calls
