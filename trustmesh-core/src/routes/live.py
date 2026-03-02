@@ -10,7 +10,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.auth import COOKIE_NAME, validate_session
+from src.auth import COOKIE_NAME, get_current_user_id, validate_session
 from src.database import get_db
 from src.gossip import get_user_networks
 from src.live_agent import create_ephemeral_token, run_live_session
@@ -53,17 +53,12 @@ async def _get_ws_user(websocket: WebSocket, db: AsyncSession) -> str | None:
 # ── Routes ─────────────────────────────────────────────────────
 
 @router.get("/token")
-async def get_live_token(
-    user_id: str = Depends(
-        # Reuse standard HTTP session auth for the token endpoint
-        __import__("src.auth", fromlist=["get_current_user_id"]).get_current_user_id
-    ),
-):
-    """Generate a short-lived ephemeral Gemini token.
+async def get_live_token(user_id: str = Depends(get_current_user_id)):
+    """Generate a short-lived ephemeral Gemini token for direct client connections.
 
-    Useful for mobile clients (Expo) that want to connect directly to
-    Gemini Live API without proxying through the server.  The token is
-    single-use and expires in 30 minutes.
+    Useful for mobile clients (Expo) that want to connect directly to Gemini
+    Live API without proxying through this server (lower latency).
+    Token is single-use, valid for 30 minutes.
     """
     try:
         return await create_ephemeral_token()
