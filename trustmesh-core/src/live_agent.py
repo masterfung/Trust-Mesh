@@ -172,17 +172,12 @@ async def run_live_session(
     client = genai.Client(api_key=api_key)
 
     live_config = types.LiveConnectConfig(
-        response_modalities=["AUDIO", "TEXT"],
+        response_modalities=["AUDIO"],
         system_instruction=types.Content(
             role="user",
             parts=[types.Part(text=system_instruction)],
         ),
         tools=[types.Tool(function_declarations=declarations)] if declarations else [],
-        speech_config=types.SpeechConfig(
-            voice_config=types.VoiceConfig(
-                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede"),
-            )
-        ),
     )
 
     model = LIVE_MODEL
@@ -379,8 +374,12 @@ async def create_ephemeral_token(expire_minutes: int = 30) -> dict:
         "new_session_expire_time": now + datetime.timedelta(minutes=2),
     })
 
+    # token.name is "auth_tokens/<hash>" — the hash is the usable token value
+    token_value = token.name.split("/")[-1] if "/" in token.name else token.name
+
     return {
-        "token": token.token,
+        "token": token_value,
+        "token_name": token.name,
         "model": LIVE_MODEL,
         "expires_in": expire_minutes * 60,
     }
