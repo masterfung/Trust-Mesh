@@ -543,6 +543,7 @@ async def query_agent(
                 capsules=capsules,
                 owner_name=to_user.display_name,
                 tool_context=tool_context,
+                personality=agent.personality or "",
             )
         else:
             # Cross-query: read-only

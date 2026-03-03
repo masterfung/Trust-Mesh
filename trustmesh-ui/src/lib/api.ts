@@ -444,6 +444,11 @@ export const api = {
   listUsers: () => apiFetch<User[]>("/api/users"),
   getUser: (id: string) => apiFetch<User>(`/api/users/${id}`),
   getAgent: (id: string) => apiFetch<Agent>(`/api/users/${id}/agent`),
+  updateAgent: (id: string, data: { personality: string }) =>
+    apiFetch<Agent>(`/api/users/${id}/agent`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
   getAgentCard: (id: string) => apiFetch<AgentCard>(`/api/users/${id}/agent/card`),
   switchContext: (userId: string, context: ContextMode) =>
     apiFetch<{ context: string }>(`/api/users/${userId}/context`, {

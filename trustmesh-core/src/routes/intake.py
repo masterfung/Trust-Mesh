@@ -78,6 +78,7 @@ async def intake_step(user_id: str, data: IntakeMessage,
                     user_message=message,
                     conversation_history=data.conversation_history,
                     tool_context=tool_context,
+                    personality=agent.personality or "",
                 )
 
                 # Commit capsules saved by the agent tools

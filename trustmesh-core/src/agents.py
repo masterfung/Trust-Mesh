@@ -2198,13 +2198,6 @@ async def handle_send_message(ctx: ToolContext, params: dict) -> str:
     })
 
 
-async def sweep_expired_messages() -> str:
-    """Internal tool: delete expired messages. Called by timeline sweep entry."""
-    from src import message_bridge
-    count = message_bridge.sweep_expired()
-    return json.dumps({"swept": count, "message": f"Swept {count} expired message(s)"})
-
-
 async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> str:
     """Route a tool call to its handler. Returns JSON string.
 
@@ -2257,8 +2250,6 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
     # Messaging tools
     elif tool_name == "send_message":
         result = await handle_send_message(ctx, tool_input)
-    elif tool_name == "sweep_expired_messages":
-        result = await sweep_expired_messages()
     else:
         result = json.dumps({"error": f"Unknown tool: {tool_name}"})
 
@@ -2549,7 +2540,43 @@ When federation is involved, always mention:
 - After saving, confirm what you saved and how you classified it
 - If you found a duplicate and merged, explain that
 - You can also answer questions about the owner's knowledge (read from capsules)
-- Keep responses concise. Don't over-explain unless asked."""
+- Keep responses concise. Don't over-explain unless asked.
+{personality_instruction}"""
+
+# ── Personality modes ─────────────────────────────────────────────────────────
+
+PERSONALITY_INSTRUCTIONS: dict[str, str] = {
+    "simple": (
+        "\n## Communication Style\n"
+        "Use very plain, everyday language. Explain everything as if the user is completely new to the topic. "
+        "Use analogies and concrete real-world examples. Define any technical term you use. Be patient and thorough."
+    ),
+    "step-by-step": (
+        "\n## Communication Style\n"
+        "Provide detailed, step-by-step explanations for everything. Break complex topics into numbered steps. "
+        "Never skip context. Walk the user through each part carefully before moving on."
+    ),
+    "concise": (
+        "\n## Communication Style\n"
+        "Be brief and direct. Skip all preamble. Prefer bullet points over paragraphs. "
+        "Get to the point in the fewest words possible."
+    ),
+    "technical": (
+        "\n## Communication Style\n"
+        "Use precise technical terminology. Assume the user has domain expertise. "
+        "Be analytically rigorous. Skip basic explanations and go straight to the technical details."
+    ),
+    "friendly": (
+        "\n## Communication Style\n"
+        "Be warm, casual, and encouraging. Use a conversational tone. "
+        "Celebrate small wins. Make the user feel supported and confident."
+    ),
+}
+
+
+def _personality_note(mode: str) -> str:
+    """Return the prompt instruction for the given personality mode (empty string if unset/unknown)."""
+    return PERSONALITY_INSTRUCTIONS.get(mode or "", "")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2659,6 +2686,7 @@ async def agent_respond_with_tools(
     capsules: list[dict],
     owner_name: str,
     tool_context: ToolContext,
+    personality: str = "",
 ) -> tuple[str, list[dict]]:
     """Self-query: agent responds with tool access (search, save, update).
 
@@ -2671,6 +2699,7 @@ async def agent_respond_with_tools(
         owner_name=owner_name,
         formatted_capsules=formatted,
         networks_list=networks_list,
+        personality_instruction=_personality_note(personality),
     )
 
     sensitivity = detect_sensitivity(capsules, question)
@@ -2682,7 +2711,7 @@ async def agent_respond_with_tools(
         response = await router.complete(
             messages=messages,
             system=system_prompt,
-            model="fast",
+            model="reasoning",
             sensitivity=sensitivity,
             tools=AGENT_TOOLS,
             max_tokens=2048,
@@ -2792,6 +2821,7 @@ async def agent_respond_with_tools_streaming(
     owner_name: str,
     tool_context: ToolContext,
     conversation_history: list[dict] | None = None,
+    personality: str = "",
 ):
     """Self-query streaming: runs tool loop non-streaming, then streams final response.
 
@@ -2807,6 +2837,7 @@ async def agent_respond_with_tools_streaming(
         owner_name=owner_name,
         formatted_capsules=formatted,
         networks_list=networks_list,
+        personality_instruction=_personality_note(personality),
     )
 
     sensitivity = detect_sensitivity(capsules, question)
@@ -2824,7 +2855,7 @@ async def agent_respond_with_tools_streaming(
         response = await router.complete(
             messages=messages,
             system=system_prompt,
-            model="fast",
+            model="reasoning",
             sensitivity=sensitivity,
             tools=AGENT_TOOLS,
             max_tokens=2048,
@@ -2997,7 +3028,8 @@ Start with something warm and specific: "Hey! So tell me a bit about yourself �
 - "procedure" — routines, habits, workflows
 - "memory" — stories, observations, life events
 
-Always search_vault first to avoid duplicates."""
+Always search_vault first to avoid duplicates.
+{personality_instruction}"""
 
 INTAKE_TOOLS = [
     AGENT_TOOLS[0],  # search_vault
@@ -3010,6 +3042,7 @@ async def run_intake_step(
     user_message: str,
     conversation_history: list[dict],
     tool_context: ToolContext,
+    personality: str = "",
 ) -> tuple[str, list[dict]]:
     """Run one step of the intake conversation. Returns (response_text, actions)."""
     # Format conversation history for the system prompt
@@ -3021,6 +3054,7 @@ async def run_intake_step(
     system_prompt = INTAKE_SYSTEM_PROMPT.format(
         owner_name=owner_name,
         conversation_history=history_text or "(This is the start of the conversation)",
+        personality_instruction=_personality_note(personality),
     )
 
     router = get_router()

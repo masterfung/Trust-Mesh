@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type PeerPod, type Network, type User } from "@/lib/api";
 import { useParams } from "next/navigation";
-import { cn } from "@/lib/utils";
+import { cn, formatRelativeTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -29,15 +29,6 @@ function StatusDot({ status }: { status: "active" | "unreachable" | "pending" | 
   return <span className={cn("w-2 h-2 rounded-full shrink-0", color)} />;
 }
 
-function relativeTime(ts: string | null): string | null {
-  if (!ts) return null;
-  const mins = Math.floor((Date.now() - new Date(ts).getTime()) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
 
 const ENTITY_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
   person: "secondary",
@@ -662,7 +653,7 @@ function PeerManagement({ peers, queryClient }: { peers: PeerPod[]; queryClient:
         </Card>
       ) : (
         peers.map((peer) => {
-          const lastSeen = relativeTime(peer.last_seen_at);
+          const lastSeen = peer.last_seen_at ? formatRelativeTime(null, peer.last_seen_at) || null : null;
           return (
             <Card key={peer.id} className="gap-0 py-0">
               <CardContent className="py-3 flex items-center gap-3">

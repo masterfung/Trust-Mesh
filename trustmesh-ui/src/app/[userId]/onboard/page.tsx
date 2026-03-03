@@ -3,9 +3,17 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
 import { useParams, useRouter } from "next/navigation";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { Markdown } from "@/components/Markdown";
 import { CAPSULE_TYPE_EMOJIS, CAPSULE_TYPE_COLORS } from "@/lib/constants";
+
+const PERSONALITY_MODES = [
+  { key: "simple", emoji: "🌱", label: "Simple", desc: "Plain language, clear analogies" },
+  { key: "step-by-step", emoji: "📖", label: "Step-by-Step", desc: "Walk me through everything" },
+  { key: "concise", emoji: "⚡", label: "Concise", desc: "Bullet points, get to the point" },
+  { key: "technical", emoji: "🔧", label: "Technical", desc: "Precise, domain-expert level" },
+  { key: "friendly", emoji: "🤝", label: "Friendly", desc: "Warm, encouraging, casual" },
+] as const;
 
 interface Message {
   role: "assistant" | "user";
@@ -88,6 +96,7 @@ export default function OnboardPage() {
   const [newCapsules, setNewCapsules] = useState<SavedCapsule[]>([]);
   const [started, setStarted] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [selectedPersonality, setSelectedPersonality] = useState<string>("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -99,13 +108,42 @@ export default function OnboardPage() {
     queryFn: () => api.getUser(userId),
   });
 
+  const { data: agent } = useQuery({
+    queryKey: ["agent", userId],
+    queryFn: () => api.getAgent(userId),
+  });
+
   const { data: existingCapsules } = useQuery({
     queryKey: ["capsules", userId],
     queryFn: () => api.listCapsules(userId),
   });
 
+  // Sync agent personality to local state once loaded
+  useEffect(() => {
+    if (agent?.personality && !selectedPersonality) {
+      const known = PERSONALITY_MODES.map(m => m.key);
+      const agentMode = known.find(k => agent.personality.startsWith(k) || agent.personality === k);
+      if (agentMode) setSelectedPersonality(agentMode);
+    }
+  }, [agent, selectedPersonality]);
+
+  const updateAgentMutation = useMutation({
+    mutationFn: (personality: string) => api.updateAgent(userId, { personality }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agent", userId] }),
+  });
+
+  const handleSelectPersonality = (key: string) => {
+    setSelectedPersonality(key);
+    updateAgentMutation.mutate(key);
+  };
+
   const hasExistingData = (existingCapsules?.length ?? 0) > 0;
   const existingCount = existingCapsules?.length ?? 0;
+
+  // Detect profile completeness: ≥3 distinct capsule types = "complete"
+  const distinctTypes = new Set(existingCapsules?.map(c => c.capsule_type) ?? []);
+  const isCompleteProfile = distinctTypes.size >= 3;
+  const isSeededUser = hasExistingData && !isCompleteProfile;
 
   const goToDashboard = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["capsules", userId] });
@@ -290,8 +328,39 @@ export default function OnboardPage() {
     return acc;
   }, {} as Record<string, number>) ?? {};
 
+  // ── Shared personality selector ──
+  const PersonalitySelector = () => (
+    <div className="w-full max-w-md mb-6">
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2.5">How should your agent talk to you?</p>
+      <div className="grid grid-cols-5 gap-1.5">
+        {PERSONALITY_MODES.map((m) => (
+          <button
+            key={m.key}
+            onClick={() => handleSelectPersonality(m.key)}
+            title={m.desc}
+            className={`flex flex-col items-center gap-1 p-2 rounded-xl border text-center transition-all ${
+              selectedPersonality === m.key
+                ? "border-accent bg-accent/10 text-accent"
+                : "border-card-border bg-card hover:border-accent/40 hover:bg-accent/5 text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <span className="text-base leading-none">{m.emoji}</span>
+            <span className="text-[10px] font-medium leading-tight">{m.label}</span>
+          </button>
+        ))}
+      </div>
+      {selectedPersonality && (
+        <p className="text-[11px] text-muted-foreground mt-1.5 text-center">
+          {PERSONALITY_MODES.find(m => m.key === selectedPersonality)?.desc}
+        </p>
+      )}
+    </div>
+  );
+
   // ── Pre-start screen ──
   if (!started) {
+    const firstName = user?.display_name?.split(" ")[0] || "";
+
     return (
       <div className="max-w-2xl mx-auto flex flex-col items-center justify-center min-h-[80vh] px-4">
         {/* Agent avatar */}
@@ -307,47 +376,83 @@ export default function OnboardPage() {
           </div>
         </div>
 
-        <h1 className="text-2xl font-bold mb-2 text-center">
-          {hasExistingData
-            ? `Update your agent, ${user?.display_name?.split(" ")[0] || ""}!`
-            : `Hey ${user?.display_name?.split(" ")[0] || ""}!`}
-        </h1>
-        <p className="text-muted-foreground text-center max-w-md mb-6 text-sm leading-relaxed">
-          {hasExistingData
-            ? `Your agent already knows ${existingCount} things about you. Continue the conversation to add more or update what it knows.`
-            : "Your AI agent needs to get to know you to be helpful. This takes about 2 minutes — just a quick conversation."}
-        </p>
+        {/* ── State: New user ── */}
+        {!hasExistingData && (
+          <>
+            <h1 className="text-2xl font-bold mb-2 text-center">Let&apos;s get to know you, {firstName}!</h1>
+            <p className="text-muted-foreground text-center max-w-md mb-6 text-sm leading-relaxed">
+              Your AI agent needs to learn about you to be helpful. This takes about 2 minutes — just a quick conversation.
+            </p>
 
-        {/* Existing data summary (returning users) */}
-        {hasExistingData && Object.keys(capsulesByType).length > 0 && (
-          <div className="w-full max-w-md mb-5">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">What your agent knows</p>
-            <div className="flex flex-wrap gap-2">
-              {Object.entries(capsulesByType).map(([type, count]) => (
-                <div key={type} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium ${CAPSULE_TYPE_COLORS[type] || "bg-muted/15 text-muted-foreground border-card-border"}`}>
-                  <span>{CAPSULE_TYPE_EMOJIS[type] || "📝"}</span>
-                  <span>{count} {type}{count !== 1 ? "s" : ""}</span>
-                </div>
-              ))}
+            <PersonalitySelector />
+
+            <div className="w-full max-w-md mb-6">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">What we&apos;ll cover</p>
+              <div className="grid grid-cols-2 gap-2">
+                {ONBOARD_STEPS.map((step) => (
+                  <div key={step.key} className="flex items-start gap-2.5 p-3 rounded-xl bg-card border border-card-border">
+                    <span className="text-base mt-0.5">{step.icon}</span>
+                    <div>
+                      <p className="text-xs font-medium">{step.label}</p>
+                      <p className="text-[10px] text-muted-foreground">{step.description}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          </>
         )}
 
-        {/* What we'll cover (new users only) */}
-        {!hasExistingData && (
-          <div className="w-full max-w-md mb-6">
-            <div className="grid grid-cols-2 gap-2">
-              {ONBOARD_STEPS.map((step) => (
-                <div key={step.key} className="flex items-start gap-2.5 p-3 rounded-xl bg-card border border-card-border">
-                  <span className="text-base mt-0.5">{step.icon}</span>
-                  <div>
-                    <p className="text-xs font-medium">{step.label}</p>
-                    <p className="text-[10px] text-muted-foreground">{step.description}</p>
-                  </div>
+        {/* ── State: Seeded / partial data user (like Molly) ── */}
+        {isSeededUser && (
+          <>
+            <h1 className="text-2xl font-bold mb-2 text-center">Your agent already knows you</h1>
+            <p className="text-muted-foreground text-center max-w-md mb-4 text-sm leading-relaxed">
+              There&apos;s already some info in your vault. Let&apos;s fill in the gaps — takes about 2 minutes.
+            </p>
+
+            {Object.keys(capsulesByType).length > 0 && (
+              <div className="w-full max-w-md mb-5">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">What&apos;s already saved</p>
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(capsulesByType).map(([type, count]) => (
+                    <div key={type} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium ${CAPSULE_TYPE_COLORS[type] || "bg-muted/15 text-muted-foreground border-card-border"}`}>
+                      <span>{CAPSULE_TYPE_EMOJIS[type] || "📝"}</span>
+                      <span>{count} {type}{count !== 1 ? "s" : ""}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
+              </div>
+            )}
+
+            <PersonalitySelector />
+          </>
+        )}
+
+        {/* ── State: Complete profile — returning user ── */}
+        {isCompleteProfile && (
+          <>
+            <h1 className="text-2xl font-bold mb-2 text-center">{existingCount} things in your vault</h1>
+            <p className="text-muted-foreground text-center max-w-md mb-4 text-sm leading-relaxed">
+              Here&apos;s what your agent knows. Continue to add more or update what it has.
+            </p>
+
+            {Object.keys(capsulesByType).length > 0 && (
+              <div className="w-full max-w-md mb-5">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Latest in vault</p>
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(capsulesByType).slice(0, 4).map(([type, count]) => (
+                    <div key={type} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium ${CAPSULE_TYPE_COLORS[type] || "bg-muted/15 text-muted-foreground border-card-border"}`}>
+                      <span>{CAPSULE_TYPE_EMOJIS[type] || "📝"}</span>
+                      <span>{count} {type}{count !== 1 ? "s" : ""}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <PersonalitySelector />
+          </>
         )}
 
         {/* Security note */}
@@ -364,13 +469,13 @@ export default function OnboardPage() {
             onClick={startOnboarding}
             className="px-8 py-3.5 bg-accent hover:bg-accent-hover text-accent-fg font-semibold rounded-2xl text-sm transition-all hover:shadow-xl hover:shadow-accent/25 hover:scale-[1.02] active:scale-[0.98]"
           >
-            {hasExistingData ? "Continue with Agent" : "Start Conversation"}
+            {isCompleteProfile ? "Update My Agent" : isSeededUser ? "Continue with Agent" : "Start Conversation"}
           </button>
           <button
             onClick={() => goToDashboard()}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            I&apos;ll do this later
+            {hasExistingData ? "Go to Dashboard" : "I\u2019ll do this later"}
           </button>
         </div>
       </div>

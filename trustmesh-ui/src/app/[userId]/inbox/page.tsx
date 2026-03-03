@@ -11,22 +11,10 @@ import {
   deleteMessage,
   type MessageItem,
 } from "@/lib/api";
+import { TrustBadge } from "@/components/TrustBadge";
+import { formatRelativeTime } from "@/lib/utils";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function timeAgo(dateStr: string): string {
-  const now = new Date();
-  const date = new Date(dateStr);
-  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return date.toLocaleDateString();
-}
 
 function expiryLabel(expiresAt: string): string {
   const now = Date.now();
@@ -42,22 +30,6 @@ function expiryLabel(expiresAt: string): string {
 function isExpiringSoon(expiresAt: string): boolean {
   const ms = new Date(expiresAt).getTime() - Date.now();
   return ms > 0 && ms < 24 * 3_600_000;
-}
-
-// ── Trust badge ───────────────────────────────────────────────────────────────
-
-function TrustBadge({ level }: { level: string }) {
-  const colors: Record<string, string> = {
-    network: "bg-sky-500/15 text-sky-400 border-sky-500/30",
-    connected: "bg-accent/15 text-accent border-accent/30",
-    private: "bg-violet-500/15 text-violet-400 border-violet-500/30",
-  };
-  const cls = colors[level] ?? "bg-muted/15 text-muted-foreground border-muted/30";
-  return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${cls}`}>
-      {level}
-    </span>
-  );
 }
 
 // ── Message row ───────────────────────────────────────────────────────────────
@@ -102,14 +74,14 @@ function MessageRow({
             <span className={`text-sm truncate ${!isSent && !msg.is_read ? "font-semibold text-foreground" : "text-muted-foreground"}`}>
               {isSent ? `To: ${name}` : name}
             </span>
-            <span className="text-[11px] text-muted-foreground shrink-0">{timeAgo(msg.created_at)}</span>
+            <span className="text-[11px] text-muted-foreground shrink-0">{formatRelativeTime(null, msg.created_at)}</span>
           </div>
           <p className={`text-sm mt-0.5 truncate ${!isSent && !msg.is_read ? "text-foreground" : "text-muted-foreground"}`}>
             {msg.subject}
           </p>
           {/* Badges */}
           <div className="flex items-center gap-1.5 mt-1.5">
-            <TrustBadge level={msg.trust_level_at_send} />
+            <TrustBadge tier={msg.trust_level_at_send} />
             {msg.expires_at && (
               <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${
                 isExpiringSoon(msg.expires_at)
@@ -253,6 +225,17 @@ export default function InboxPage() {
             {t === "unread" ? `Unread${unreadCount > 0 ? ` (${unreadCount})` : ""}` : t.charAt(0).toUpperCase() + t.slice(1)}
           </button>
         ))}
+      </div>
+
+      {/* Compose nudge */}
+      <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-accent/5 border border-accent/15">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent shrink-0">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+        <p className="text-xs text-muted-foreground">
+          Ask your agent to send a message:{" "}
+          <span className="font-medium text-accent/80">&quot;Send a message to [name] about...&quot;</span>
+        </p>
       </div>
 
       {/* Message list */}

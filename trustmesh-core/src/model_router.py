@@ -54,18 +54,18 @@ class ModelResponse:
 
 # Anthropic models
 ANTHROPIC_MODELS = {
-    "default": "claude-sonnet-4-5-20250929",
-    "reasoning": "claude-sonnet-4-5-20250929",
+    "default": "claude-sonnet-4-6",
+    "reasoning": "claude-opus-4-6",
     "fast": "claude-haiku-4-5-20251001",
 }
 
 # Gemini models via OpenAI-compatible endpoint
 # https://generativelanguage.googleapis.com/v1beta/openai/
 GEMINI_MODELS = {
-    "default": "gemini-2.5-flash",
-    "reasoning": "gemini-2.5-pro",
-    "fast": "gemini-2.5-flash",
-    "vision": "gemini-2.5-flash",
+    "default": "gemini-3-flash-preview",
+    "reasoning": "gemini-3.1-pro-preview",
+    "fast": "gemini-3-flash-preview",
+    "vision": "gemini-3-flash-preview",
 }
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
@@ -288,7 +288,7 @@ class ModelRouter:
 
     def _init_tee(self):
         """Initialize TEE provider (Tinfoil or Redpill)."""
-        primary = os.getenv("TEE_PRIMARY_PROVIDER", "tinfoil")
+        primary = os.getenv("TEE_PRIMARY_PROVIDER", "redpill")
         providers = {
             "tinfoil": {
                 "key_env": "TINFOIL_API_KEY",

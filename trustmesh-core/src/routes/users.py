@@ -5,6 +5,7 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -261,6 +262,26 @@ async def get_agent(user_id: str, db: AsyncSession = Depends(get_db)):
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(404, "Agent not found")
+    return agent
+
+
+class AgentUpdate(BaseModel):
+    personality: str
+
+
+@router.put("/users/{user_id}/agent", response_model=AgentResponse)
+async def update_agent(user_id: str, data: AgentUpdate, db: AsyncSession = Depends(get_db),
+                       auth_user_id: str = Depends(get_current_user_id)):
+    """Update agent personality mode."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
+    result = await db.execute(select(Agent).where(Agent.owner_id == user_id))
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+    agent.personality = data.personality
+    await db.commit()
+    await db.refresh(agent)
     return agent
 
 

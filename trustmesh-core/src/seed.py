@@ -2233,54 +2233,8 @@ async def seed():
         else:
             print("  ! molly user not found, skipping timeline entry")
 
-        # ── Daily message sweep (3 AM) ─────────────────────────────────────────
-        # Runs on the molly (family pod) user — sweeps expired messages system-wide.
-        if molly_user:
-            sweep_builder = (
-                EntryBuilder()
-                .set_label("Daily Message Sweep")
-                .set_entry_type(EntryType.TASK)
-                .set_salience(0.3)
-                .set_visibility(Visibility.PRIVATE)
-            )
-            sweep_builder.set_trigger_cron("0 3 * * *")  # 3 AM daily
-            sweep_builder.add_hook(
-                phase=HookPhase.PRE,
-                action=HookActionKind.AGENT_TASK,
-                prompt="Call sweep_expired_messages tool to remove expired messages.",
-                timeout_ms=10000,
-                max_retries=0,
-            )
-            sweep_id = engine.add_entry(sweep_builder)
-            sweep_state = engine.get_entry_state(sweep_id)
-            sweep_spec: dict = {
-                "id": str(sweep_id),
-                "owner_id": molly_user.id,
-                "label": "Daily Message Sweep",
-                "category": "general",
-                "entry_type": int(EntryType.TASK),
-                "visibility": int(Visibility.PRIVATE),
-                "salience": 0.3,
-                "window_start_ms": None,
-                "window_end_ms": None,
-                "activation_trigger": {"kind": "time", "cron": "0 3 * * *"},
-                "deactivation_trigger": None,
-                "dependencies": [],
-                "hooks": [{
-                    "action": int(HookActionKind.AGENT_TASK),
-                    "phase": int(HookPhase.PRE),
-                    "prompt": "Call sweep_expired_messages tool to remove expired messages.",
-                    "timeout_ms": 10000,
-                    "max_retries": 0,
-                }],
-            }
-            persist_entry_spec(
-                owner_id=molly_user.id,
-                entry_id=sweep_id,
-                state=int(sweep_state) if sweep_state is not None else 0,
-                spec=sweep_spec,
-            )
-            print(f"  ✓ Daily message sweep seeded (entry {str(sweep_id)[:8]}...)")
+        # Daily message sweep is now handled natively in the Zig TOCK phase
+        # (message_mod.sweepExpired is called each tick) — no timeline entry needed.
     except Exception as e:
         print(f"  ! Timeline seeding failed (non-fatal): {e}")
 

@@ -135,6 +135,7 @@ async def create_query_stream(data: QueryCreate,
                         owner_name=to_user.display_name,
                         tool_context=tool_context,
                         conversation_history=history,
+                        personality=agent.personality or "",
                     ):
                         if event_type == "text":
                             full_text += event_data

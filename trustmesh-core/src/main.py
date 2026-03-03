@@ -207,6 +207,16 @@ async def lifespan(app: FastAPI):
     # Start data lifecycle loop (capsule expiry, auto-archive)
     from src.lifecycle import start_lifecycle_loop
     asyncio.create_task(start_lifecycle_loop())
+    # Log active model stack on startup
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    from src.model_router import get_router as _get_router
+    _router = _get_router()
+    _log.info(
+        "Model stack — main: %s  tee: %s",
+        "gemini-3.1-pro-preview" if _router.has_gemini else "claude-sonnet-4-6",
+        _router.tee_provider_name or "none (sensitive → gemini fallback)",
+    )
     yield
     # Shutdown: stop the timeline engine and Zig subsystems
     from src.routes.timeline import stop_auto_tick
