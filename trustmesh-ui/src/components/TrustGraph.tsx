@@ -107,7 +107,7 @@ export function TrustGraph({
 
   // Animate a query pulse along an edge with reply
   const animateQuery = useCallback(
-    (fromId: string, toId: string, decision: string, trustLevel: string) => {
+    (fromId: string, toId: string, decision: string, trustLevel: string, question?: string) => {
       const g = gRef.current;
       if (!g) return;
       const gSel = d3.select(g);
@@ -119,6 +119,67 @@ export function TrustGraph({
 
       const queryColor = "#FEDC25"; // Mighty yellow: outgoing question
       const replyColor = getQueryColor(decision, trustLevel);
+
+      // === Question bubble at midpoint ===
+      if (question) {
+        const midX = ((fromNode.x ?? 0) + (toNode.x ?? 0)) / 2;
+        const midY = ((fromNode.y ?? 0) + (toNode.y ?? 0)) / 2;
+        const truncQ = question.length > 48 ? question.slice(0, 45) + "…" : question;
+        const rectW = Math.min(truncQ.length * 6.4 + 20, 220);
+        const rectH = 24;
+
+        const bubble = gSel.append("g")
+          .attr("transform", `translate(${midX},${midY - 30})`)
+          .attr("pointer-events", "none")
+          .attr("opacity", 0);
+
+        bubble.append("rect")
+          .attr("x", -rectW / 2).attr("y", -rectH / 2)
+          .attr("width", rectW).attr("height", rectH)
+          .attr("rx", 12).attr("ry", 12)
+          .attr("fill", "#111111")
+          .attr("stroke", queryColor).attr("stroke-width", 1.5).attr("stroke-opacity", 0.7);
+
+        // Tail pointing down
+        const tailY = rectH / 2;
+        bubble.append("path")
+          .attr("d", `M -5 ${tailY} L 0 ${tailY + 8} L 5 ${tailY}`)
+          .attr("fill", "#111111")
+          .attr("stroke", queryColor).attr("stroke-width", 1.5)
+          .attr("stroke-opacity", 0.7).attr("stroke-linejoin", "round");
+
+        bubble.append("text")
+          .attr("text-anchor", "middle").attr("dominant-baseline", "middle")
+          .attr("fill", queryColor).attr("font-size", "9.5px")
+          .attr("font-family", "system-ui, sans-serif").attr("font-weight", "500")
+          .attr("letter-spacing", "0.01em")
+          .text(truncQ);
+
+        bubble.transition().duration(150).attr("opacity", 1)
+          .transition().delay(900).duration(350).attr("opacity", 0)
+          .remove();
+      }
+
+      // === Decision badge near toNode when query arrives ===
+      const decisionLabel = decision === "allowed" ? "✓" : decision === "denied" ? "✗" : "~";
+      const badge = gSel.append("g")
+        .attr("transform", `translate(${(toNode.x ?? 0) + 28},${(toNode.y ?? 0) - 28})`)
+        .attr("pointer-events", "none")
+        .attr("opacity", 0);
+
+      badge.append("circle")
+        .attr("r", 10).attr("fill", replyColor).attr("fill-opacity", 0.15)
+        .attr("stroke", replyColor).attr("stroke-width", 1.5);
+
+      badge.append("text")
+        .attr("text-anchor", "middle").attr("dominant-baseline", "middle")
+        .attr("fill", replyColor).attr("font-size", "9px").attr("font-weight", "bold")
+        .attr("font-family", "system-ui, sans-serif")
+        .text(decisionLabel);
+
+      badge.transition().delay(1400).duration(200).attr("opacity", 1)
+        .transition().delay(1000).duration(400).attr("opacity", 0)
+        .remove();
 
       // === Phase 1: Query dot (yellow) from sender -> receiver ===
       const dot = gSel
@@ -259,7 +320,8 @@ export function TrustGraph({
       latest.from_user_id,
       latest.to_user_id,
       latest.decision,
-      latest.trust_level
+      latest.trust_level,
+      latest.question,
     );
   }, [queries, animateQuery]);
 
