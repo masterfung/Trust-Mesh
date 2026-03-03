@@ -1,5 +1,5 @@
 const DEFAULT_API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:9000";
-const REGISTRY_URL = process.env.NEXT_PUBLIC_REGISTRY_URL || "http://localhost:9100";
+const REGISTRY_URL = process.env.NEXT_PUBLIC_REGISTRY_URL || "http://localhost:8100";
 
 /** Get the active pod URL (from localStorage or default). */
 export function getPodUrl(): string {
@@ -674,7 +674,7 @@ export const api = {
   demoWarmup: () =>
     apiFetch<{ status: string; keys_loaded: number }>("/api/demo/warmup", { method: "POST" }),
 
-  // Public Registry (separate service on port 9100)
+  // Public Registry (separate service on port 8100)
   registryListAll: () =>
     fetch(`${REGISTRY_URL}/api/agents`, { headers: { "Content-Type": "application/json" } })
       .then(r => r.json()) as Promise<{ agents: RegistryPodAgent[]; count: number }>,

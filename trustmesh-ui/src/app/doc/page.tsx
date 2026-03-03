@@ -153,7 +153,7 @@ export default function DocPage() {
             <span className="text-xs text-foreground/40 font-mono hidden sm:inline">docs</span>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            <a href="http://localhost:9100" target="_blank" rel="noopener noreferrer" className="text-xs text-foreground/50 hover:text-foreground transition-colors px-2 sm:px-3 py-1.5 rounded-lg hover:bg-card-hover">Registry</a>
+            <a href="http://localhost:8100" target="_blank" rel="noopener noreferrer" className="text-xs text-foreground/50 hover:text-foreground transition-colors px-2 sm:px-3 py-1.5 rounded-lg hover:bg-card-hover">Registry</a>
             <Link href="/about" className="text-xs text-foreground/50 hover:text-foreground transition-colors px-2 sm:px-3 py-1.5 rounded-lg hover:bg-card-hover hidden sm:inline-flex">Why TrustMesh?</Link>
             <Link href="/" className="text-xs bg-accent text-accent-fg px-3 py-1.5 rounded-lg font-medium hover:bg-accent-hover transition-colors">Demo</Link>
           </div>
@@ -234,7 +234,7 @@ export default function DocPage() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-6">
               {[
                 { label: "Identity", value: "DID + ed25519", sub: "Self-sovereign" },
-                { label: "Agent", value: "Claude Sonnet 4.5", sub: "Trust-aware AI" },
+                { label: "Agent", value: "Gemini 3.1 Pro", sub: "Trust-aware AI" },
                 { label: "Vault", value: "AES-256-GCM", sub: "Encrypted at rest" },
                 { label: "Protocol", value: "A2A + UCAN", sub: "Interoperable" },
               ].map((s) => (
@@ -282,10 +282,12 @@ curl http://localhost:9000/health`}</Code>
               ["TRUSTMESH_POD_NAME", "TrustMesh Pod", "Display name for your pod"],
               ["TRUSTMESH_POD_URL", "http://localhost:9000", "Public URL for federation"],
               ["TRUSTMESH_DB", "./trustmesh.db", "SQLite database path (each pod gets its own)"],
-              ["ANTHROPIC_API_KEY", "(required)", "For Claude Sonnet 4.5 agent responses"],
+              ["GOOGLE_API_KEY", "(primary)", "Gemini 3.1 Pro agent responses + Gemini Live voice"],
+              ["ANTHROPIC_API_KEY", "(fallback)", "Claude 4.6 fallback if no Google key"],
+              ["REDPILL_API_KEY", "(optional)", "RedPill TEE for sensitive medical/financial data"],
               ["VOYAGE_API_KEY", "(optional)", "Voyage AI embeddings (falls back to local)"],
               ["TRUSTMESH_POOL_SYNC_SECRET", "(generated)", "Shared secret for pool-sync federation auth"],
-              ["TRUSTMESH_REGISTRY_URL", "http://localhost:9100", "Public agent registry URL"],
+              ["TRUSTMESH_REGISTRY_URL", "http://localhost:8100", "Public agent registry URL"],
               ["TAVILY_API_KEY", "(optional)", "Web search tool for agents"],
             ]}
           />
@@ -548,11 +550,11 @@ trustmesh mcp serve`}</Code>
           </P>
 
           <Code lang="text">{`Standard query (e.g. "what's my schedule?"):
-  Pod → Anthropic API → Claude Sonnet 4.5 → response
+  Pod → Google API → Gemini 3.1 Pro → response
   Best reasoning and tool calling
 
 Sensitive query (e.g. "what are my medications?"):
-  Pod → TEE enclave → AI model → response
+  Pod → RedPill TEE enclave → Kimi K2.5 → response
   Hardware-attested privacy, nobody sees your plaintext
 
 Offline / local query:
@@ -565,7 +567,7 @@ Offline / local query:
             still read your vault and manage your data.
           </P>
 
-          <Code lang="text">{`Claude Sonnet 4.5  →  TEE model  →  Local model  →  Vault-only mode
+          <Code lang="text">{`Gemini 3.1 Pro  →  RedPill TEE  →  Local model  →  Vault-only mode
   (best)           (very good)    (adequate)       (no AI, still works)`}</Code>
 
           <H3>TEE providers</H3>
@@ -858,7 +860,7 @@ Pod B pipeline:
   4. CAPSULE FILTER Trust-based: public→open only, connected→open,
                     network→open+internal in shared pools
   5. SEMANTIC SEARCH Match question against permitted capsules
-  6. LLM GENERATE   Claude responds from permitted data only
+  6. LLM GENERATE   Gemini responds from permitted data only
   7. CITADEL OUT    Trust-aware scan (soft-leak patterns at public trust)
   8. AUDIT LOG      Record: remote DID, source pod, trust level, decision
   9. RETURN         Send response back to Pod A`}</Code>

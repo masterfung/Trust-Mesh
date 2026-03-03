@@ -59,7 +59,7 @@ export default function Home() {
             Docs
           </Link>
           <a
-            href="http://localhost:9100"
+            href="http://localhost:8100"
             target="_blank"
             rel="noopener noreferrer"
             className="hidden sm:block text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1.5 rounded-lg hover:bg-card"
@@ -119,7 +119,7 @@ export default function Home() {
             <div className="text-center mb-8 md:mb-12">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-accent/10 border border-accent/20 text-accent text-xs font-medium mb-6">
                 <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-                Powered by Claude Sonnet 4.5
+                Powered by Gemini 3.1 Pro
               </div>
               <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold tracking-tight mb-4">
                 <span className="text-gradient">TrustMesh</span>
@@ -128,7 +128,7 @@ export default function Home() {
                 Share what matters with people you trust.
               </p>
               <p className="text-sm sm:text-base text-muted-foreground max-w-xl mx-auto leading-relaxed mt-3">
-                Everyone gets a private collection of memories and an AI assistant powered by Sonnet 4.5.
+                Everyone gets a private collection of memories and an AI assistant powered by Gemini 3.1 Pro.
                 Your assistant works with people you trust — sharing what&apos;s needed,
                 protecting everything else. Simple to start. Zero configuration.
               </p>
@@ -194,7 +194,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="py-4 sm:py-6 px-4 border-t border-card-border text-center space-y-1">
         <p className="text-xs text-muted-foreground">
-          Built with love by <a href="https://github.com/masterfung" target="_blank" rel="noopener noreferrer" className="text-accent hover:text-accent-hover transition-colors">@masterfung</a> &middot; Powered by Claude Sonnet 4.5
+          Built with love by <a href="https://github.com/masterfung" target="_blank" rel="noopener noreferrer" className="text-accent hover:text-accent-hover transition-colors">@masterfung</a> &middot; Powered by Gemini 3.1 Pro
         </p>
         <p className="text-xs text-muted-foreground">
           End-to-end encrypted &middot; <a href="https://trymighty.ai" target="_blank" rel="noopener noreferrer" className="text-red-400 hover:text-red-300 transition-colors">Protected by AI security</a>
