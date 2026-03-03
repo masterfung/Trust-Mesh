@@ -992,6 +992,30 @@ def _pipeline_completion_event(label: str) -> str | None:
     return None
 
 
+async def _maybe_inject_live(user_id: str, agent_response: str) -> None:
+    """Check agent response for actionable findings and inject into active Live session.
+
+    Sentinel: if response contains 'CONFLICT FOUND:' on any line, extract the
+    text after the colon and push it into the user's active Live session queue.
+    The injection is silently ignored if no session is active.
+    """
+    try:
+        from src import live_sessions
+    except ImportError:
+        return
+
+    marker = "CONFLICT FOUND:"
+    for line in agent_response.splitlines():
+        idx = line.upper().find(marker)
+        if idx != -1:
+            finding = line[idx + len(marker):].strip()
+            if not finding:
+                continue
+            logger.info("Proactive inject triggered: %.100s", finding)
+            await live_sessions.inject(user_id, finding)
+            return  # Only inject the first conflict found
+
+
 async def _dispatch_agent_hook(engine, entry_id_str: str, hook_index: int):
     """Dispatch an AGENT_TASK hook to the AI agent for processing.
 
@@ -1009,8 +1033,15 @@ async def _dispatch_agent_hook(engine, entry_id_str: str, hook_index: int):
         entry_id_str, label, is_system_hook,
     )
 
-    # Build a prompt from the entry's hook data
-    prompt = f"Timeline hook fired for entry '{label}' (category: {category}). Process this entry and take appropriate action."
+    # Use the actual hook prompt stored in the spec cache, falling back to a generic one
+    spec = _get_entry_spec(entry_id_str)
+    hooks_list = (spec or {}).get("hooks", [])
+    if hook_index < len(hooks_list):
+        prompt = hooks_list[hook_index].get("prompt", "")
+    else:
+        prompt = ""
+    if not prompt:
+        prompt = f"Timeline hook fired for entry '{label}' (category: {category}). Process this entry and take appropriate action."
 
     # Try to dispatch to agent system
     try:
@@ -1051,6 +1082,11 @@ async def _dispatch_agent_hook(engine, entry_id_str: str, hook_index: int):
             response = result.get("response", "")
             logger.info("Agent response for hook: %s", response[:200] if response else "empty")
             engine.complete_hook(eid, hook_index, True)
+
+            # Proactive inject: if agent found a conflict, push it into any active Live session
+            if response:
+                await _maybe_inject_live(user.id, response)
+
     except Exception:
         logger.exception("Agent hook dispatch failed")
         engine.complete_hook(eid, hook_index, False)

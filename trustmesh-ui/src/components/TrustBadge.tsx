@@ -1,5 +1,7 @@
 "use client";
 
+import { CAPSULE_TYPE_EMOJIS } from "@/lib/constants";
+
 const TIER_STYLES: Record<string, string> = {
   public: "bg-warning/15 text-warning border-warning/25",
   network: "bg-accent/15 text-accent border-accent/25",
@@ -51,23 +53,23 @@ export function TrustBadge({ tier }: { tier: string }) {
   );
 }
 
-const TYPE_CONFIG: Record<string, { icon: string; color: string; bg: string }> = {
-  memory: { icon: "\u{1F4AD}", color: "text-amber-400", bg: "bg-amber-500/15 border-amber-500/25" },
-  skill: { icon: "\u26A1", color: "text-blue-400", bg: "bg-blue-500/15 border-blue-500/25" },
-  procedure: { icon: "\u{1F4CB}", color: "text-red-400", bg: "bg-red-500/15 border-red-500/25" },
-  schedule: { icon: "\u{1F4C5}", color: "text-green-400", bg: "bg-green-500/15 border-green-500/25" },
-  preference: { icon: "\u2B50", color: "text-yellow-400", bg: "bg-yellow-500/15 border-yellow-500/25" },
-  contact: { icon: "\u{1F464}", color: "text-orange-400", bg: "bg-orange-500/15 border-orange-500/25" },
+const TYPE_CONFIG: Record<string, { color: string; bg: string }> = {
+  memory: { color: "text-amber-400", bg: "bg-amber-500/15 border-amber-500/25" },
+  skill: { color: "text-blue-400", bg: "bg-blue-500/15 border-blue-500/25" },
+  procedure: { color: "text-red-400", bg: "bg-red-500/15 border-red-500/25" },
+  schedule: { color: "text-green-400", bg: "bg-green-500/15 border-green-500/25" },
+  preference: { color: "text-yellow-400", bg: "bg-yellow-500/15 border-yellow-500/25" },
+  contact: { color: "text-orange-400", bg: "bg-orange-500/15 border-orange-500/25" },
 };
 
 export function CapsuleTypeBadge({ type }: { type: string }) {
-  const config = TYPE_CONFIG[type] || { icon: "?", color: "text-muted-foreground", bg: "bg-muted/15 border-muted/25" };
+  const config = TYPE_CONFIG[type] || { color: "text-muted-foreground", bg: "bg-muted/15 border-muted/25" };
   return (
     <span
       className={`inline-flex items-center justify-center w-7 h-7 rounded-lg text-xs border ${config.bg}`}
       title={type}
     >
-      {config.icon}
+      {CAPSULE_TYPE_EMOJIS[type] ?? "?"}
     </span>
   );
 }

@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 import pytest_asyncio
 
-from src.database import init_db, drop_db
+from src.database import init_db, drop_db, engine
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -30,6 +30,10 @@ async def setup_db():
     credential_bridge._db_handle = None
     credential_bridge._initialized = False
     credential_bridge._ensure_zig()
+
+    # Flush the SQLAlchemy connection pool so the raw sqlite3 DELETE below can
+    # acquire a write lock without hitting WAL contention from pooled connections.
+    await engine.dispose()
 
     # Clear Zig-managed credential tables (not in SQLAlchemy metadata)
     db_path = os.getenv("TRUSTMESH_DB", "./trustmesh.db")

@@ -6,8 +6,7 @@ import { api, type Network, type User, type Connection, type NetworkInviteListIt
 import { useParams } from "next/navigation";
 import { matchesContext } from "@/lib/context";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-
-const CAPSULE_CATEGORIES = ["health", "home", "work", "personal", "family", "general"];
+import { CAPSULE_CATEGORIES } from "@/lib/constants";
 const NETWORK_TYPES = ["family", "team", "friends", "custom"];
 const NETWORK_TYPE_CONFIG: Record<string, { icon: string; color: string }> = {
   family: { icon: "\u{1F3E0}", color: "bg-blue-500/15 text-blue-400 border-blue-500/25" },

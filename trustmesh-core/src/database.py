@@ -111,8 +111,39 @@ async def init_db():
         await conn.run_sync(_migrate_user_email_avatar)
 
 
+def _drop_zig_tables(conn) -> None:
+    """Remove Zig-managed tables not in SQLAlchemy metadata.
+
+    Uses PRAGMA writable_schema to bypass FTS5 vtable constructor failures
+    that occur when FTS5 shadow tables are corrupt (e.g. after an unclean shutdown).
+    Also drops timeline / credential / message tables created by libpodos.
+    """
+    from sqlalchemy import text
+
+    # Bypass vtable destructor for FTS5 tables — safe even on corrupt shadow tables
+    conn.execute(text("PRAGMA writable_schema=ON"))
+    conn.execute(text(
+        "DELETE FROM sqlite_master "
+        "WHERE name LIKE 'capsule_fts%' OR name LIKE 'credential_fts%' "
+        "OR name LIKE 'message_fts%'"
+    ))
+    conn.execute(text("PRAGMA writable_schema=OFF"))
+
+    # Drop regular Zig-owned tables (timeline, vault_secrets, credentials, messages)
+    for table in (
+        "timeline_entries", "timeline_inbox", "timeline_outbox", "timeline_transitions",
+        "vault_secrets", "credential_ops", "credential_shares",
+        "messages",
+    ):
+        try:
+            conn.execute(text(f'DROP TABLE IF EXISTS "{table}"'))
+        except Exception:
+            pass  # Best-effort — ignore errors on cleanup
+
+
 async def drop_db():
     """Drop all tables (for testing/reset)."""
+    import sqlite3 as _sqlite3
     from src.models import Base
 
     # Close FTS handle first — it holds a Zig-side SQLite connection to the same DB.
@@ -124,3 +155,18 @@ async def drop_db():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+        # Also clean up Zig-managed tables (FTS5 vtables + timeline + credentials)
+        await conn.run_sync(_drop_zig_tables)
+
+    # Dispose async engine pool so raw sqlite3 can acquire the write lock.
+    await engine.dispose()
+
+    # VACUUM compacts orphaned FTS5 shadow-table pages left after the
+    # writable_schema deletions above.  Must run outside any transaction.
+    try:
+        raw = _sqlite3.connect(DB_PATH, timeout=10)
+        raw.execute("PRAGMA journal_mode=WAL")
+        raw.execute("VACUUM")
+        raw.close()
+    except Exception:
+        pass

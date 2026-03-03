@@ -46,6 +46,8 @@ _LIVE_TOOL_NAMES = {
     "web_search",
     "create_timeline_entry",
     "list_timeline_entries",
+    "trigger_emergency",
+    "send_message",
 }
 
 
@@ -101,6 +103,7 @@ Your capabilities:
 - List who they're connected to and their trust levels (list_connections)
 - Search the web for current information (web_search)
 - Create and list timeline reminders (create_timeline_entry, list_timeline_entries)
+- Declare a medical emergency and issue real access tokens (trigger_emergency)
 
 IMPORTANT:
 - You are voice-native. Be conversational, warm, and concise.
@@ -110,6 +113,9 @@ IMPORTANT:
 - Respect trust levels: only share what you're allowed to share with others.
 - If you find a scheduling conflict, calendar clash, or medical concern,
   mention it naturally in conversation — don't wait to be asked.
+- If {owner_name} says they are in immediate danger, having a medical emergency,
+  or needs urgent help, call trigger_emergency IMMEDIATELY — do not ask for
+  confirmation first. Time is critical.
 
 Your trust network context:
 {networks_summary}
@@ -157,6 +163,7 @@ async def run_live_session(
 
     from src.agents import AGENT_TOOLS, ToolContext, execute_tool
     from src.gossip import get_user_networks
+    from src import live_sessions
 
     tool_context = ToolContext(
         db=db,
@@ -179,31 +186,42 @@ async def run_live_session(
         ),
         tools=[types.Tool(function_declarations=declarations)] if declarations else [],
         output_audio_transcription=types.AudioTranscriptionConfig(),
+        input_audio_transcription=types.AudioTranscriptionConfig(),
     )
 
-    model = LIVE_MODEL
-    log.info(f"Starting Live session for user={user_id} model={model}")
+    inject_queue: asyncio.Queue = asyncio.Queue()
+    await live_sessions.register(user_id, inject_queue)
+
+    async def _run_tasks(session) -> None:
+        """Drive the three concurrent directions for one Gemini session."""
+        tasks = [
+            asyncio.create_task(_forward_client_to_gemini(websocket, session)),
+            asyncio.create_task(_forward_gemini_to_client(session, websocket, tool_context)),
+            asyncio.create_task(_inject_reader(inject_queue, session)),
+        ]
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     try:
-        async with client.aio.live.connect(model=model, config=live_config) as session:
-            # Run both directions concurrently; cancel both when either exits
-            client_to_gemini = asyncio.create_task(
-                _forward_client_to_gemini(websocket, session)
-            )
-            gemini_to_client = asyncio.create_task(
-                _forward_gemini_to_client(session, websocket, tool_context)
-            )
-
-            done, pending = await asyncio.wait(
-                [client_to_gemini, gemini_to_client],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
+        # Try the native-audio preview model; fall back to the stable release if
+        # the preview has expired (HTTP 404 / "not found" on context-manager entry).
+        for model in (LIVE_MODEL, _FALLBACK_MODEL):
+            log.info("Starting Live session: user=%s model=%s", user_id, model)
+            try:
+                async with client.aio.live.connect(model=model, config=live_config) as session:
+                    await _run_tasks(session)
+                break  # session completed normally — don't retry
+            except Exception as exc:
+                err = str(exc).lower()
+                if model != _FALLBACK_MODEL and any(k in err for k in ("not found", "404", "model")):
+                    log.warning("Model %s unavailable (%s) — retrying with %s", model, exc, _FALLBACK_MODEL)
+                    continue
+                raise  # Unexpected error — let outer handler deal with it
 
     except WebSocketDisconnect:
         log.info(f"Live session disconnected: user={user_id}")
@@ -213,6 +231,8 @@ async def run_live_session(
             await websocket.send_json({"type": "error", "message": str(exc)})
         except Exception:
             pass
+    finally:
+        await live_sessions.unregister(user_id)
 
 
 async def _forward_client_to_gemini(websocket: WebSocket, session) -> None:
@@ -256,6 +276,37 @@ async def _forward_client_to_gemini(websocket: WebSocket, session) -> None:
         raise
 
 
+async def _inject_reader(queue: asyncio.Queue, session) -> None:
+    """Read injected messages from the queue and send them to Gemini as system notes.
+
+    These arrive from the Timeline engine when a proactive finding is ready
+    (e.g., a scheduling conflict detected in vault data). The message is sent
+    as a user turn so Gemini speaks it unprompted to the user.
+    """
+    from google.genai import types
+
+    try:
+        while True:
+            text = await queue.get()
+            log.info("Sending injected message to Gemini: %.80s...", text)
+            try:
+                await session.send_client_content(
+                    turns=types.Content(
+                        role="user",
+                        parts=[types.Part(
+                            text=f"[SYSTEM NOTE — share this with the user naturally]: {text}"
+                        )],
+                    )
+                )
+            except Exception as exc:
+                log.warning("Failed to send injected message: %s", exc)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.debug("_inject_reader exited: %s", exc)
+        raise
+
+
 async def _forward_gemini_to_client(session, websocket: WebSocket, tool_context) -> None:
     """Read Gemini responses and forward audio/text/tool events to the client."""
     from google.genai import types
@@ -270,12 +321,18 @@ async def _forward_gemini_to_client(session, websocket: WebSocket, tool_context)
                 })
 
             # Agent speech transcript (from output_audio_transcription)
+            # User speech transcript (from input_audio_transcription)
             if response.server_content:
                 sc = response.server_content
                 if sc.output_transcription and sc.output_transcription.text:
                     await websocket.send_json({
                         "type": "text",
                         "text": sc.output_transcription.text,
+                    })
+                if sc.input_transcription and sc.input_transcription.text:
+                    await websocket.send_json({
+                        "type": "transcript",
+                        "text": sc.input_transcription.text,
                     })
 
             # Fallback: plain text from model

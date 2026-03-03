@@ -700,3 +700,25 @@ class EmergencyAccessResponse(BaseModel):
     expires_at: datetime
     family_notified: int = 0
     fhir_bundle_url: str | None = None
+
+
+class MessageResponse(BaseModel):
+    id: str
+    sender_id: str
+    sender_username: str
+    sender_display_name: str
+    sender_pod_url: str | None = None
+    recipient_id: str
+    subject: str
+    body: str | None = None  # Decrypted body (None if vault key unavailable)
+    scope: str
+    trust_level_at_send: str
+    expires_at: datetime | None = None
+    rekey_needed: bool = False
+    is_read: bool = False
+    read_at: datetime | None = None
+    created_at: datetime
+
+
+class MessageUnreadCount(BaseModel):
+    count: int

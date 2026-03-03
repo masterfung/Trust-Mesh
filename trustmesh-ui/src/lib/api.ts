@@ -22,7 +22,7 @@ function getApiBase(): string {
 }
 
 /** Read the CSRF cookie value (set by backend, httpOnly=false so JS can read it). */
-function getCsrfToken(): string | null {
+export function getCsrfToken(): string | null {
   if (typeof document === "undefined") return null;
   const match = document.cookie.match(/(?:^|;\s*)trustmesh_csrf=([^;]+)/);
   return match ? decodeURIComponent(match[1]) : null;
@@ -737,4 +737,59 @@ export interface TimelineEntry {
   trigger_detail: string | null;
   hook_summary: string | null;
   dep_count: number;
+}
+
+// ── Message API helpers ──
+
+export interface MessageItem {
+  id: string;
+  sender_id: string;
+  sender_username: string;
+  sender_display_name: string;
+  sender_pod_url: string | null;
+  recipient_id: string;
+  subject: string;
+  body: string | null;
+  scope: string;
+  trust_level_at_send: string;
+  expires_at: string | null;
+  rekey_needed: boolean;
+  is_read: boolean;
+  read_at: string | null;
+  created_at: string;
+}
+
+export async function getInbox(
+  userId: string,
+  opts?: { unread_only?: boolean; limit?: number; offset?: number }
+): Promise<MessageItem[]> {
+  const params = new URLSearchParams();
+  if (opts?.unread_only) params.set("unread_only", "true");
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  if (opts?.offset != null) params.set("offset", String(opts.offset));
+  const qs = params.toString() ? `?${params}` : "";
+  return apiFetch<MessageItem[]>(`/api/users/${userId}/messages/inbox${qs}`);
+}
+
+export async function getSent(userId: string): Promise<MessageItem[]> {
+  return apiFetch<MessageItem[]>(`/api/users/${userId}/messages/sent`);
+}
+
+export async function getUnreadCount(userId: string): Promise<number> {
+  const data = await apiFetch<{ count: number }>(
+    `/api/users/${userId}/messages/unread-count`
+  );
+  return data.count;
+}
+
+export async function markMessageRead(messageId: string): Promise<void> {
+  await apiFetch<{ status: string }>(`/api/messages/${messageId}/read`, {
+    method: "PUT",
+  });
+}
+
+export async function deleteMessage(messageId: string): Promise<void> {
+  await apiFetch<{ status: string }>(`/api/messages/${messageId}`, {
+    method: "DELETE",
+  });
 }

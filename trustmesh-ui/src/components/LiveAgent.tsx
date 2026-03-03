@@ -47,12 +47,63 @@ interface Props {
   onClose: () => void;
 }
 
+// ── Tool icon + label mapping ─────────────────────────────────────────────
+const TOOL_META: Record<string, { icon: string; label: string }> = {
+  search_vault: { icon: "🔍", label: "Searching vault" },
+  save_capsule: { icon: "💾", label: "Saving to vault" },
+  query_peer: { icon: "🤝", label: "Querying peer" },
+  check_calendar: { icon: "📅", label: "Checking calendar" },
+  discover_agents: { icon: "🌐", label: "Discovering agents" },
+  list_connections: { icon: "👥", label: "Listing connections" },
+  web_search: { icon: "🌍", label: "Searching web" },
+  create_timeline_entry: { icon: "⏰", label: "Creating reminder" },
+  list_timeline_entries: { icon: "📋", label: "Checking reminders" },
+  trigger_emergency: { icon: "🚨", label: "Emergency escalation" },
+};
+
+function toolLabel(name: string): string {
+  return TOOL_META[name]?.label ?? name;
+}
+function toolIcon(name: string): string {
+  return TOOL_META[name]?.icon ?? "🔧";
+}
+
+// ── Waveform: 5 animated bars ─────────────────────────────────────────────
+function Waveform({ active }: { active: boolean }) {
+  const bars = [0.4, 0.8, 1.0, 0.7, 0.5]; // relative heights
+  return (
+    <div className="flex items-end gap-0.5 h-5">
+      {bars.map((h, i) => (
+        <div
+          key={i}
+          className="w-1 rounded-full bg-blue-400"
+          style={{
+            height: active ? `${h * 100}%` : "20%",
+            transition: "height 0.1s ease",
+            animation: active ? `waveBar${i} 0.8s ease-in-out infinite alternate` : "none",
+            animationDelay: `${i * 0.12}s`,
+            opacity: active ? 1 : 0.3,
+          }}
+        />
+      ))}
+      <style>{`
+        @keyframes waveBar0 { from { height: 20% } to { height: 40% } }
+        @keyframes waveBar1 { from { height: 35% } to { height: 80% } }
+        @keyframes waveBar2 { from { height: 50% } to { height: 100% } }
+        @keyframes waveBar3 { from { height: 30% } to { height: 70% } }
+        @keyframes waveBar4 { from { height: 20% } to { height: 50% } }
+      `}</style>
+    </div>
+  );
+}
+
 export function LiveAgent({ userId, onClose }: Props) {
   const [status, setStatus] = useState<LiveStatus>("idle");
   const [transcript, setTranscript] = useState<{ role: "user" | "agent"; text: string }[]>([]);
   const [tools, setTools] = useState<ToolActivity[]>([]);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [podUrl, setPodUrl] = useState<string>("");
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -62,6 +113,11 @@ export function LiveAgent({ userId, onClose }: Props) {
   const playQueueRef = useRef<AudioBuffer[]>([]);
   const playingRef = useRef(false);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+
+  // Capture pod URL on mount
+  useEffect(() => {
+    setPodUrl(getPodUrl());
+  }, []);
 
   // Scroll to bottom of transcript on updates
   useEffect(() => {
@@ -141,8 +197,10 @@ export function LiveAgent({ userId, onClose }: Props) {
       source.connect(worklet);
 
       // 3. WebSocket to server proxy
-      const podUrl = getPodUrl().replace(/^http/, "ws");
-      const ws = new WebSocket(`${podUrl}/api/live/stream`);
+      const currentPodUrl = getPodUrl();
+      setPodUrl(currentPodUrl);
+      const wsUrl = currentPodUrl.replace(/^http/, "ws");
+      const ws = new WebSocket(`${wsUrl}/api/live/stream`);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -252,22 +310,15 @@ export function LiveAgent({ userId, onClose }: Props) {
   // Cleanup on unmount
   useEffect(() => () => cleanup(), [cleanup]);
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
-  const toolLabel = (name: string) => {
-    const labels: Record<string, string> = {
-      search_vault: "Searching vault",
-      save_capsule: "Saving to vault",
-      query_peer: "Querying peer",
-      check_calendar: "Checking calendar",
-      discover_agents: "Discovering agents",
-      list_connections: "Listing connections",
-      web_search: "Searching web",
-      create_timeline_entry: "Creating reminder",
-      list_timeline_entries: "Checking reminders",
-    };
-    return labels[name] ?? name;
-  };
+  // Format pod URL for display: strip http(s):// + trailing slash
+  const podDisplayUrl = podUrl
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "")
+    || "localhost:9000";
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-4 bg-black/60 backdrop-blur-sm">
@@ -275,14 +326,14 @@ export function LiveAgent({ userId, onClose }: Props) {
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
           <div className="flex items-center gap-3">
-            {/* Animated orb when active */}
-            <div className="relative">
+            {/* Waveform when agent is speaking, dot otherwise */}
+            {status === "active" && agentSpeaking ? (
+              <Waveform active={true} />
+            ) : (
               <div
                 className={`w-3 h-3 rounded-full ${
                   status === "active"
-                    ? agentSpeaking
-                      ? "bg-blue-400 animate-ping"
-                      : "bg-green-400"
+                    ? "bg-green-400"
                     : status === "connecting"
                     ? "bg-yellow-400 animate-pulse"
                     : status === "error"
@@ -290,13 +341,21 @@ export function LiveAgent({ userId, onClose }: Props) {
                     : "bg-gray-600"
                 }`}
               />
+            )}
+            <div>
+              <span className="font-semibold text-white text-sm">
+                {status === "idle" && "Live Agent"}
+                {status === "connecting" && "Connecting…"}
+                {status === "active" && (agentSpeaking ? "Agent speaking…" : "Listening…")}
+                {status === "error" && "Connection error"}
+              </span>
+              {/* Pod URL — shown when active */}
+              {status === "active" && (
+                <div className="text-xs text-gray-500 font-mono mt-0.5">
+                  {podDisplayUrl}
+                </div>
+              )}
             </div>
-            <span className="font-semibold text-white text-sm">
-              {status === "idle" && "Live Agent"}
-              {status === "connecting" && "Connecting…"}
-              {status === "active" && (agentSpeaking ? "Agent speaking…" : "Listening…")}
-              {status === "error" && "Connection error"}
-            </span>
           </div>
           <button
             onClick={onClose}
@@ -307,7 +366,7 @@ export function LiveAgent({ userId, onClose }: Props) {
         </div>
 
         {/* Transcript */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3 min-h-[220px] max-h-[340px]">
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2 min-h-[220px] max-h-[340px]">
           {transcript.length === 0 && status !== "active" && (
             <div className="text-center text-gray-500 text-sm mt-8">
               <p className="text-2xl mb-2">🎙️</p>
@@ -321,43 +380,47 @@ export function LiveAgent({ userId, onClose }: Props) {
               <p>Speak now — I&apos;m listening</p>
             </div>
           )}
-          {transcript.map((t, i) => (
-            <div
-              key={i}
-              className={`flex ${t.role === "user" ? "justify-end" : "justify-start"}`}
-            >
+          {transcript.map((t, i) => {
+            // Check if previous entry was a tool activity (insert chips between)
+            return (
               <div
-                className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm leading-relaxed ${
-                  t.role === "user"
-                    ? "bg-blue-600 text-white rounded-br-sm"
-                    : "bg-gray-800 text-gray-100 rounded-bl-sm"
-                }`}
+                key={i}
+                className={`flex ${t.role === "user" ? "justify-end" : "justify-start"}`}
               >
-                {t.text}
+                <div
+                  className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm leading-relaxed ${
+                    t.role === "user"
+                      ? "bg-blue-600 text-white rounded-br-sm"
+                      : "bg-gray-800 text-gray-100 rounded-bl-sm"
+                  }`}
+                >
+                  {t.text}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           <div ref={transcriptEndRef} />
         </div>
 
-        {/* Tool activity strip */}
+        {/* Tool activity strip — inline chips */}
         {tools.length > 0 && (
-          <div className="px-5 pb-2 space-y-1">
-            {tools.slice(0, 3).map((t, i) => (
-              <div key={i} className="flex items-center gap-2 text-xs text-gray-400">
-                <span
-                  className={`inline-block w-1.5 h-1.5 rounded-full ${
-                    t.status === "calling" ? "bg-yellow-400 animate-pulse" : "bg-green-400"
-                  }`}
-                />
-                <span className={t.status === "calling" ? "text-yellow-300" : "text-gray-500"}>
+          <div className="px-5 pb-3 flex flex-wrap gap-1.5">
+            {tools.slice(0, 5).map((t, i) => (
+              <div
+                key={i}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                  t.status === "calling"
+                    ? "bg-yellow-900/60 text-yellow-300 border border-yellow-700/50"
+                    : "bg-gray-800 text-gray-400 border border-gray-700/50"
+                }`}
+              >
+                <span>{toolIcon(t.name)}</span>
+                <span className={t.status === "calling" ? "animate-pulse" : ""}>
                   {toolLabel(t.name)}
-                  {t.status === "done" && t.preview && (
-                    <span className="ml-1 text-gray-600">
-                      — {t.preview.length > 50 ? t.preview.slice(0, 50) + "…" : t.preview}
-                    </span>
-                  )}
                 </span>
+                {t.status === "done" && (
+                  <span className="text-green-500">✓</span>
+                )}
               </div>
             ))}
           </div>

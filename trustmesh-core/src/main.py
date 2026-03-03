@@ -26,7 +26,7 @@ from sqlalchemy import select, or_
 from src.crypto import decrypt, derive_vault_key, public_key_to_b64
 from src.database import async_session, init_db
 from src.models import Agent, Connection, KnowledgeCapsule, Network, NetworkMembership, User, parse_profile_data
-from src.routes import audit, briefing, capsules, connections, emergency, fhir, intake, invites, live, networks, notifications, pin, pod, queries, registry, services, tasks, timeline, users
+from src.routes import audit, briefing, capsules, connections, emergency, fhir, intake, invites, live, messages, networks, notifications, pin, pod, queries, registry, services, tasks, timeline, users
 from src.schemas import GraphEdge, GraphNetwork, GraphNode, GraphResponse
 
 # Transit-backed vault key store. Keys live in Zig memory (secureZero on removal).
@@ -97,11 +97,35 @@ class _TransitKeyStore:
 
 vault_keys: dict[str, bytes] = _TransitKeyStore()  # type: ignore[assignment]
 
+# Pod-level Key Encryption Key — used to encrypt messages for offline recipients.
+# Re-encryption with the recipient's vault key happens on their next login.
+# Loaded/generated once at startup, never leaves Python memory.
+_POD_KEK: bytes = b""
+
 # In-memory PIN auth tokens (token -> {user_id, expires_at, created_at})
 # Short-lived (5 min) tokens for governance changes after PIN verification
 pin_tokens: dict[str, dict] = {}
 
 DEMO_PASSWORD = "TrustMesh-demo-2026"
+
+
+def _init_pod_kek() -> None:
+    """Load pod KEK from disk, or generate and persist a new one."""
+    global _POD_KEK
+    import base64
+    import secrets
+
+    env_kek = os.getenv("TRUSTMESH_POD_KEK")
+    if env_kek:
+        _POD_KEK = base64.b64decode(env_kek)
+        return
+
+    kek_path = Path(os.getenv("TRUSTMESH_DB", "./trustmesh.db")).parent / "pod_kek.bin"
+    if kek_path.exists():
+        _POD_KEK = kek_path.read_bytes()
+    else:
+        _POD_KEK = secrets.token_bytes(32)
+        kek_path.write_bytes(_POD_KEK)
 
 
 async def _load_vault_keys():
@@ -170,6 +194,10 @@ async def lifespan(app: FastAPI):
     # Initialize credential store tables (idempotent)
     from src.credential_bridge import init_tables as credential_init_tables
     credential_init_tables()
+    # Initialize message store tables (idempotent) + load/generate pod KEK
+    from src.message_bridge import init_tables as message_init_tables
+    message_init_tables()
+    _init_pod_kek()
     # Auto-register discoverable agents with the public registry (fire-and-forget)
     from src.federation import sync_discoverable_agents_to_registry
     asyncio.create_task(sync_discoverable_agents_to_registry())
@@ -237,6 +265,7 @@ app.include_router(pod.router)
 app.include_router(registry.router)
 app.include_router(timeline.router)
 app.include_router(live.router)
+app.include_router(messages.router)
 
 
 @app.middleware("http")

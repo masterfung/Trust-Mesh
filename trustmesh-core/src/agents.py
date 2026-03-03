@@ -437,6 +437,27 @@ AGENT_TOOLS = [
             "properties": {},
         },
     },
+    # Emergency escalation
+    {
+        "name": "trigger_emergency",
+        "description": (
+            "Declare a medical emergency on behalf of the owner. "
+            "Issues a 30-minute UCAN access token to Riverside Hospital for the owner's "
+            "health capsules, and sends urgent notifications to the owner's family connections. "
+            "Use when the owner indicates they are in immediate danger or medical distress. "
+            "Do NOT wait for confirmation — act immediately when emergency language is detected."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Brief description of the emergency (e.g., 'fell and cannot get up', 'chest pain')",
+                },
+            },
+            "required": ["reason"],
+        },
+    },
     # Credential tools
     {
         "name": "list_credentials",
@@ -500,6 +521,38 @@ AGENT_TOOLS = [
                 },
             },
             "required": ["action"],
+        },
+    },
+    # Messaging tools
+    {
+        "name": "send_message",
+        "description": (
+            "Send an encrypted message to a connected or pool-member user. "
+            "Works cross-pod via federation. Message is delivered to their inbox immediately. "
+            "Only message users you have a connection with or share a pool with. "
+            "Always confirm the recipient's username before sending."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to_username": {
+                    "type": "string",
+                    "description": "Recipient's username (e.g. 'dr_lee', 'kyle')",
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Subject line (max 200 chars)",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Message body text",
+                },
+                "expires_in_hours": {
+                    "type": "integer",
+                    "description": "Auto-expire after N hours (optional — omit for permanent)",
+                },
+            },
+            "required": ["to_username", "subject", "body"],
         },
     },
 ]
@@ -912,11 +965,23 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
     target_username = params["target_username"]
     question = params["question"]
 
-    # Resolve username to user_id
+    # Resolve to a User: exact username match first, then display-name substring.
+    # This handles Gemini calling with "Dr. Lee" instead of the canonical "dr_lee".
     result = await ctx.db.execute(
         select(User).where(User.username == target_username)
     )
     target_user = result.scalar_one_or_none()
+    if not target_user:
+        # Case-insensitive display name fallback (e.g. "Dr. Lee" → dr_lee)
+        from sqlalchemy import func
+        result2 = await ctx.db.execute(
+            select(User).where(
+                func.lower(User.display_name).contains(target_username.lower().replace(".", ""))
+            ).limit(1)
+        )
+        target_user = result2.scalar_one_or_none()
+        if target_user:
+            log.debug("query_peer: resolved display-name %r → username %r", target_username, target_user.username)
 
     # ── Path 1: Local real user (unchanged fast path) ──
     if target_user and not target_user.is_remote:
@@ -1757,6 +1822,389 @@ async def handle_manage_credential(ctx: ToolContext, params: dict) -> str:
         return json.dumps({"success": False, "error": f"Unknown action: {action}"})
 
 
+async def handle_trigger_emergency(ctx: ToolContext, reason: str) -> str:
+    """Issue a real UCAN token to Riverside Hospital + notify family connections.
+
+    Steps:
+    1. Look up the hospital user (riverside_hospital)
+    2. Generate a 30-min UCAN token (attending_physician role) using the owner's ed25519 key
+    3. Find family connections (trust_level >= network)
+    4. Create notifications for each family member
+    5. Return structured result with token + notified list + expiry
+    """
+    from sqlalchemy import select, or_
+    from src.models import Agent, Connection, User
+    from src import transit_bridge
+    from src.ucan import create_ucan_token
+    from src.trust import resolve_trust_level
+    import datetime
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expires_at = now + datetime.timedelta(minutes=30)
+
+    # 1. Look up hospital user
+    hosp_result = await ctx.db.execute(
+        select(User).where(User.username == "riverside_hospital")
+    )
+    hospital = hosp_result.scalar_one_or_none()
+    if not hospital:
+        # Try by display name fragment
+        hosp_result = await ctx.db.execute(
+            select(User).where(User.display_name.ilike("%Hospital%"))
+        )
+        hospital = hosp_result.scalar_one_or_none()
+
+    # 2. Get owner's agent DID + signing key
+    agent_result = await ctx.db.execute(
+        select(Agent).where(Agent.owner_id == ctx.owner_id)
+    )
+    owner_agent = agent_result.scalar_one_or_none()
+    if not owner_agent:
+        return json.dumps({"success": False, "error": "Owner agent not found"})
+
+    owner_did = owner_agent.did
+    signing_key: bytes | None = None
+    if owner_agent.encrypted_private_key:
+        try:
+            signing_key = transit_bridge.decrypt(ctx.owner_id, owner_agent.encrypted_private_key)
+        except Exception as e:
+            log.warning("Could not decrypt owner signing key: %s", e)
+
+    ucan_token: str | None = None
+    hospital_did = ""
+    if hospital:
+        # Get hospital's agent DID as audience
+        hosp_agent_result = await ctx.db.execute(
+            select(Agent).where(Agent.owner_id == hospital.id)
+        )
+        hosp_agent = hosp_agent_result.scalar_one_or_none()
+        hospital_did = hosp_agent.did if hosp_agent else "did:key:hospital"
+
+        if signing_key:
+            try:
+                ucan_token = create_ucan_token(
+                    issuer_did=owner_did,
+                    issuer_private_key=signing_key,
+                    audience_did=hospital_did,
+                    role="attending_physician",
+                    duration_seconds=1800,  # 30 minutes
+                    facts={
+                        "reason": reason,
+                        "issued_by": ctx.owner_name,
+                        "emergency": True,
+                    },
+                )
+            except Exception as e:
+                log.warning("UCAN token generation failed: %s", e)
+
+    # 3. Find family connections to notify
+    conn_result = await ctx.db.execute(
+        select(Connection).where(
+            or_(
+                Connection.from_user_id == ctx.owner_id,
+                Connection.to_user_id == ctx.owner_id,
+            ),
+            Connection.status == "accepted",
+        )
+    )
+    notified = []
+    for conn in conn_result.scalars().all():
+        other_id = conn.to_user_id if conn.from_user_id == ctx.owner_id else conn.from_user_id
+        trust_level, _ = await resolve_trust_level(ctx.db, ctx.owner_id, other_id)
+        if trust_level not in ("network", "private"):
+            continue
+        other = await ctx.db.get(User, other_id)
+        if not other or other.is_remote:
+            continue
+
+        # 4. Create notification
+        notification = Notification(
+            user_id=other_id,
+            notification_type="emergency_alert",
+            title=f"EMERGENCY: {ctx.owner_name} needs help",
+            body=f"{ctx.owner_name} has declared a medical emergency: {reason}. "
+                 f"Emergency services have been notified. Please check in immediately.",
+            related_id=ctx.owner_id,
+        )
+        ctx.db.add(notification)
+        notified.append(other.display_name)
+
+    # Also notify hospital if found
+    if hospital:
+        hosp_notification = Notification(
+            user_id=hospital.id,
+            notification_type="emergency_access_granted",
+            title=f"Emergency access granted by {ctx.owner_name}",
+            body=f"A 30-minute UCAN token has been issued for attending_physician access to "
+                 f"{ctx.owner_name}'s health data. Reason: {reason}",
+            related_id=ctx.owner_id,
+        )
+        ctx.db.add(hosp_notification)
+
+    await ctx.db.flush()
+
+    ctx.actions.append({
+        "type": "emergency_triggered",
+        "reason": reason,
+        "ucan_issued": ucan_token is not None,
+        "notified": notified,
+        "hospital": hospital.display_name if hospital else None,
+    })
+
+    return json.dumps({
+        "success": True,
+        "emergency_declared": True,
+        "reason": reason,
+        # Keep the token out of the LLM-visible result — it's long base64 that sounds
+        # terrible in voice and has no value for the agent to repeat.
+        "ucan_issued": ucan_token is not None,
+        "ucan_role": "attending_physician",
+        "expires_in": "30 minutes",
+        "hospital_notified": hospital.display_name if hospital else "Riverside Hospital (not found in mesh)",
+        "family_notified": notified,
+        "message": (
+            f"Emergency declared. UCAN access token issued to {hospital.display_name if hospital else 'hospital'} "
+            f"(valid 30 min, attending_physician role). "
+            f"Notified {len(notified)} family member(s): {', '.join(notified) or 'none'}."
+        ),
+    })
+
+
+async def handle_send_message(ctx: ToolContext, params: dict) -> str:
+    """Send an encrypted message to a connected/pool-member user (local or cross-pod).
+
+    Steps:
+    1. Resolve recipient by username (local or ghost)
+    2. Trust check — must be connected/network/private
+    3a. Local recipient — encrypt via transit/pod KEK, create_message, Notification
+    3b. Remote (ghost) — sign payload, POST to remote pod's deliver endpoint
+    4. Audit capsule in sender's vault (private memory)
+    5. Return structured result
+    """
+    import hashlib
+    import uuid
+    from datetime import datetime, timezone, timedelta
+
+    from sqlalchemy import select, func
+    from src.models import User, Notification
+    from src.trust import resolve_trust_level
+    from src import transit_bridge, message_bridge
+
+    to_username = params["to_username"]
+    subject = str(params["subject"])[:200]
+    body = params["body"]
+    expires_in_hours: int | None = params.get("expires_in_hours")
+
+    # ── 1. Resolve recipient ──────────────────────────────────────────────────
+    result = await ctx.db.execute(select(User).where(User.username == to_username))
+    recipient = result.scalar_one_or_none()
+    if not recipient:
+        # Display-name fallback (handles "Dr. Lee" → dr_lee)
+        result2 = await ctx.db.execute(
+            select(User).where(
+                func.lower(User.display_name).contains(to_username.lower().replace(".", ""))
+            ).limit(1)
+        )
+        recipient = result2.scalar_one_or_none()
+
+    if not recipient:
+        return json.dumps({"success": False, "error": f"User '{to_username}' not found in your network."})
+
+    # ── 2. Trust check ────────────────────────────────────────────────────────
+    trust_level, _ = await resolve_trust_level(ctx.db, ctx.owner_id, recipient.id)
+    if trust_level not in ("connected", "network", "private"):
+        return json.dumps({
+            "success": False,
+            "error": f"Cannot message {to_username}: trust level is '{trust_level}'. "
+                     "You can only message users you're connected to or share a pool with.",
+        })
+
+    # Owner info for sender fields
+    owner_result = await ctx.db.execute(select(User).where(User.id == ctx.owner_id))
+    owner = owner_result.scalar_one_or_none()
+    owner_username = owner.username if owner else ctx.owner_id
+    owner_display = owner.display_name if owner else ctx.owner_name
+
+    now = datetime.now(timezone.utc)
+    msg_id = str(uuid.uuid4())
+    expires_at: str | None = None
+    if expires_in_hours:
+        expires_at = (now + timedelta(hours=expires_in_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    body_bytes = body.encode("utf-8")
+    body_hash = hashlib.sha256(body_bytes).hexdigest()
+
+    cross_pod = bool(recipient.is_remote)
+
+    # ── 3a. Local recipient ───────────────────────────────────────────────────
+    if not cross_pod:
+        if transit_bridge.has_key(recipient.id):
+            aad = f"message:{msg_id}"
+            body_encrypted = transit_bridge.encrypt(recipient.id, body_bytes, aad=aad)
+            rekey_needed = False
+        else:
+            # Encrypt with pod KEK — rekey on recipient's next login
+            from src.main import _POD_KEK
+            from src.crypto import encrypt as _crypto_encrypt
+            body_encrypted = _crypto_encrypt(body_bytes, _POD_KEK)
+            rekey_needed = True
+
+        message_bridge.create_message(
+            message_id=msg_id,
+            sender_id=ctx.owner_id,
+            sender_username=owner_username,
+            sender_display_name=owner_display,
+            sender_pod_url=None,
+            recipient_id=recipient.id,
+            subject=subject,
+            body_encrypted=body_encrypted,
+            body_hash=body_hash,
+            scope="direct",
+            trust_level=trust_level,
+            expires_at=expires_at,
+            rekey_needed=rekey_needed,
+        )
+
+        ctx.db.add(Notification(
+            user_id=recipient.id,
+            notification_type="message_received",
+            title=f"Message from {owner_display}: {subject}",
+            body=subject,
+            related_id=msg_id,
+        ))
+        await ctx.db.flush()
+
+    # ── 3b. Remote (ghost) — federated delivery ───────────────────────────────
+    else:
+        import httpx
+        from src.models import Agent
+        from src import federation_auth
+
+        agent_result = await ctx.db.execute(select(Agent).where(Agent.owner_id == ctx.owner_id))
+        our_agent = agent_result.scalar_one_or_none()
+        our_did = our_agent.did if our_agent else "unknown"
+        signing_key: bytes | None = None
+        if our_agent and our_agent.encrypted_private_key:
+            try:
+                signing_key = transit_bridge.decrypt(ctx.owner_id, our_agent.encrypted_private_key)
+            except Exception:
+                signing_key = None
+
+        import json as _json
+        from src import federation_auth
+
+        # Strip "remote:" prefix and "@host" suffix to get bare username
+        real_to = recipient.username
+        if real_to.startswith("remote:"):
+            real_to = real_to[7:]
+        if "@" in real_to:
+            real_to = real_to.split("@")[0]
+
+        from src.main import app  # noqa: avoid circular — only for pod_url
+        pod_url = os.getenv("TRUSTMESH_POD_URL", "")
+
+        payload = {
+            "from_did": our_did,
+            "from_pod": pod_url,
+            "to_username": real_to,
+            "subject": subject,
+            "body": body,
+            "scope": "direct",
+            "expires_in_hours": expires_in_hours,
+            "sender_username": owner_username,
+            "sender_display_name": owner_display,
+            "federation_signature": "",
+        }
+
+        raw_body = _json.dumps(payload).encode()
+        deliver_path = "/api/pod/messages/deliver"
+        sig_headers: dict[str, str] = {}
+        if signing_key:
+            try:
+                sig_headers = federation_auth.sign_federation_request(
+                    raw_body, signing_key, method="POST", path=deliver_path
+                )
+            except Exception as e:
+                log.warning("send_message: federation signing failed: %s", e)
+
+        deliver_url = recipient.remote_pod_url.rstrip("/") + deliver_path
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(deliver_url, content=raw_body, headers={
+                    "Content-Type": "application/json",
+                    **sig_headers,
+                })
+                if resp.status_code != 200:
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Remote pod rejected delivery: HTTP {resp.status_code}",
+                    })
+        except Exception as e:
+            return json.dumps({"success": False, "error": f"Cross-pod delivery failed: {e}"})
+
+    # ── 4. Audit capsule (always) ─────────────────────────────────────────────
+    try:
+        from src.crypto import content_hash
+        from src.embeddings import upsert_capsule_embedding
+        from src.models import KnowledgeCapsule
+
+        audit_title = f"Sent: {subject}"
+        audit_content = f"To: {owner_display if cross_pod else recipient.display_name} ({to_username})\nSubject: {subject}\n\n{body}"
+        capsule = KnowledgeCapsule(
+            owner_id=ctx.owner_id,
+            capsule_type="memory",
+            title=audit_title,
+            content_encrypted=transit_bridge.encrypt_text(ctx.owner_id, audit_content),
+            content_hash=content_hash(audit_content),
+            visibility="private",
+            emergency_accessible=False,
+            can_reshare=False,
+            category="work",
+            freshness="current",
+        )
+        ctx.db.add(capsule)
+        await ctx.db.flush()
+        upsert_capsule_embedding(
+            capsule.id,
+            f"{audit_title}: {audit_content}",
+            {"capsule_id": capsule.id, "owner_id": ctx.owner_id, "visibility": "private"},
+            category="work",
+        )
+    except Exception as e:
+        log.warning("send_message: audit capsule failed: %s", e)
+
+    ctx.actions.append({
+        "type": "message_sent",
+        "message_id": msg_id,
+        "recipient": to_username,
+        "subject": subject,
+        "cross_pod": cross_pod,
+        "trust_level": trust_level,
+        "expires_at": expires_at,
+    })
+
+    return json.dumps({
+        "success": True,
+        "message_id": msg_id,
+        "recipient": to_username,
+        "recipient_display_name": recipient.display_name,
+        "subject": subject,
+        "cross_pod": cross_pod,
+        "trust_level": trust_level,
+        "expires_at": expires_at,
+        "message": f"Message sent to {recipient.display_name}"
+                   + (" (cross-pod)" if cross_pod else "")
+                   + (f", expires in {expires_in_hours}h" if expires_in_hours else ""),
+    })
+
+
+async def sweep_expired_messages() -> str:
+    """Internal tool: delete expired messages. Called by timeline sweep entry."""
+    from src import message_bridge
+    count = message_bridge.sweep_expired()
+    return json.dumps({"swept": count, "message": f"Swept {count} expired message(s)"})
+
+
 async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> str:
     """Route a tool call to its handler. Returns JSON string.
 
@@ -1798,11 +2246,19 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
         result = await handle_complete_timeline_entry(ctx, tool_input["entry_id"])
     elif tool_name == "check_timeline_state":
         result = await handle_check_timeline_state(ctx)
+    # Emergency escalation
+    elif tool_name == "trigger_emergency":
+        result = await handle_trigger_emergency(ctx, tool_input.get("reason", "unspecified emergency"))
     # Credential tools
     elif tool_name == "list_credentials":
         result = await handle_list_credentials(ctx)
     elif tool_name == "manage_credential":
         result = await handle_manage_credential(ctx, tool_input)
+    # Messaging tools
+    elif tool_name == "send_message":
+        result = await handle_send_message(ctx, tool_input)
+    elif tool_name == "sweep_expired_messages":
+        result = await sweep_expired_messages()
     else:
         result = json.dumps({"error": f"Unknown tool: {tool_name}"})
 

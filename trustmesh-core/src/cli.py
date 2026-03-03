@@ -59,10 +59,10 @@ def _ensure_config_dir():
     CONFIG_DIR.mkdir(mode=0o700, exist_ok=True)
 
 
-def _save_session(pod_url: str, token: str, user_id: str, username: str):
+def _save_session(pod_url: str, token: str, user_id: str, username: str, csrf_token: str = ""):
     """Store session token securely."""
     _ensure_config_dir()
-    data = {"pod_url": pod_url, "token": token, "user_id": user_id, "username": username}
+    data = {"pod_url": pod_url, "token": token, "user_id": user_id, "username": username, "csrf_token": csrf_token}
     SESSION_FILE.write_text(json.dumps(data))
     SESSION_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
 
@@ -87,15 +87,21 @@ def _clear_session():
 
 
 def _client(session: dict | None = None) -> httpx.Client:
-    """Create an httpx client with session cookie attached."""
+    """Create an httpx client with session cookie + CSRF header attached."""
     if session is None:
         session = _load_session()
     if not session:
         console.print("[red]Not logged in. Run: trustmesh login[/red]")
         raise typer.Exit(1)
+    headers = {}
+    cookies: dict = {"trustmesh_session": session["token"]}
+    if csrf := session.get("csrf_token"):
+        headers["X-CSRF-Token"] = csrf
+        cookies["trustmesh_csrf"] = csrf  # double-submit: cookie must match header
     return httpx.Client(
         base_url=session["pod_url"],
-        cookies={"trustmesh_session": session["token"]},
+        cookies=cookies,
+        headers=headers,
         timeout=120.0,
     )
 
@@ -228,14 +234,15 @@ def login(
             console.print(f"[red]Login failed: {resp.text}[/red]")
             raise typer.Exit(1)
 
-        # Success — extract session token
+        # Success — extract session token + CSRF token
         token = resp.cookies.get("trustmesh_session")
         if not token:
             console.print("[red]No session token received[/red]")
             raise typer.Exit(1)
 
+        csrf_token = resp.cookies.get("trustmesh_csrf", "")
         user_data = resp.json()
-        _save_session(pod_url, token, user_data["id"], user_data["username"])
+        _save_session(pod_url, token, user_data["id"], user_data["username"], csrf_token)
         console.print(f"\n[green]Logged in as {user_data['display_name']} ({user_data['username']})[/green]")
         console.print(f"  Pod: {pod_url}")
         console.print()
@@ -442,7 +449,8 @@ def init(
     # Save session from response cookie or token
     token = resp.cookies.get("trustmesh_session") or result.get("session_token", "")
     if token:
-        _save_session(pod_url, token, user_id, username)
+        csrf_token = resp.cookies.get("trustmesh_csrf", "")
+        _save_session(pod_url, token, user_id, username, csrf_token)
 
     # Write config.toml
     _ensure_config_dir()

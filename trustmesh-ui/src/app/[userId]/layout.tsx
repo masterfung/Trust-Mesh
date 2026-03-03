@@ -296,6 +296,9 @@ function NotificationBell({ userId }: { userId: string }) {
       case "connection_accepted":
         router.push(`${base}/connections`);
         break;
+      case "message_received":
+        router.push(`${base}/inbox`);
+        break;
       case "task_complete":
         router.push(base); // dashboard
         break;

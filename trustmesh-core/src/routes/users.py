@@ -183,6 +183,14 @@ async def login(data: LoginRequest, request: Request, db: AsyncSession = Depends
     transit_bridge.store_key(user.id, vault_master_key)
     transit_bridge._zero_bytes(vault_master_key)
 
+    # Re-encrypt any messages that were stored with pod KEK while user was offline
+    try:
+        from src import message_bridge as _mb
+        _mb.rekey_pending(user.id)
+    except Exception as _e:
+        import logging
+        logging.getLogger(__name__).warning("rekey_pending failed for %s: %s", user.id, _e)
+
     # Session rotation: invalidate all existing sessions before creating new one
     invalidate_user_sessions(user.id)
 

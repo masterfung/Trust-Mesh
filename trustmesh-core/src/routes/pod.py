@@ -9,7 +9,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from src.auth import get_current_user_id
-from src.database import async_session
+from src.database import async_session, get_db
+from sqlalchemy.ext.asyncio import AsyncSession
 from src.federation import (
     POD_NAME,
     POD_URL,
@@ -873,3 +874,136 @@ async def pool_sync(req: PoolSyncRequest, request: Request):
             "local_user": local_user.username,
             "ghost_members_added": ghost_count,
         }
+
+
+# ── Federation Message Delivery ──
+
+class DeliverMessageRequest(BaseModel):
+    from_did: str = Field(..., min_length=1, max_length=MAX_DID_CHARS)
+    from_pod: str = Field(..., min_length=1, max_length=MAX_POD_URL_CHARS)
+    to_username: str = Field(..., min_length=1, max_length=50)
+    subject: str = Field(..., min_length=1, max_length=200)
+    body: str = Field(..., min_length=1, max_length=10_000)
+    scope: str = "direct"
+    expires_in_hours: int | None = None
+    sender_username: str = Field(..., min_length=1, max_length=50)
+    sender_display_name: str = Field(..., min_length=1, max_length=100)
+    federation_signature: str = ""
+
+
+@router.post("/messages/deliver")
+async def deliver_message(
+    req: DeliverMessageRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Receive a federated message delivery from a remote pod.
+
+    Security:
+    - Rate limited by from_did
+    - DID spoofing check via ghost.remote_pod_url
+    - Federation signature required (ed25519)
+    - Trust: recipient must be connected to or share a pool with the sender
+    """
+    from datetime import timedelta
+
+    client_ip = request.client.host if request.client else "unknown"
+
+    # 1. Rate limit by from_did
+    rate_ok, rate_reason = check_query_rate(req.from_did, f"deliver:{req.to_username}", "public")
+    if not rate_ok:
+        raise HTTPException(429, rate_reason)
+    record_query(req.from_did, f"deliver:{req.to_username}")
+
+    # 2. Resolve recipient — local, non-remote user
+    result = await db.execute(
+        select(User).where(User.username == req.to_username, User.is_remote == False)  # noqa: E712
+    )
+    recipient = result.scalar_one_or_none()
+    if not recipient:
+        raise HTTPException(404, f"User '{req.to_username}' not found")
+
+    # 3. Ghost lookup + DID spoofing check
+    ghost = await lookup_ghost_by_did(db, req.from_did)
+    if ghost:
+        if ghost.remote_pod_url and req.from_pod.rstrip("/") != ghost.remote_pod_url.rstrip("/"):
+            logger.warning(
+                "Federated message delivery DID spoofing: %s claims pod %s, ghost registered from %s",
+                req.from_did, req.from_pod, ghost.remote_pod_url,
+            )
+            raise HTTPException(403, "DID spoofing detected: pod URL mismatch")
+
+    # 4. Verify federation signature (reject unsigned)
+    raw_body = await request.body()
+    auth = verify_federation_request(from_did=req.from_did, body=raw_body, headers=request.headers)
+    if auth.status not in ("valid", "missing"):
+        raise HTTPException(403, f"Invalid federation signature: {auth.reason or 'invalid'}")
+    if auth.status == "missing":
+        # Require signature for message delivery (unlike query which has backward-compat mode)
+        raise HTTPException(403, "Federation signature required for message delivery")
+
+    # 5. Trust check: sender (ghost) must be connected or pool-member
+    if ghost:
+        from src.trust import resolve_trust_level
+        trust, _ = await resolve_trust_level(db, ghost.id, recipient.id)
+        if trust not in ("connected", "network", "private"):
+            raise HTTPException(403, "Insufficient trust level for message delivery")
+    else:
+        raise HTTPException(403, "Sender ghost not found — complete pool setup before messaging")
+
+    # 6. Encrypt body for recipient
+    import uuid
+    import hashlib
+    from src import transit_bridge, message_bridge
+
+    msg_id = str(uuid.uuid4()).replace("-", "")[:32]
+    aad = f"message:{msg_id}"
+    body_bytes = req.body.encode("utf-8")
+    body_hash = hashlib.sha256(body_bytes).hexdigest()
+
+    if transit_bridge.has_key(recipient.id):
+        body_enc = transit_bridge.encrypt(recipient.id, body_bytes, aad=aad)
+        rekey_needed = False
+    else:
+        # Recipient offline — encrypt with pod KEK, rekey on next login
+        from src.main import _POD_KEK
+        from src.crypto import encrypt as crypto_encrypt
+        body_enc = crypto_encrypt(body_bytes, _POD_KEK)
+        rekey_needed = True
+
+    # 7. Compute expires_at
+    expires_at = None
+    if req.expires_in_hours:
+        from datetime import timedelta
+        expires_dt = datetime.now(timezone.utc) + timedelta(hours=req.expires_in_hours)
+        expires_at = expires_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    message_bridge.create_message(
+        message_id=msg_id,
+        sender_id=ghost.id,
+        sender_username=req.sender_username,
+        sender_display_name=req.sender_display_name,
+        sender_pod_url=req.from_pod,
+        recipient_id=recipient.id,
+        subject=req.subject,
+        body_encrypted=body_enc,
+        body_hash=body_hash,
+        scope=req.scope,
+        trust_level=trust,
+        expires_at=expires_at,
+        rekey_needed=rekey_needed,
+    )
+
+    # 8. Notification
+    from src.models import Notification
+    notif = Notification(
+        user_id=recipient.id,
+        notification_type="message_received",
+        title=f"Message from {req.sender_display_name}: {req.subject[:80]}",
+        body=req.subject,
+        related_id=msg_id,
+    )
+    db.add(notif)
+    await db.commit()
+
+    return {"delivered": True, "message_id": msg_id}

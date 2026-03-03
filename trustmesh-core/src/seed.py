@@ -2,7 +2,8 @@
 
 import asyncio
 import json
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 
 from src.crypto import derive_vault_key, encrypt, generate_key, generate_ed25519_keypair, hash_pin, public_key_to_did
 from src import transit_bridge
@@ -21,6 +22,49 @@ from src.models import (
 
 # Shared password for demo (simplified for hackathon — 16+ chars required)
 DEMO_PASSWORD = "TrustMesh-demo-2026"
+
+# ── Pod-scoped seeding ────────────────────────────────────────────────────────
+# When TRUSTMESH_POD_NAME is set, only seed users that belong to that pod.
+# Cross-pod queries use the federation API (query_peer Path 3 — peer broadcast).
+# This makes federation real: dr_lee only exists on the hospital pod, so
+# "What does Dr. Lee know about Rose?" genuinely crosses the pod boundary.
+_POD_USERS: dict[str, frozenset[str]] = {
+    "family":   frozenset(["peter", "molly", "grandmarose", "jane", "bill",
+                            "linda", "amy", "marcus", "dorothy"]),
+    "hospital": frozenset(["dr_lee", "nurse_davis", "emt_johnson",
+                            "riverside_hospital", "riverside_ambulance"]),
+    "work":     frozenset(["kyle", "sparkleclean", "acetutor", "handypro",
+                            "riverside_gov"]),
+}
+# Seeded everywhere as thin stubs (user + agent DID, no capsules) so that
+# trigger_emergency can look up riverside_hospital's DID for UCAN issuance
+# even on the family or work pod.
+_STUB_EVERYWHERE: frozenset[str] = frozenset(["riverside_hospital"])
+
+
+def _rel_date(days: int) -> str:
+    """Return a human-readable date string for 'now + days', platform-independently."""
+    d = datetime.now() + timedelta(days=days)
+    return f"{d.strftime('%B')} {d.day}"
+
+
+def _print_summary(user_map, network_map, capsule_count, delegates, vault_keys):
+    seeded_users = len(user_map)
+    seeded_people = sum(1 for u in USERS if u["username"] in user_map)
+    seeded_services = sum(1 for sp in SERVICE_PROVIDERS if sp["username"] in user_map)
+    conn_count = sum(
+        1 for (from_name, to_name, *_rest) in CONNECTIONS
+        if from_name in user_map and to_name in user_map
+    )
+    print(f"\n\u2550\u2550\u2550 Summary \u2550\u2550\u2550")
+    print(f"  {seeded_users} users ({seeded_people} people + {seeded_services} services)")
+    print(f"  {conn_count} connections")
+    print(f"  {len(network_map)} networks (all key-wrapped)")
+    print(f"  {capsule_count} encrypted capsules")
+    print(f"  {len(delegates)} sharing delegates")
+    print(f"  {seeded_users} ed25519 keypairs + DIDs")
+    print(f"  {len(vault_keys)} AES-256 vault keys loaded\n")
+
 
 USERS = [
     {
@@ -852,6 +896,43 @@ CAPSULES = [
             "Client meetings: Wed 9am-4pm at their office (123 Congress Ave). "
             "Return flight: AA1892 departs 5:30pm Thursday, home by 9pm. "
             "Peter handles grandma's care while I'm gone. Kids' carpools are set."
+        ),
+        "visibility": "internal",
+        "category": "family",
+        "networks": ["The Johnsons"],
+    },
+    # ── CONFLICT SCENARIO (for proactive Timeline interrupt demo) ──
+    # Two slightly conflicting capsules that the agent will detect.
+    # Dates are computed at seed time (relative to now) so they're always "upcoming".
+    # NOTE: visit_sunday and flight_monday are intentionally conflicting:
+    #   - Sandra's visit says "arriving Sunday"
+    #   - Flight confirmation says "arrival Monday, changed from Sunday"
+    # The Timeline engine fires every 5 min, agent finds conflict, injects into Live session.
+    {
+        "owner": "molly",
+        "type": "schedule",
+        "title": "Sandra's Visit — Family Reunion",
+        "content": (
+            f"Molly's college roommate Sandra is visiting. "
+            f"Arriving Sunday {_rel_date(5)}. "
+            f"Staying through Wednesday. Guest room is prepared. "
+            f"Peter will pick her up from SFO at 2pm Sunday. "
+            f"Dinner reservation at Chez Panisse Sunday evening at 7pm for 4."
+        ),
+        "visibility": "internal",
+        "category": "family",
+        "networks": ["The Johnsons"],
+    },
+    {
+        "owner": "molly",
+        "type": "schedule",
+        "title": "Sandra's Flight Confirmation",
+        "content": (
+            f"Flight confirmation for Sandra's visit: "
+            f"AA2847 arrives Monday {_rel_date(6)} at 3:15pm SFO. "
+            f"Flight was changed from Sunday — new arrival is MONDAY not Sunday. "
+            f"Need to update pickup arrangements with Peter. "
+            "The Sunday dinner reservation at Chez Panisse may need to be moved."
         ),
         "visibility": "internal",
         "category": "family",
@@ -1730,7 +1811,26 @@ async def seed():
     """Seed the database with demo data."""
     print("\n\u2550\u2550\u2550 TrustMesh Seed \u2550\u2550\u2550\n")
 
-    await drop_db()
+    # 1. Close Zig FTS handle to release any active Zig-side DB connection.
+    from src.embeddings import close_fts
+    from src.database import engine as _engine
+    close_fts()
+
+    # 2. Dispose SQLAlchemy engine pool (releases Python-side connections).
+    await _engine.dispose()
+
+    # 3. Delete the DB file entirely — cleanest possible slate.
+    #    drop_db()/drop_all() leave FTS5 shadow tables which can become malformed
+    #    after repeated test cycles, causing podos_fts_reset to fail with -2.
+    #    In Docker (production) the file doesn't exist, so this is always safe.
+    db_path = os.getenv("TRUSTMESH_DB", "./trustmesh.db")
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.remove(db_path + suffix)
+        except FileNotFoundError:
+            pass
+
+    # 4. Re-create schema and FTS5 index on a fresh file.
     await init_db()
     init_fts()
     reset_collections()
@@ -1741,14 +1841,28 @@ async def seed():
     service_capsule_count = sum(len(sp.get("capsules", [])) for sp in SERVICE_PROVIDERS)
     total_capsules = len(CAPSULES) + service_capsule_count
 
+    # ── Pod scoping ──────────────────────────────────────────────────────────
+    _pod_name = os.getenv("TRUSTMESH_POD_NAME", "")
+    _allowed: frozenset[str] | None = _POD_USERS.get(_pod_name)
+    _stubs: frozenset[str] = frozenset()
+    if _allowed is not None and not _STUB_EVERYWHERE.issubset(_allowed):
+        # Inject emergency stubs into the allowed set but mark them as stub-only
+        _allowed = _allowed | _STUB_EVERYWHERE
+        _stubs = _STUB_EVERYWHERE - _POD_USERS.get(_pod_name, frozenset())
+    if _allowed:
+        print(f"  [pod={_pod_name!r}] seeding {len(_allowed)} users "
+              f"({len(_stubs)} stubs without capsules)")
+
     async with async_session() as db:
         user_map: dict[str, User] = {}
         network_map: dict[str, Network] = {}
         network_keys: dict[str, bytes] = {}  # network_id -> plaintext key
 
         # ── Step 1: Create Users ──
-        print(f"Step 1/7: Creating {len(USERS)} users + vault keys...")
+        print(f"Step 1/7: Creating users + vault keys...")
         for u in USERS:
+            if _allowed and u["username"] not in _allowed:
+                continue
             vault_master_key = generate_key()
             derived_key, salt = derive_vault_key(DEMO_PASSWORD)
             encrypted_vault_key = encrypt(vault_master_key, derived_key)
@@ -1786,8 +1900,10 @@ async def seed():
             print(f"  \u2713 {u['display_name']} \u2014 vault: {key_preview}..., DID: {agent_did[:30]}...")
 
         # ── Step 2: Create Service Providers ──
-        print(f"\nStep 2/7: Creating {len(SERVICE_PROVIDERS)} service providers...")
+        print(f"\nStep 2/7: Creating service providers...")
         for sp in SERVICE_PROVIDERS:
+            if _allowed and sp["username"] not in _allowed:
+                continue
             vault_master_key = generate_key()
             derived_key, salt = derive_vault_key(DEMO_PASSWORD)
             encrypted_vault_key = encrypt(vault_master_key, derived_key)
@@ -1825,8 +1941,11 @@ async def seed():
             print(f"  \u2713 {sp['display_name']} \u2014 DID: {agent_did[:30]}...")
 
         # ── Step 3: Create Connections ──
-        print(f"\nStep 3/7: Establishing {len(CONNECTIONS)} connections...")
+        print(f"\nStep 3/7: Establishing connections...")
         for from_name, to_name, conn_ctx, rel_type, from_lbl, to_lbl in CONNECTIONS:
+            # Skip connections where either party isn't seeded on this pod
+            if from_name not in user_map or to_name not in user_map:
+                continue
             conn = Connection(
                 from_user_id=user_map[from_name].id,
                 to_user_id=user_map[to_name].id,
@@ -1842,8 +1961,11 @@ async def seed():
             print(f"  \u2713 {from_name} \u2194 {to_name} ({conn_ctx}){label_str}")
 
         # ── Step 4: Create Networks with proper key wrapping ──
-        print(f"\nStep 4/7: Creating {len(NETWORKS)} networks with key wrapping...")
+        print(f"\nStep 4/7: Creating networks with key wrapping...")
         for n in NETWORKS:
+            # Skip networks whose owner isn't on this pod
+            if n["owner"] not in user_map:
+                continue
             network_key = generate_key()
             owner_id = user_map[n["owner"]].id
             encrypted_key = transit_bridge.encrypt(owner_id, network_key)
@@ -1867,6 +1989,8 @@ async def seed():
             network_keys[network.id] = network_key
 
             for member_name in n["members"]:
+                if member_name not in user_map:
+                    continue  # Cross-pod member — not seeded on this pod
                 member_id = user_map[member_name].id
                 membership = NetworkMembership(
                     network_id=network.id,
@@ -1884,6 +2008,8 @@ async def seed():
 
         capsule_count = 0
         for c in CAPSULES:
+            if c["owner"] not in user_map:
+                continue  # Owner not on this pod
             owner = user_map[c["owner"]]
 
             # Infer context: explicit > network-based > default personal
@@ -1933,6 +2059,10 @@ async def seed():
 
         # Service provider capsules
         for sp in SERVICE_PROVIDERS:
+            if sp["username"] not in user_map:
+                continue  # Not seeded on this pod
+            if sp["username"] in _stubs:
+                continue  # Stub user — seed user record only, no capsules
             sp_user = user_map[sp["username"]]
             for cap in sp.get("capsules", []):
                 cap_visibility = cap.get("visibility", "open")
@@ -1957,41 +2087,42 @@ async def seed():
                 print(f"  \u2713 [{cap_visibility}] {cap['title']} ({sp['username']})")
 
         # ── Step 5b: Create Ghost User for Cross-Pod Demo ──
-        print("\nStep 5b: Creating ghost user for cross-pod demo...")
-        ghost = User(
-            username="remote:alex@partner-pod.local",
-            display_name="Alex Chen (PartnerCo)",
-            bio="Remote engineer on the PartnerCo pod",
-            is_discoverable=False,
-            is_demo=False,
-            is_remote=True,
-            remote_pod_url="http://localhost:9001",
-            remote_did="did:key:z6MkPartnerAlex",
-        )
-        db.add(ghost)
-        await db.flush()
-        user_map["remote:alex@partner-pod.local"] = ghost
-
-        # Add ghost to TechCorp PM Team (simulating cross-pod pool membership)
-        techcorp_network = network_map["TechCorp PM Team"]
-        ghost_membership = NetworkMembership(
-            network_id=techcorp_network.id,
-            user_id=ghost.id,
-            role="remote_member",
-        )
-        db.add(ghost_membership)
-
-        # Create auto-accepted connections between ghost and local pool members
-        for member_name in ["molly", "kyle"]:
-            conn = Connection(
-                from_user_id=ghost.id,
-                to_user_id=user_map[member_name].id,
-                context="both",
-                status="accepted",
-                accepted_at=datetime.now(timezone.utc),
+        # Only relevant when TechCorp PM Team exists on this pod (family pod).
+        if "TechCorp PM Team" in network_map and "molly" in user_map and "kyle" in user_map:
+            print("\nStep 5b: Creating ghost user for cross-pod demo...")
+            ghost = User(
+                username="remote:alex@partner-pod.local",
+                display_name="Alex Chen (PartnerCo)",
+                bio="Remote engineer on the PartnerCo pod",
+                is_discoverable=False,
+                is_demo=False,
+                is_remote=True,
+                remote_pod_url="http://localhost:9001",
+                remote_did="did:key:z6MkPartnerAlex",
             )
-            db.add(conn)
-        print(f"  \u2713 Ghost: {ghost.username} \u2014 DID: {ghost.remote_did}, pool: TechCorp PM Team")
+            db.add(ghost)
+            await db.flush()
+            user_map["remote:alex@partner-pod.local"] = ghost
+
+            techcorp_network = network_map["TechCorp PM Team"]
+            db.add(NetworkMembership(
+                network_id=techcorp_network.id,
+                user_id=ghost.id,
+                role="remote_member",
+            ))
+            for member_name in ["molly", "kyle"]:
+                if member_name not in user_map:
+                    continue
+                db.add(Connection(
+                    from_user_id=ghost.id,
+                    to_user_id=user_map[member_name].id,
+                    context="both",
+                    status="accepted",
+                    accepted_at=datetime.now(timezone.utc),
+                ))
+            print(f"  \u2713 Ghost: {ghost.username} \u2014 DID: {ghost.remote_did}")
+        else:
+            print("\nStep 5b: Skipping ghost user (TechCorp PM Team not on this pod)")
 
         # ── Step 6: Create Sharing Delegates ──
         print("\nStep 6/7: Seeding sharing delegates...")
@@ -2000,6 +2131,8 @@ async def seed():
             ("molly", "peter", "family"),
         ]
         for owner_name, delegate_name, category in delegates:
+            if owner_name not in user_map or delegate_name not in user_map:
+                continue
             delegate = SharingDelegate(
                 owner_id=user_map[owner_name].id,
                 delegate_user_id=user_map[delegate_name].id,
@@ -2014,16 +2147,145 @@ async def seed():
         print("\nStep 7/7: Committing to database...")
         await db.commit()
 
-    # ── Summary ──
-    total_users = len(USERS) + len(SERVICE_PROVIDERS)
-    print(f"\n\u2550\u2550\u2550 Summary \u2550\u2550\u2550")
-    print(f"  {total_users} users ({len(USERS)} people + {len(SERVICE_PROVIDERS)} services)")
-    print(f"  {len(CONNECTIONS)} connections")
-    print(f"  {len(NETWORKS)} networks (all key-wrapped)")
-    print(f"  {capsule_count} encrypted capsules")
-    print(f"  {len(delegates)} sharing delegates")
-    print(f"  {total_users} ed25519 keypairs + DIDs")
-    print(f"  {len(vault_keys)} AES-256 vault keys loaded\n")
+    # ── Step 8: Seed Timeline entries ──
+    # Only seed the proactive conflict-check entry on the family pod — it's Molly's
+    # cron that fires every 5 min and injects findings into her Live session.
+    if _pod_name and _pod_name != "family":
+        print(f"\nStep 8/8: Skipping Timeline entries (pod={_pod_name!r}, not family)")
+        _print_summary(user_map, network_map, capsule_count, delegates, vault_keys)
+        return
+    print("\nStep 8/8: Seeding Timeline entries for Molly (conflict checker)...")
+    try:
+        from src.routes.timeline import _get_engine, persist_entry_spec
+        from src.timeline_bridge import (
+            EntryBuilder,
+            EntryState,
+            EntryType,
+            EventSource,
+            HookActionKind,
+            HookPhase,
+            Visibility,
+        )
+        import time as _time
+
+        engine = _get_engine()
+        molly_user = user_map.get("molly")
+        if molly_user:
+            now_ms = int(_time.time() * 1000)
+            builder = (
+                EntryBuilder()
+                .set_label("Scheduling Conflict Check")
+                .set_category("family")
+                .set_salience(0.7)
+                .set_entry_type(EntryType.TASK)
+            )
+            builder.set_trigger_cron("*/5 * * * *")  # Every 5 minutes
+            builder.add_hook(
+                action=HookActionKind.AGENT_TASK,
+                phase=HookPhase.PRE,
+                prompt=(
+                    "Search the vault for upcoming family visits and flight schedules. "
+                    "Look for any date conflicts between different capsules (e.g., "
+                    "visitor expected on Sunday but flight confirmation says Monday). "
+                    "If you find a real scheduling conflict, output exactly: "
+                    "CONFLICT FOUND: <brief one-sentence description of the conflict>. "
+                    "Otherwise output: NO CONFLICTS FOUND."
+                ),
+            )
+            entry_id = engine.add_entry(builder)
+
+            state_val = engine.get_entry_state(entry_id)
+            spec = {
+                "id": str(entry_id),
+                "owner_id": molly_user.id,
+                "label": "Scheduling Conflict Check",
+                "category": "family",
+                "entry_type": int(EntryType.TASK),
+                "visibility": int(Visibility.PRIVATE),
+                "salience": 0.7,
+                "window_start_ms": None,
+                "window_end_ms": None,
+                "activation_trigger": {"kind": "time", "cron": "*/5 * * * *"},
+                "deactivation_trigger": None,
+                "dependencies": [],
+                "hooks": [{
+                    "action": int(HookActionKind.AGENT_TASK),
+                    "phase": int(HookPhase.PRE),
+                    "prompt": (
+                        "Search the vault for upcoming family visits and flight schedules. "
+                        "Look for any date conflicts between different capsules (e.g., "
+                        "visitor expected on Sunday but flight confirmation says Monday). "
+                        "If you find a real scheduling conflict, output exactly: "
+                        "CONFLICT FOUND: <brief one-sentence description of the conflict>. "
+                        "Otherwise output: NO CONFLICTS FOUND."
+                    ),
+                    "timeout_ms": 30000,
+                    "max_retries": 0,
+                }],
+            }
+            persist_entry_spec(
+                owner_id=molly_user.id,
+                entry_id=entry_id,
+                state=int(state_val) if state_val is not None else 0,
+                spec=spec,
+            )
+            print(f"  ✓ Scheduling conflict checker seeded for molly (entry {str(entry_id)[:8]}...)")
+        else:
+            print("  ! molly user not found, skipping timeline entry")
+
+        # ── Daily message sweep (3 AM) ─────────────────────────────────────────
+        # Runs on the molly (family pod) user — sweeps expired messages system-wide.
+        if molly_user:
+            sweep_builder = (
+                EntryBuilder()
+                .set_owner(molly_user.id)
+                .set_label("Daily Message Sweep")
+                .set_entry_type(EntryType.TASK)
+                .set_salience(0.3)
+                .set_visibility(Visibility.PRIVATE)
+            )
+            sweep_builder.set_trigger_cron("0 3 * * *")  # 3 AM daily
+            sweep_builder.add_hook(
+                phase=HookPhase.PRE,
+                action=HookActionKind.AGENT_TASK,
+                prompt="Call sweep_expired_messages tool to remove expired messages.",
+                timeout_ms=10000,
+                max_retries=0,
+            )
+            sweep_id = engine.add_entry(sweep_builder)
+            sweep_state = engine.get_entry_state(sweep_id)
+            sweep_spec: dict = {
+                "id": str(sweep_id),
+                "owner_id": molly_user.id,
+                "label": "Daily Message Sweep",
+                "category": "general",
+                "entry_type": int(EntryType.TASK),
+                "visibility": int(Visibility.PRIVATE),
+                "salience": 0.3,
+                "window_start_ms": None,
+                "window_end_ms": None,
+                "activation_trigger": {"kind": "time", "cron": "0 3 * * *"},
+                "deactivation_trigger": None,
+                "dependencies": [],
+                "hooks": [{
+                    "action": int(HookActionKind.AGENT_TASK),
+                    "phase": int(HookPhase.PRE),
+                    "prompt": "Call sweep_expired_messages tool to remove expired messages.",
+                    "timeout_ms": 10000,
+                    "max_retries": 0,
+                }],
+            }
+            persist_entry_spec(
+                owner_id=molly_user.id,
+                entry_id=sweep_id,
+                state=int(sweep_state) if sweep_state is not None else 0,
+                spec=sweep_spec,
+            )
+            print(f"  ✓ Daily message sweep seeded (entry {str(sweep_id)[:8]}...)")
+    except Exception as e:
+        print(f"  ! Timeline seeding failed (non-fatal): {e}")
+
+    _print_summary(user_map, network_map, capsule_count, delegates, vault_keys)
 
 
 if __name__ == "__main__":
