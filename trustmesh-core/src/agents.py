@@ -597,9 +597,9 @@ AGENT_TOOLS = [
         "name": "send_connection_request",
         "description": (
             "Send a connection request to another user so you can query their agent "
-            "and exchange messages. Use when the owner asks to 'connect with', "
-            "'add', 'follow', 'send a friend request to', or 'befriend' someone. "
-            "Requires their username. "
+            "and exchange messages. Use whenever the owner expresses intent to connect with, "
+            "befriend, add, or follow someone — regardless of how they phrase it or what "
+            "language they use. Requires their username. "
             "Include a short friendly note explaining why you'd like to connect."
         ),
         "input_schema": {
@@ -2709,31 +2709,25 @@ You have tools:
 16. **send_message** — Send an encrypted message to someone you're already connected with or share a pool with.
 17. **send_connection_request** — Send a connection request to someone so you can message them and query their agent. Use when the user asks to connect with, add, or follow someone.
 
-## When to use tools — be PROACTIVE:
-- User says "connect with X", "add X", "follow X", "send a connection request to X", "friend request X", "befriend X", "add X as a friend" → **send_connection_request** IMMEDIATELY (do NOT search_vault)
-- User says "message X" or "send X a message" → send_message
-- User asks about services, businesses, or providers → ALWAYS list_services first, then request_quotes for matching ones, then web_search for more
-- User asks "do you know any X?" where X is a type of business/provider (hospitals, clinics, tutors, cleaners, etc.) → list_services FIRST, then web_search
-- User asks about healthcare, hospitals, doctors, medical help → list_services first (TrustMesh has healthcare providers!), then web_search
-- User asks "what do I need to prepare?" → search_vault + list_connections, then query_peer relevant family members
-- User says "remember X" → search_vault (check dups) then save_capsule
-- User asks complex question → create_task to track, then research with multiple tools
-- User mentions a specific person → list_connections to check access, then query_peer
-- User asks about current events or external data → web_search
-- User asks "who can help?" or "find me a..." → list_services + request_quotes + web_search (all three!)
-- User asks about family plans → search_vault + query_peer family members for their info
-- User asks about groups, communities, social clubs → discover_networks (with interest filter if specific)
-- User asks "what can I join?" or "any groups nearby?" → discover_networks
-- User asks about schedule, calendar, meetings, appointments → check_calendar
-- User asks "what's on my calendar?" or "when is my next meeting?" → check_calendar
-- User asks to write/draft/compose an email → draft_email
-- User asks about upcoming plans → check_calendar + search_vault + list_timeline_entries
-- User asks "remind me" or "schedule" or "follow up" → create_timeline_entry with appropriate trigger
-- User asks "what's happening?" or "what's active?" → check_timeline_state + list_timeline_entries
-- User asks to track something over time → create_timeline_entry with cron trigger
-- User says "that's done" or "finished with X" → complete_timeline_entry
-- When you create a task that needs future action → create_timeline_entry with hook_prompt describing what you should do
-- When you query a peer and need to follow up → create_timeline_entry with time trigger + hook_prompt
+## When to use tools — match INTENT, not literal phrases (works in any language):
+- User wants to befriend, add, connect with, or follow someone → **send_connection_request** IMMEDIATELY (do NOT search_vault first)
+- User wants to send a private message to someone → **send_message**
+- User is asking about services, businesses, or providers of any kind → ALWAYS list_services first, then request_quotes for matches, then web_search
+- User wants to know what's available in some category (hospitals, tutors, cleaners, etc.) → list_services FIRST, then web_search
+- User is asking about preparations, plans, or what to bring/do → search_vault + list_connections, then query_peer relevant contacts
+- User wants to save, remember, or note something → search_vault (check for duplicates) then save_capsule
+- User has a complex multi-step question → create_task to track, then research with multiple tools
+- User mentions or asks about a specific person → list_connections to check access, then query_peer
+- User wants current information, news, or external data → web_search
+- User wants help finding someone or something → list_services + request_quotes + web_search (all three!)
+- User asks about family, friends, or shared plans → search_vault + query_peer relevant contacts
+- User is interested in groups, communities, hobbies, or social activities → discover_networks
+- User wants to know what's on their schedule or when something is happening → check_calendar
+- User wants to compose or send an email → draft_email
+- User wants a reminder, scheduled action, or recurring check → create_timeline_entry with appropriate trigger
+- User asks what is currently active or what to focus on → check_timeline_state + list_timeline_entries
+- User wants to track something recurring over time → create_timeline_entry with cron trigger
+- User signals completion of a task or goal → complete_timeline_entry
 
 ## IMPORTANT: Always check the mesh FIRST
 When the user asks about ANY type of provider, service, or business — ALWAYS call list_services before web_search.
