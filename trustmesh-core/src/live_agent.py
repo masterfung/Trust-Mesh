@@ -32,8 +32,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 log = logging.getLogger(__name__)
 
-LIVE_MODEL = "gemini-2.5-flash-native-audio"
-_FALLBACK_MODEL = "gemini-2.5-flash-native-audio"
+LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+_FALLBACK_MODEL = "gemini-2.0-flash-live-001"
 
 # Subset of AGENT_TOOLS most useful in live voice context
 _LIVE_TOOL_NAMES = {
