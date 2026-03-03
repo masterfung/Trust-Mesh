@@ -329,10 +329,15 @@ export default function OnboardPage() {
   }, {} as Record<string, number>) ?? {};
 
   // ── Shared personality selector ──
-  const PersonalitySelector = () => (
+  const PersonalitySelector = ({ required }: { required?: boolean }) => (
     <div className="w-full max-w-md mb-6">
-      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2.5">How should your agent talk to you?</p>
-      <div className="grid grid-cols-5 gap-1.5">
+      <p className={`text-xs font-semibold uppercase tracking-wider mb-2.5 flex items-center gap-1.5 ${required && !selectedPersonality ? "text-accent" : "text-muted-foreground"}`}>
+        How should your agent talk to you?
+        {required && !selectedPersonality && (
+          <span className="text-[9px] font-bold bg-accent/15 text-accent px-1.5 py-0.5 rounded-full">Required</span>
+        )}
+      </p>
+      <div className={`grid grid-cols-5 gap-1.5 ${required && !selectedPersonality ? "ring-1 ring-accent/20 rounded-2xl p-1" : ""}`}>
         {PERSONALITY_MODES.map((m) => (
           <button
             key={m.key}
@@ -384,7 +389,7 @@ export default function OnboardPage() {
               Your AI agent needs to learn about you to be helpful. This takes about 2 minutes — just a quick conversation.
             </p>
 
-            <PersonalitySelector />
+            <PersonalitySelector required />
 
             <div className="w-full max-w-md mb-6">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">What we&apos;ll cover</p>
@@ -464,20 +469,32 @@ export default function OnboardPage() {
         </div>
 
         {/* CTA */}
-        <div className="flex flex-col items-center gap-3">
-          <button
-            onClick={startOnboarding}
-            className="px-8 py-3.5 bg-accent hover:bg-accent-hover text-accent-fg font-semibold rounded-2xl text-sm transition-all hover:shadow-xl hover:shadow-accent/25 hover:scale-[1.02] active:scale-[0.98]"
-          >
-            {isCompleteProfile ? "Update My Agent" : isSeededUser ? "Continue with Agent" : "Start Conversation"}
-          </button>
-          <button
-            onClick={() => goToDashboard()}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            {hasExistingData ? "Go to Dashboard" : "I\u2019ll do this later"}
-          </button>
-        </div>
+        {/* New users must pick a personality before starting */}
+        {(() => {
+          const needsPersonality = !hasExistingData && !selectedPersonality;
+          return (
+            <div className="flex flex-col items-center gap-3">
+              <button
+                onClick={startOnboarding}
+                disabled={needsPersonality}
+                className="px-8 py-3.5 bg-accent hover:bg-accent-hover text-accent-fg font-semibold rounded-2xl text-sm transition-all hover:shadow-xl hover:shadow-accent/25 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-none"
+              >
+                {isCompleteProfile ? "Update My Agent" : isSeededUser ? "Continue with Agent" : "Start Conversation"}
+              </button>
+              {needsPersonality && (
+                <p className="text-[11px] text-muted-foreground animate-pulse">
+                  ↑ Pick a conversation style first
+                </p>
+              )}
+              <button
+                onClick={() => goToDashboard()}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {hasExistingData ? "Go to Dashboard" : "I\u2019ll do this later"}
+              </button>
+            </div>
+          );
+        })()}
       </div>
     );
   }
