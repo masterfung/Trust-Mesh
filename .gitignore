@@ -55,3 +55,17 @@ trustmesh-core/data/
 
 # Playwright MCP
 .playwright-mcp/
+logs/dev.log
+logs/registry.log
+logs/demo-3pod/family-seed.log
+logs/demo-3pod/family.log
+logs/demo-3pod/family.pid
+logs/demo-3pod/frontend.log
+logs/demo-3pod/frontend.pid
+logs/demo-3pod/hospital-seed.log
+logs/demo-3pod/hospital.log
+logs/demo-3pod/hospital.pid
+logs/demo-3pod/work-seed.log
+logs/demo-3pod/work.log
+logs/demo-3pod/work.pid
+trustmesh-core/pod_kek.bin

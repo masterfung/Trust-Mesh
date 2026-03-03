@@ -97,7 +97,8 @@ async def live_stream(
         return
 
     networks = await get_user_networks(db, user_id)
-    log.info(f"Live session started: user={user_id} ({user.display_name})")
+    tz = websocket.query_params.get("tz", "UTC")
+    log.info(f"Live session started: user={user_id} ({user.display_name}) tz={tz}")
 
     try:
         await run_live_session(
@@ -106,6 +107,7 @@ async def live_stream(
             user_display_name=user.display_name,
             db=db,
             networks=networks,
+            tz=tz,
         )
     except WebSocketDisconnect:
         log.info(f"Live session closed: user={user_id}")

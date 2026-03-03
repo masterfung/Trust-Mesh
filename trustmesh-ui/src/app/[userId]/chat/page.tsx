@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type User, type QueryResult, type AgentAction, type Connection, type RegistryPodAgent, getPodUrl } from "@/lib/api";
+import { api, type User, type QueryResult, type AgentAction, type Connection, type RegistryAgent, getPodUrl } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { TrustBadge, DecisionBadge } from "@/components/TrustBadge";
 import { Markdown } from "@/components/Markdown";
@@ -117,10 +117,27 @@ export default function ChatPage() {
     const q = question.trim();
     if (!q) return;
 
+    // Parse @username to route to another user's agent
+    let toUserId = userId;
+    let questionText = q;
+    const mentionMatch = q.match(/^@(\S+)(?:\s+([\s\S]*))?$/);
+    if (mentionMatch) {
+      const handle = mentionMatch[1].toLowerCase();
+      const rest = mentionMatch[2]?.trim() ?? "";
+      const target = (users ?? []).find(
+        (u) => u.username?.toLowerCase() === handle
+      );
+      if (target && target.id !== userId) {
+        toUserId = target.id;
+        questionText = rest || q;
+      }
+    }
+    const isOwnAgent = toUserId === userId;
+
     setIsStreaming(true);
     const placeholderResult: StreamingResult = {
       from_user_id: userId,
-      to_user_id: userId,
+      to_user_id: toUserId,
       question: q,
       trust_level: "",
       shared_networks: [],
@@ -134,12 +151,17 @@ export default function ChatPage() {
     setResults((prev) => [placeholderResult, ...prev]);
     setQuestion("");
 
-    // Add user message to session history for future context
+    // Add user message to session history (only for own-agent conversations)
     const historySnapshot = [...sessionHistory];
-    setSessionHistory((prev) => [...prev, { role: "user", content: q }]);
+    if (isOwnAgent) setSessionHistory((prev) => [...prev, { role: "user", content: q }]);
 
     try {
-      const res = await api.queryStream(userId, userId, q, historySnapshot.length > 0 ? historySnapshot : undefined);
+      const res = await api.queryStream(
+        userId,
+        toUserId,
+        questionText,
+        isOwnAgent && historySnapshot.length > 0 ? historySnapshot : undefined,
+      );
       if (!res.ok || !res.body) {
         throw new Error("Stream failed");
       }
@@ -195,9 +217,9 @@ export default function ChatPage() {
               setResults((prev) => {
                 const updated = [...prev];
                 if (updated[0]?.isStreaming) {
-                  // Add assistant response to session history for continuity
+                  // Add assistant response to session history (own agent only)
                   const responseText = updated[0].response;
-                  if (responseText) {
+                  if (responseText && isOwnAgent) {
                     setSessionHistory((h) => [...h, { role: "assistant", content: responseText }]);
                   }
                   updated[0] = {
@@ -249,7 +271,7 @@ export default function ChatPage() {
       setIsStreaming(false);
       queryClient.invalidateQueries({ queryKey: ["queries", userId] });
     }
-  }, [userId, question, queryClient, sessionHistory]);
+  }, [userId, question, queryClient, sessionHistory, users]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -288,6 +310,9 @@ export default function ChatPage() {
     recognitionRef.current = recognition;
     setVoiceError("");
 
+    // Preserve any text already in the input — voice appends, not replaces
+    const priorText = question.trimEnd();
+    const prefix = priorText ? priorText + " " : "";
     let finalTranscript = "";
     let gotResults = false;
     // Auto-stop after 15 seconds of listening
@@ -305,16 +330,17 @@ export default function ChatPage() {
           interim += event.results[i][0].transcript;
         }
       }
-      setQuestion(finalTranscript + interim);
+      setQuestion(prefix + finalTranscript + interim);
     };
     recognition.onend = () => {
       clearTimeout(autoStopTimer);
       setIsListening(false);
       if (finalTranscript.trim()) {
-        setQuestion(finalTranscript.trim());
+        setQuestion((prefix + finalTranscript).trim());
       } else if (!gotResults) {
         setVoiceError("No speech detected — check your mic is unmuted and try again");
       }
+      // If stopped before any speech, leave prior text untouched
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onerror = (e: any) => {
@@ -340,7 +366,7 @@ export default function ChatPage() {
       setIsListening(false);
       setVoiceError("Failed to start voice input — try refreshing the page");
     }
-  }, [isListening]);
+  }, [isListening, question]);
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -589,16 +615,16 @@ function MentionInput({
     if (registryTimerRef.current) clearTimeout(registryTimerRef.current);
     registryTimerRef.current = setTimeout(async () => {
       try {
-        const res = await api.registrySearchAll(mentionQuery);
+        const res = await api.registrySearch(mentionQuery);
         const items: RegistryMentionItem[] = (res.results || [])
-          .filter((r: RegistryPodAgent) => !localUsernames.has(r.username) && r.did !== currentUserId)
-          .map((r: RegistryPodAgent) => ({
+          .filter((r: RegistryAgent) => !localUsernames.has(r.username) && r.did !== currentUserId)
+          .map((r: RegistryAgent) => ({
             id: r.did,
             username: r.username,
             display_name: r.display_name,
-            user_type: r.entity_type || "person",
+            user_type: r.user_type || "person",
             isRegistry: true as const,
-            pod_url: r.pod_url,
+            pod_url: "",
           }));
         setRegistryResults(items);
       } catch {
@@ -628,6 +654,14 @@ function MentionInput({
       if (aIsOrg !== bIsOrg) return aIsOrg - bIsOrg;
       return a.display_name.localeCompare(b.display_name);
     });
+
+  // Auto-resize textarea whenever value changes (covers voice input, demo clicks, etc.)
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+  }, [value]);
 
   // Combine local + registry results (deduped)
   const allMentionItems: MentionItem[] = useMemo(() => {
@@ -754,7 +788,7 @@ function MentionInput({
         placeholder={placeholder}
         rows={1}
         className="w-full bg-background border border-card-border rounded-xl px-4 py-3 text-sm pr-32 placeholder:text-muted-foreground resize-none overflow-y-auto"
-        style={{ maxHeight: 160 }}
+        style={{ maxHeight: 160, minHeight: "2.625rem" }}
         disabled={disabled}
       />
 

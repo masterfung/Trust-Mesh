@@ -23,6 +23,7 @@ Wire format (client ↔ server JSON frames):
 
 import asyncio
 import base64
+import datetime
 import json
 import logging
 import os
@@ -94,6 +95,8 @@ def _build_live_tool_declarations() -> list[dict]:
 _LIVE_SYSTEM_INSTRUCTION = """You are {owner_name}'s personal TrustMesh agent.
 You have access to their encrypted knowledge vault, trust network, and connections.
 
+Current date and time: {current_time}
+
 Your capabilities:
 - Search their vault for any personal knowledge (search_vault)
 - Answer questions by querying trusted peers in their network (query_peer)
@@ -122,7 +125,20 @@ Your trust network context:
 """
 
 
-async def _build_system_instruction(user_display_name: str, networks: list[dict]) -> str:
+def _format_time(tz_name: str) -> str:
+    """Return a human-readable current date+time for the given IANA timezone name."""
+    try:
+        import zoneinfo
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        tz = datetime.timezone.utc
+    now = datetime.datetime.now(tz=tz)
+    return now.strftime("%A, %B %d, %Y at %I:%M %p %Z").replace(" 0", " ")
+
+
+async def _build_system_instruction(
+    user_display_name: str, networks: list[dict], tz: str = "UTC"
+) -> str:
     """Build the static system instruction for this user's live session."""
     if networks:
         lines = [f"- {n['name']} ({n.get('network_type', 'custom')})" for n in networks[:8]]
@@ -132,6 +148,7 @@ async def _build_system_instruction(user_display_name: str, networks: list[dict]
 
     return _LIVE_SYSTEM_INSTRUCTION.format(
         owner_name=user_display_name,
+        current_time=_format_time(tz),
         networks_summary=networks_summary,
     )
 
@@ -144,6 +161,7 @@ async def run_live_session(
     user_display_name: str,
     db,
     networks: list[dict],
+    tz: str = "UTC",
 ) -> None:
     """Drive a full Gemini Live bidirectional session for one user.
 
@@ -173,7 +191,7 @@ async def run_live_session(
         networks=networks,
     )
 
-    system_instruction = await _build_system_instruction(user_display_name, networks)
+    system_instruction = await _build_system_instruction(user_display_name, networks, tz)
     declarations = _build_live_tool_declarations()
 
     client = genai.Client(api_key=api_key)
@@ -187,6 +205,9 @@ async def run_live_session(
         tools=[types.Tool(function_declarations=declarations)] if declarations else [],
         output_audio_transcription=types.AudioTranscriptionConfig(),
         input_audio_transcription=types.AudioTranscriptionConfig(),
+        # Disable extended thinking — the 2.5 native-audio preview model's thinking
+        # mode generates non-audio parts that silently terminate multi-turn sessions.
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
 
     inject_queue: asyncio.Queue = asyncio.Queue()
@@ -199,7 +220,9 @@ async def run_live_session(
             asyncio.create_task(_forward_gemini_to_client(session, websocket, tool_context)),
             asyncio.create_task(_inject_reader(inject_queue, session)),
         ]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        # FIRST_EXCEPTION: keep running until a task raises (e.g. WebSocketDisconnect),
+        # not on normal completion (e.g. receive() finishing one turn).
+        _done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
         for task in pending:
             task.cancel()
             try:

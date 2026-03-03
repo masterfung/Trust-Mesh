@@ -188,7 +188,10 @@ export function LiveAgent({ userId, onClose }: Props) {
       await captureCtx.audioWorklet.addModule(workletUrl);
       URL.revokeObjectURL(workletUrl);
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
       streamRef.current = stream;
 
       const source = captureCtx.createMediaStreamSource(stream);
@@ -200,7 +203,8 @@ export function LiveAgent({ userId, onClose }: Props) {
       const currentPodUrl = getPodUrl();
       setPodUrl(currentPodUrl);
       const wsUrl = currentPodUrl.replace(/^http/, "ws");
-      const ws = new WebSocket(`${wsUrl}/api/live/stream`);
+      const tz = encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone);
+      const ws = new WebSocket(`${wsUrl}/api/live/stream?tz=${tz}`);
       wsRef.current = ws;
 
       ws.onopen = () => {

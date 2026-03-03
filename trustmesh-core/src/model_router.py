@@ -145,12 +145,20 @@ def _anthropic_messages_to_openai(messages: list[dict], system: str = "") -> lis
         if isinstance(content, list):
             # tool_result blocks (user turn after tool calls)
             if content and isinstance(content[0], dict) and content[0].get("type") == "tool_result":
+                nudge_texts = []
                 for block in content:
-                    openai_msgs.append({
-                        "role": "tool",
-                        "tool_call_id": block["tool_use_id"],
-                        "content": block.get("content", ""),
-                    })
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_result":
+                        openai_msgs.append({
+                            "role": "tool",
+                            "tool_call_id": block["tool_use_id"],
+                            "content": block.get("content", ""),
+                        })
+                    elif block.get("type") == "text":
+                        nudge_texts.append(block["text"])
+                if nudge_texts:
+                    openai_msgs.append({"role": "user", "content": "\n".join(nudge_texts)})
                 continue
 
             # Assistant content blocks (mix of text + tool_use)
