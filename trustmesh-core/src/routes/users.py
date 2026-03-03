@@ -2,6 +2,9 @@
 
 import json
 import os
+import logging
+
+log = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -197,19 +200,52 @@ async def login(data: LoginRequest, request: Request, db: AsyncSession = Depends
 
     token = create_session(user.id, fingerprint=_compute_fingerprint(request))
     user_data = UserResponse.model_validate(user).model_dump(mode="json")
+
+    # Audit: login event
+    try:
+        from src.audit import log_event
+        await log_event(
+            db,
+            actor_user_id=user.id,
+            target_user_id=user.id,
+            action="login",
+            event_type="auth",
+            decision="allowed",
+            details={"ip": client_ip},
+        )
+        await db.commit()
+    except Exception as _e:
+        log.warning("Audit login failed: %s", _e)
+
     response = JSONResponse(content=user_data)
     _set_session_cookie(response, token)
     return response
 
 
 @router.post("/auth/logout")
-async def logout(request: Request, user_id: str = Depends(get_current_user_id)):
+async def logout(request: Request, user_id: str = Depends(get_current_user_id),
+                 db: AsyncSession = Depends(get_db)):
     """Invalidate session, clear vault key from memory, and clear httpOnly cookie."""
     token = get_session_token(request)
     if token:
         invalidate_session(token)
     invalidate_user_sessions(user_id)
     transit_bridge.remove_user(user_id)  # secureZero all key material
+
+    try:
+        from src.audit import log_event
+        await log_event(
+            db,
+            actor_user_id=user_id,
+            target_user_id=user_id,
+            action="logout",
+            event_type="auth",
+            decision="allowed",
+        )
+        await db.commit()
+    except Exception as _e:
+        log.warning("Audit logout failed: %s", _e)
+
     response = JSONResponse(content={"status": "ok"})
     _clear_session_cookie(response)
     return response

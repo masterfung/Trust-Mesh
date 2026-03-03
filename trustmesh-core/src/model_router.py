@@ -288,6 +288,7 @@ class ModelRouter:
             self._gemini_client = AsyncOpenAI(
                 api_key=api_key,
                 base_url=GEMINI_BASE_URL,
+                timeout=30.0,  # Don't hang if model doesn't exist
             )
             self._gemini_models = GEMINI_MODELS
             log.info("Gemini provider initialized (OpenAI-compat endpoint)")
@@ -374,7 +375,10 @@ class ModelRouter:
         if self._gemini_client:
             gemini_model = self._gemini_models.get(model, self._gemini_models.get("default", model))
             log.warning(f"[ROUTING] → Gemini ({gemini_model})")
-            return await self._gemini_complete(messages, system, model, tools, max_tokens)
+            try:
+                return await self._gemini_complete(messages, system, model, tools, max_tokens)
+            except Exception as exc:
+                log.warning(f"[ROUTING] Gemini failed ({exc!r}) — falling back to Anthropic")
 
         anthro_model = ANTHROPIC_MODELS.get(model, model)
         log.warning(f"[ROUTING] → Anthropic ({anthro_model})")

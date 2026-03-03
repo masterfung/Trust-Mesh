@@ -508,9 +508,9 @@ class QueryResponse(BaseModel):
 
 class GraphNode(BaseModel):
     id: str
-    username: str
+    username: str | None = None
     display_name: str
-    bio: str
+    bio: str | None = None
     user_type: str = "person"
     profile_data: dict | None = None
 
@@ -524,8 +524,8 @@ class GraphEdge(BaseModel):
 class GraphNetwork(BaseModel):
     id: str
     name: str
-    network_type: str
-    pool_type: str = "standard"
+    network_type: str | None = None
+    pool_type: str | None = "standard"
     shared_categories: list[str] | None = None
     members: list[str]
 

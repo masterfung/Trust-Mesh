@@ -164,6 +164,44 @@ AGENT_TOOLS = [
         },
     },
     {
+        "name": "browse_web",
+        "description": (
+            "Browse a real website and extract structured data using an AI-powered browser. "
+            "Use for: finding home care agencies, searching Kayak for flights, reading "
+            "service listings, extracting pricing, or filling out forms on behalf of the user. "
+            "Use a direct results URL when possible to skip navigation steps. "
+            "Results are returned as JSON and optionally saved to the vault. "
+            "Takes 60-120s — only call when real web data is needed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL to browse. Use a direct results URL when possible.",
+                },
+                "goal": {
+                    "type": "string",
+                    "description": "What to extract or do on the page. Be specific.",
+                },
+                "save_as_capsule": {
+                    "type": "boolean",
+                    "description": "If true, save result as a vault capsule. Default false.",
+                },
+                "capsule_title": {
+                    "type": "string",
+                    "description": "Title for the capsule if save_as_capsule is true.",
+                },
+                "capsule_visibility": {
+                    "type": "string",
+                    "enum": ["private", "internal", "open"],
+                    "description": "Visibility for saved capsule. Use 'internal' to share with trust network.",
+                },
+            },
+            "required": ["url", "goal"],
+        },
+    },
+    {
         "name": "create_task",
         "description": (
             "Create a trackable task for multi-step work. Use when research or "
@@ -555,6 +593,34 @@ AGENT_TOOLS = [
             "required": ["to_username", "subject", "body"],
         },
     },
+    {
+        "name": "send_connection_request",
+        "description": (
+            "Send a connection request to another user so you can query their agent "
+            "and exchange messages. Use when the owner asks to 'connect with', "
+            "'add', 'follow', 'send a friend request to', or 'befriend' someone. "
+            "Requires their username. "
+            "Include a short friendly note explaining why you'd like to connect."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to_username": {
+                    "type": "string",
+                    "description": "Username of the person to connect with (e.g. 'amy', 'dr_lee')",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Short message to the recipient explaining the connection request",
+                },
+                "relationship_type": {
+                    "type": "string",
+                    "description": "Optional: 'friend', 'colleague', 'family', 'neighbor', 'classmate'",
+                },
+            },
+            "required": ["to_username", "message"],
+        },
+    },
 ]
 
 
@@ -802,7 +868,7 @@ async def handle_web_search(ctx: ToolContext, query: str, context: str = "") -> 
         if not api_key:
             return json.dumps({
                 "success": False,
-                "error": "Web search unavailable (no API key configured)",
+                "error": "Web search is not configured on this pod (TAVILY_API_KEY missing). Tell the user: web search is not available on this pod.",
                 "results": [],
             })
         client = TavilyClient(api_key=api_key)
@@ -822,6 +888,115 @@ async def handle_web_search(ctx: ToolContext, query: str, context: str = "") -> 
         })
     except Exception as e:
         return json.dumps({"success": False, "error": str(e), "results": []})
+
+
+async def handle_browse_web(ctx: ToolContext, params: dict) -> str:
+    """Browse a real website and extract structured data via TinyFish."""
+    import asyncio
+    import aiohttp
+
+    api_key = os.getenv("TINYFISH_API_KEY", "")
+    if not api_key:
+        return json.dumps({
+            "success": False,
+            "error": "Web browsing unavailable (TINYFISH_API_KEY not configured)",
+        })
+
+    url = params["url"]
+    goal = params["goal"]
+    save_as_capsule = params.get("save_as_capsule", False)
+    capsule_title = params.get("capsule_title", "")
+    capsule_visibility = params.get("capsule_visibility", "private")
+
+    endpoint = "https://agent.tinyfish.ai/v1/automation/run-sse"
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+
+    steps = []
+    result_data = None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                endpoint,
+                headers=headers,
+                json={"url": url, "goal": goal},
+                timeout=aiohttp.ClientTimeout(total=180),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    return json.dumps({"success": False, "error": f"HTTP {resp.status}: {body[:200]}"})
+
+                async for line in resp.content:
+                    line = line.decode("utf-8").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data_str)
+                        event_type = event.get("type", "")
+                        if event_type == "PROGRESS":
+                            purpose = event.get("purpose", "")
+                            steps.append(purpose)
+                            log.info("browse_web [%s] step: %s", url[:50], purpose[:80])
+                        elif event_type == "COMPLETE":
+                            result_data = event.get("resultJson") or event.get("result")
+                        elif event_type == "ERROR":
+                            return json.dumps({
+                                "success": False,
+                                "error": event.get("message", "TinyFish error"),
+                                "steps": steps,
+                            })
+                    except json.JSONDecodeError:
+                        pass
+
+    except asyncio.TimeoutError:
+        return json.dumps({
+            "success": False,
+            "error": "Browse timed out after 180s. Try a more direct URL or simpler goal.",
+            "steps_completed": steps,
+        })
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+    if result_data is None:
+        return json.dumps({
+            "success": False,
+            "error": "No result returned from browser.",
+            "steps_completed": steps,
+        })
+
+    # Optionally save result as a vault capsule
+    saved_capsule_id = None
+    if save_as_capsule and capsule_title:
+        try:
+            content = json.dumps(result_data) if not isinstance(result_data, str) else result_data
+            save_params = {
+                "title": capsule_title,
+                "content": content,
+                "capsule_type": "memory",
+                "visibility": capsule_visibility,
+                "category": "research",
+            }
+            save_result_str = await handle_save_capsule(ctx, save_params)
+            save_result = json.loads(save_result_str)
+            if save_result.get("success"):
+                saved_capsule_id = save_result.get("capsule_id")
+        except Exception as e:
+            log.warning("browse_web: failed to save capsule: %s", e)
+
+    return json.dumps({
+        "success": True,
+        "url": url,
+        "steps_taken": len(steps),
+        "result": result_data,
+        **({"saved_capsule_id": saved_capsule_id} if saved_capsule_id else {}),
+    })
 
 
 async def handle_create_task(ctx: ToolContext, params: dict) -> str:
@@ -1970,6 +2145,113 @@ async def handle_trigger_emergency(ctx: ToolContext, reason: str) -> str:
     })
 
 
+async def handle_send_connection_request(ctx: ToolContext, params: dict) -> str:
+    """Send a connection request to another user on this pod."""
+    from sqlalchemy import select
+    from src.models import User, Connection, ConnectionRequest
+    from src.rate_limit import check_connection_rate, record_connection_request
+
+    to_username = params["to_username"].strip()
+    message = params.get("message", "")[:500]
+    relationship_type = params.get("relationship_type", "")
+
+    # Resolve target user
+    result = await ctx.db.execute(
+        select(User).where(User.username == to_username)
+    )
+    target = result.scalar_one_or_none()
+    if not target:
+        # Fuzzy fallback: display name
+        result2 = await ctx.db.execute(
+            select(User).where(
+                User.display_name.ilike(f"%{to_username}%")
+            ).limit(1)
+        )
+        target = result2.scalar_one_or_none()
+    if not target:
+        return json.dumps({"success": False, "error": f"User '{to_username}' not found."})
+
+    if target.id == ctx.owner_id:
+        return json.dumps({"success": False, "error": "Cannot connect with yourself."})
+
+    if target.is_remote:
+        return json.dumps({"success": False, "error": "Cross-pod connection requests not yet supported via agent. Use the Connections page."})
+
+    # Check if already connected
+    existing = await ctx.db.execute(
+        select(Connection).where(
+            ((Connection.from_user_id == ctx.owner_id) & (Connection.to_user_id == target.id)) |
+            ((Connection.from_user_id == target.id) & (Connection.to_user_id == ctx.owner_id))
+        )
+    )
+    if existing.scalar_one_or_none():
+        return json.dumps({"success": False, "already_connected": True, "message": f"You're already connected with {target.display_name}."})
+
+    # Check for existing pending request
+    pending = await ctx.db.execute(
+        select(ConnectionRequest).where(
+            ConnectionRequest.from_user_id == ctx.owner_id,
+            ConnectionRequest.to_user_id == target.id,
+            ConnectionRequest.status == "pending",
+        )
+    )
+    if pending.scalar_one_or_none():
+        return json.dumps({"success": False, "already_pending": True, "message": f"A connection request to {target.display_name} is already pending."})
+
+    # Rate limit
+    if not check_connection_rate(ctx.owner_id):
+        return json.dumps({"success": False, "error": "Too many connection requests. Try again later."})
+
+    # Create the request
+    import uuid
+    req = ConnectionRequest(
+        id=str(uuid.uuid4()),
+        from_user_id=ctx.owner_id,
+        to_user_id=target.id,
+        message=message,
+        relationship_type=relationship_type or None,
+        status="pending",
+    )
+    ctx.db.add(req)
+
+    # Create notification for recipient
+    from src.models import Notification
+    notif = Notification(
+        id=str(uuid.uuid4()),
+        user_id=target.id,
+        notification_type="connection_request",
+        title="New connection request",
+        body=f"{ctx.owner_name} wants to connect with you.",
+        related_id=req.id,
+    )
+    ctx.db.add(notif)
+    await ctx.db.commit()
+
+    record_connection_request(ctx.owner_id)
+
+    # Audit trail
+    try:
+        from src.audit import log_event
+        await log_event(
+            ctx.db,
+            actor_user_id=ctx.owner_id,
+            target_user_id=target.id,
+            action="connection_request_sent",
+            event_type="network",
+            decision="allowed",
+            details={"recipient": target.display_name, "request_id": req.id, "via": "agent"},
+        )
+    except Exception:
+        pass
+
+    return json.dumps({
+        "success": True,
+        "message": f"Connection request sent to {target.display_name}. They'll be notified.",
+        "recipient": target.display_name,
+        "request_id": req.id,
+    })
+
+
 async def handle_send_message(ctx: ToolContext, params: dict) -> str:
     """Send an encrypted message to a connected/pool-member user (local or cross-pod).
 
@@ -2212,6 +2494,8 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
         result = await handle_save_capsule(ctx, tool_input)
     elif tool_name == "web_search":
         result = await handle_web_search(ctx, tool_input["query"], tool_input.get("context", ""))
+    elif tool_name == "browse_web":
+        result = await handle_browse_web(ctx, tool_input)
     elif tool_name == "create_task":
         result = await handle_create_task(ctx, tool_input)
     elif tool_name == "discover_agents":
@@ -2250,6 +2534,8 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
     # Messaging tools
     elif tool_name == "send_message":
         result = await handle_send_message(ctx, tool_input)
+    elif tool_name == "send_connection_request":
+        result = await handle_send_connection_request(ctx, tool_input)
     else:
         result = json.dumps({"error": f"Unknown tool: {tool_name}"})
 
@@ -2420,8 +2706,12 @@ You have tools:
 13. **list_timeline_entries** — See what's active, pending, or coming up in the timeline.
 14. **complete_timeline_entry** — Mark a timeline entry as done when the task is fulfilled.
 15. **check_timeline_state** — Get the heartbeat of the timeline engine (counts, signals, health).
+16. **send_message** — Send an encrypted message to someone you're already connected with or share a pool with.
+17. **send_connection_request** — Send a connection request to someone so you can message them and query their agent. Use when the user asks to connect with, add, or follow someone.
 
 ## When to use tools — be PROACTIVE:
+- User says "connect with X", "add X", "follow X", "send a connection request to X", "friend request X", "befriend X", "add X as a friend" → **send_connection_request** IMMEDIATELY (do NOT search_vault)
+- User says "message X" or "send X a message" → send_message
 - User asks about services, businesses, or providers → ALWAYS list_services first, then request_quotes for matching ones, then web_search for more
 - User asks "do you know any X?" where X is a type of business/provider (hospitals, clinics, tutors, cleaners, etc.) → list_services FIRST, then web_search
 - User asks about healthcare, hospitals, doctors, medical help → list_services first (TrustMesh has healthcare providers!), then web_search
@@ -2760,6 +3050,21 @@ async def agent_respond_with_tools(
             # Send tool results back to the model
             messages.append({"role": "user", "content": tool_results})
         else:
+            # Audit self-query on final answer
+            try:
+                from src.audit import log_event
+                await log_event(
+                    tool_context.db,
+                    actor_user_id=tool_context.owner_id,
+                    target_user_id=tool_context.owner_id,
+                    action="agent_query",
+                    event_type="query",
+                    decision="allowed",
+                    details={"question_preview": question[:120], "tools_used": len(tool_context.actions)},
+                )
+                await tool_context.db.commit()
+            except Exception:
+                pass
             return (
                 response.text or "I'm not sure how to help with that.",
                 tool_context.actions,

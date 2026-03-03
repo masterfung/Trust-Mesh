@@ -331,45 +331,51 @@ async def _inject_reader(queue: asyncio.Queue, session) -> None:
 
 
 async def _forward_gemini_to_client(session, websocket: WebSocket, tool_context) -> None:
-    """Read Gemini responses and forward audio/text/tool events to the client."""
+    """Read Gemini responses and forward audio/text/tool events to the client.
+
+    session.receive() is a one-turn iterator — it exits after turn_complete=True.
+    We must loop around it to handle subsequent turns in the same session.
+    """
     from google.genai import types
 
     try:
-        async for response in session.receive():
-            # Audio chunks
-            if response.data:
-                await websocket.send_json({
-                    "type": "audio",
-                    "data": base64.b64encode(response.data).decode(),
-                })
-
-            # Agent speech transcript (from output_audio_transcription)
-            # User speech transcript (from input_audio_transcription)
-            if response.server_content:
-                sc = response.server_content
-                if sc.output_transcription and sc.output_transcription.text:
+        while True:  # Multi-turn loop: each iteration handles one model turn
+            async for response in session.receive():
+                # Audio chunks
+                if response.data:
                     await websocket.send_json({
-                        "type": "text",
-                        "text": sc.output_transcription.text,
-                    })
-                if sc.input_transcription and sc.input_transcription.text:
-                    await websocket.send_json({
-                        "type": "transcript",
-                        "text": sc.input_transcription.text,
+                        "type": "audio",
+                        "data": base64.b64encode(response.data).decode(),
                     })
 
-            # Fallback: plain text from model
-            elif response.text:
-                await websocket.send_json({"type": "text", "text": response.text})
+                # Agent speech transcript (from output_audio_transcription)
+                # User speech transcript (from input_audio_transcription)
+                if response.server_content:
+                    sc = response.server_content
+                    if sc.output_transcription and sc.output_transcription.text:
+                        await websocket.send_json({
+                            "type": "text",
+                            "text": sc.output_transcription.text,
+                        })
+                    if sc.input_transcription and sc.input_transcription.text:
+                        await websocket.send_json({
+                            "type": "transcript",
+                            "text": sc.input_transcription.text,
+                        })
 
-            # Tool calls
-            if response.tool_call:
-                results = await _execute_tools(
-                    response.tool_call.function_calls,
-                    tool_context,
-                    websocket,
-                )
-                await session.send_tool_response(function_responses=results)
+                # Fallback: plain text from model
+                elif response.text:
+                    await websocket.send_json({"type": "text", "text": response.text})
+
+                # Tool calls
+                if response.tool_call:
+                    results = await _execute_tools(
+                        response.tool_call.function_calls,
+                        tool_context,
+                        websocket,
+                    )
+                    await session.send_tool_response(function_responses=results)
+            # Turn complete — loop back and await next turn
 
     except WebSocketDisconnect:
         raise

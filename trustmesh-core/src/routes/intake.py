@@ -84,6 +84,27 @@ async def intake_step(user_id: str, data: IntakeMessage,
                 # Commit capsules saved by the agent tools
                 await db.commit()
 
+                # Audit: log onboarding activity
+                try:
+                    from src.audit import log_event
+                    capsule_ids = [str(a["capsule_id"]) for a in actions if isinstance(a, dict) and a.get("capsule_id")]
+                    await log_event(
+                        db,
+                        actor_user_id=user_id,
+                        target_user_id=user_id,
+                        action="onboard_step",
+                        event_type="capsule",
+                        decision="allowed",
+                        capsule_ids_accessed=capsule_ids or None,
+                        details={
+                            "capsules_saved": len(actions),
+                            "message_preview": message[:80],
+                        },
+                    )
+                    await db.commit()
+                except Exception:
+                    pass
+
                 # Stream the response in chunks for a nice UX
                 chunk_size = 4
                 words = response_text.split(" ")
