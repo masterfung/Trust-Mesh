@@ -2238,7 +2238,6 @@ async def seed():
         if molly_user:
             sweep_builder = (
                 EntryBuilder()
-                .set_owner(molly_user.id)
                 .set_label("Daily Message Sweep")
                 .set_entry_type(EntryType.TASK)
                 .set_salience(0.3)

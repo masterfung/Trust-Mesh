@@ -247,8 +247,8 @@ async def api_client(setup_db):  # noqa: F811 — setup_db already ran (autouse)
         yield client
 
 
-async def _create_and_login(client, username: str = "alice") -> tuple[str, dict]:
-    """Create a user, login, return (user_id, cookies)."""
+async def _create_and_login(client, username: str = "alice") -> str:
+    """Create a user, login, set session cookie on client, return user_id."""
     from src.database import async_session
     from src.models import User, Agent
     from src.crypto import (
@@ -283,16 +283,16 @@ async def _create_and_login(client, username: str = "alice") -> tuple[str, dict]
         "username": username, "password": DEMO_PASSWORD,
     })
     assert resp.status_code == 200, f"Login failed: {resp.text}"
-    return user_id, dict(resp.cookies)
+    # Set cookies on the client so callers don't need to pass cookies= per-request
+    client.cookies.update(dict(resp.cookies))
+    return user_id
 
 
 @pytest.mark.asyncio
 async def test_api_inbox_empty(api_client):
     """GET /api/users/{id}/messages/inbox returns [] when no messages."""
-    user_id, cookies = await _create_and_login(api_client, "bob")
-    resp = await api_client.get(
-        f"/api/users/{user_id}/messages/inbox", cookies=cookies
-    )
+    user_id = await _create_and_login(api_client, "bob")
+    resp = await api_client.get(f"/api/users/{user_id}/messages/inbox")
     assert resp.status_code == 200
     assert resp.json() == []
 
@@ -300,10 +300,8 @@ async def test_api_inbox_empty(api_client):
 @pytest.mark.asyncio
 async def test_api_unread_count_zero(api_client):
     """GET unread-count returns 0 for empty inbox."""
-    user_id, cookies = await _create_and_login(api_client, "carol")
-    resp = await api_client.get(
-        f"/api/users/{user_id}/messages/unread-count", cookies=cookies
-    )
+    user_id = await _create_and_login(api_client, "carol")
+    resp = await api_client.get(f"/api/users/{user_id}/messages/unread-count")
     assert resp.status_code == 200
     assert resp.json()["count"] == 0
 
@@ -311,12 +309,10 @@ async def test_api_unread_count_zero(api_client):
 @pytest.mark.asyncio
 async def test_api_inbox_shows_message(api_client):
     """Inbox endpoint returns a message after bridge creates one."""
-    user_id, cookies = await _create_and_login(api_client, "dave")
+    user_id = await _create_and_login(api_client, "dave")
     _create_test_message(recipient_id=user_id, subject="Test API msg")
 
-    resp = await api_client.get(
-        f"/api/users/{user_id}/messages/inbox", cookies=cookies
-    )
+    resp = await api_client.get(f"/api/users/{user_id}/messages/inbox")
     assert resp.status_code == 200
     msgs = resp.json()
     assert len(msgs) == 1
@@ -327,45 +323,39 @@ async def test_api_inbox_shows_message(api_client):
 @pytest.mark.asyncio
 async def test_api_unread_count_increments(api_client):
     """Unread count rises after messages are created."""
-    user_id, cookies = await _create_and_login(api_client, "eve")
+    user_id = await _create_and_login(api_client, "eve")
     _create_test_message(recipient_id=user_id)
     _create_test_message(recipient_id=user_id)
 
-    resp = await api_client.get(
-        f"/api/users/{user_id}/messages/unread-count", cookies=cookies
-    )
+    resp = await api_client.get(f"/api/users/{user_id}/messages/unread-count")
     assert resp.json()["count"] == 2
 
 
 @pytest.mark.asyncio
 async def test_api_mark_read(api_client):
     """PUT /api/messages/{id}/read marks message as read and decrements count."""
-    user_id, cookies = await _create_and_login(api_client, "frank")
+    user_id = await _create_and_login(api_client, "frank")
     mid = _create_test_message(recipient_id=user_id)
 
-    resp = await api_client.put(f"/api/messages/{mid}/read", cookies=cookies)
+    resp = await api_client.put(f"/api/messages/{mid}/read")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 
-    count_resp = await api_client.get(
-        f"/api/users/{user_id}/messages/unread-count", cookies=cookies
-    )
+    count_resp = await api_client.get(f"/api/users/{user_id}/messages/unread-count")
     assert count_resp.json()["count"] == 0
 
 
 @pytest.mark.asyncio
 async def test_api_delete_message(api_client):
     """DELETE /api/messages/{id} removes message from inbox."""
-    user_id, cookies = await _create_and_login(api_client, "grace")
+    user_id = await _create_and_login(api_client, "grace")
     mid = _create_test_message(recipient_id=user_id)
 
-    resp = await api_client.delete(f"/api/messages/{mid}", cookies=cookies)
+    resp = await api_client.delete(f"/api/messages/{mid}")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 
-    inbox_resp = await api_client.get(
-        f"/api/users/{user_id}/messages/inbox", cookies=cookies
-    )
+    inbox_resp = await api_client.get(f"/api/users/{user_id}/messages/inbox")
     ids = [m["id"] for m in inbox_resp.json()]
     assert mid not in ids
 
@@ -380,20 +370,16 @@ async def test_api_inbox_requires_auth(api_client):
 @pytest.mark.asyncio
 async def test_api_inbox_denies_wrong_user(api_client):
     """User cannot read another user's inbox."""
-    user_id, cookies = await _create_and_login(api_client, "henry")
-    resp = await api_client.get(
-        "/api/users/other-user-id/messages/inbox", cookies=cookies
-    )
+    await _create_and_login(api_client, "henry")
+    resp = await api_client.get("/api/users/other-user-id/messages/inbox")
     assert resp.status_code == 403
 
 
 @pytest.mark.asyncio
 async def test_api_sent_empty(api_client):
     """GET /sent returns [] when no sent messages."""
-    user_id, cookies = await _create_and_login(api_client, "ivan")
-    resp = await api_client.get(
-        f"/api/users/{user_id}/messages/sent", cookies=cookies
-    )
+    user_id = await _create_and_login(api_client, "ivan")
+    resp = await api_client.get(f"/api/users/{user_id}/messages/sent")
     assert resp.status_code == 200
     assert resp.json() == []
 
@@ -401,7 +387,7 @@ async def test_api_sent_empty(api_client):
 @pytest.mark.asyncio
 async def test_api_inbox_body_decrypted(api_client):
     """Body is decrypted when vault key is loaded (transit engine active)."""
-    user_id, cookies = await _create_and_login(api_client, "judy")
+    user_id = await _create_and_login(api_client, "judy")
     # Now vault key is in transit engine — encrypt properly
     mid = uuid.uuid4().hex
     body_enc = _encrypt_body(user_id, mid, "Secret health note")
@@ -419,9 +405,7 @@ async def test_api_inbox_body_decrypted(api_client):
         trust_level="connected",
     )
 
-    resp = await api_client.get(
-        f"/api/users/{user_id}/messages/inbox", cookies=cookies
-    )
+    resp = await api_client.get(f"/api/users/{user_id}/messages/inbox")
     assert resp.status_code == 200
     msgs = resp.json()
     assert len(msgs) == 1

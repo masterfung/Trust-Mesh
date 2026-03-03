@@ -27,6 +27,10 @@ trustmesh = "src.cli:app"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    # httpx is deprecating per-request cookies= — suppress until tests are migrated
+    "ignore:Setting per-request cookies:DeprecationWarning",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
