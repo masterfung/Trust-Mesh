@@ -267,6 +267,7 @@ cmd_start() {
   echo "Starting Python backend on :$python_listen_port..."
   cd "$BACKEND_DIR"
   export TRUSTMESH_DEV_MODE=1
+  export TRUSTMESH_REGISTRY_URL="http://localhost:8100"
   nohup uv run uvicorn src.main:app --reload --port "$python_listen_port" > "$BACKEND_LOG" 2>&1 &
   echo $! > "$BACKEND_PID"
 

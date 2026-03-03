@@ -279,6 +279,7 @@ export interface Briefing {
 export interface HealthStatus {
   status: string;
   providers: {
+    gemini?: boolean;
     anthropic: boolean;
     tee: { enabled: boolean; provider: string | null };
     tavily: boolean;

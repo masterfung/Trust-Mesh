@@ -1872,6 +1872,7 @@ async def seed():
                 display_name=u["display_name"],
                 bio=u["bio"],
                 is_demo=True,
+                is_discoverable=True,  # Discoverable by default for demo registry
                 profile_data=json.dumps(u["profile_data"]) if u.get("profile_data") else None,
                 vault_key_salt=salt,
                 encrypted_vault_key=encrypted_vault_key,
@@ -1914,6 +1915,7 @@ async def seed():
                 bio=sp["bio"],
                 user_type=sp.get("user_type", "organization"),
                 is_demo=True,
+                is_discoverable=True,  # Discoverable by default for demo registry
                 profile_data=json.dumps(sp.get("profile_data")) if sp.get("profile_data") else None,
                 vault_key_salt=salt,
                 encrypted_vault_key=encrypted_vault_key,

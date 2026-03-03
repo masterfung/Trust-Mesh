@@ -357,6 +357,7 @@ async def health_full():
         "status": "ok",
         "service": "trustmesh-core",
         "providers": {
+            "gemini": router.has_gemini,
             "anthropic": bool(router._anthropic),
             "tee": {
                 "enabled": router.has_tee,
@@ -470,15 +471,15 @@ async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
 
 
 @app.get("/api/graph", response_model=GraphResponse)
-async def get_graph(auth_user_id: str = Depends(get_current_user_id)):
-    """Full trust graph — requires authentication."""
+async def get_graph():
+    """Full trust graph — public endpoint for demo visualization."""
     async with async_session() as db:
         return await _build_graph(db)
 
 
 @app.get("/api/graph/{user_id}", response_model=GraphResponse)
-async def get_user_graph(user_id: str, auth_user_id: str = Depends(get_current_user_id)):
-    """User-scoped trust graph — requires authentication."""
+async def get_user_graph(user_id: str):
+    """User-scoped trust graph — public endpoint for demo visualization."""
     async with async_session() as db:
         return await _build_graph(db, user_id=user_id)
 
