@@ -4,6 +4,27 @@ import { useState } from "react";
 import { useAuth } from "@/lib/auth";
 import Link from "next/link";
 import { Loader2 } from "lucide-react";
+import { setPodUrl, getPodUrl } from "@/lib/api";
+
+const DEMO_PODS = [
+  { label: "Your Pod (default) :9000", url: "http://localhost:9000" },
+  { label: "Molly Johnson :9001", url: "http://localhost:9001" },
+  { label: "Peter Johnson :9002", url: "http://localhost:9002" },
+  { label: "Jane Johnson :9003", url: "http://localhost:9003" },
+  { label: "Grandma Rose :9004", url: "http://localhost:9004" },
+  { label: "Dr. Sarah Lee :9005", url: "http://localhost:9005" },
+  { label: "Kyle Rivera :9006", url: "http://localhost:9006" },
+  { label: "Amy Torres :9007", url: "http://localhost:9007" },
+  { label: "Dorothy Park :9008", url: "http://localhost:9008" },
+  { label: "Nurse Davis :9009", url: "http://localhost:9009" },
+  { label: "EMT Mike :9010", url: "http://localhost:9010" },
+  { label: "SparkleClean :9011", url: "http://localhost:9011" },
+  { label: "Riverside Hospital :9012", url: "http://localhost:9012" },
+  { label: "AceTutor :9013", url: "http://localhost:9013" },
+  { label: "City of Riverside :9014", url: "http://localhost:9014" },
+  { label: "HandyPro :9015", url: "http://localhost:9015" },
+  { label: "Dance Studio :9016", url: "http://localhost:9016" },
+];
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -11,9 +32,13 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isPending, setIsPending] = useState(false);
+  const [selectedPod, setSelectedPod] = useState(() =>
+    typeof window !== "undefined" ? getPodUrl() : "http://localhost:9000"
+  );
 
   const handleSubmit = async () => {
     setError("");
+    setPodUrl(selectedPod);
     setIsPending(true);
     try {
       const user = await login(name, password);
@@ -44,7 +69,7 @@ export default function LoginPage() {
           <div className="bg-card border border-card-border rounded-2xl p-6 sm:p-8 shadow-xl shadow-black/20">
             <h1 className="text-xl sm:text-2xl font-bold mb-1">Welcome back</h1>
             <p className="text-xs sm:text-sm text-muted-foreground mb-6">
-              Log in with your name, email, or handle.
+              Select your pod, then log in.
             </p>
 
             {error && (
@@ -56,13 +81,27 @@ export default function LoginPage() {
             <div className="space-y-4 mb-6">
               <div>
                 <label className="block text-sm text-muted-foreground mb-1.5 font-medium">
+                  Pod
+                </label>
+                <select
+                  value={selectedPod}
+                  onChange={(e) => setSelectedPod(e.target.value)}
+                  className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+                >
+                  {DEMO_PODS.map((p) => (
+                    <option key={p.url} value={p.url}>{p.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-muted-foreground mb-1.5 font-medium">
                   Name, email, or @handle
                 </label>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g., Amy Lee or amy@email.com"
+                  placeholder="e.g., grandmarose"
                   className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
                   onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
                   autoFocus
