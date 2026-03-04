@@ -16,8 +16,17 @@ export function setPodUrl(url: string) {
   }
 }
 
-/** Get the current API base (dynamic based on selected pod). */
+/** Get the current API base (dynamic based on selected pod).
+ *
+ * When running on a tunnel / non-localhost origin (e.g. phone scanning QR,
+ * cloudflare/ngrok), the Next.js server proxies /api/* to the backend via
+ * rewrites (next.config.ts + TRUSTMESH_PROXY_POD). In that case we return ""
+ * so all fetch calls use relative URLs and avoid CORS issues.
+ */
 function getApiBase(): string {
+  if (typeof window !== "undefined" && window.location.hostname !== "localhost") {
+    return ""; // Use relative URL — Next.js server-side rewrite handles it
+  }
   return getPodUrl();
 }
 
@@ -702,7 +711,65 @@ export const api = {
     apiFetch<{ status: string }>("/api/timeline/start", { method: "POST" }),
   stopTimeline: () =>
     apiFetch<{ status: string }>("/api/timeline/stop", { method: "POST" }),
+
+  // Emergency beacon + QR scan
+  generateEmergencyBeacon: (userId: string) =>
+    apiFetch<EmergencyBeaconResponse>(`/api/users/${userId}/emergency/beacon`, {
+      method: "POST",
+    }),
+  getEmergencyQrData: (token: string, patientUsername: string, podUrl?: string) => {
+    // Always route through the Next.js server-side proxy so cross-origin pod calls
+    // work even when the browser is on a public tunnel (phone scanning the QR).
+    // The proxy fetches the pod API server-side, avoiding CORS and localhost issues.
+    const proxyPath =
+      `/api/emergency-proxy` +
+      `?t=${encodeURIComponent(token)}` +
+      `&p=${encodeURIComponent(patientUsername)}` +
+      (podUrl ? `&pod=${encodeURIComponent(podUrl)}` : "");
+    return apiFetch<EmergencyAccessResponse>(proxyPath);
+  },
+  sendEmergencyAlert: (token: string, patient: string, message: string, podUrl?: string) =>
+    apiFetch<EmergencyAlertResponse>("/api/emergency-proxy", {
+      method: "POST",
+      body: JSON.stringify({ t: token, p: patient, message, pod: podUrl }),
+    }),
 };
+
+// ── Emergency Types ──
+
+export interface EmergencyBeaconResponse {
+  tokens: Record<string, string>;  // {"paramedic": "<token>", "er_nurse": "...", "attending_physician": "..."}
+  qr_urls: Record<string, string>; // {"paramedic": "<url>", ...}
+  patient_did: string;
+  patient_name: string;
+  pod_url: string;
+  expires_in: number;  // 1800 seconds
+  generated_at: string;
+  audit_id: string;
+}
+
+export interface EmergencyCapsule {
+  id: string;
+  title: string;
+  content: string;
+  category: string;
+}
+
+export interface EmergencyAccessResponse {
+  patient_name: string;
+  role: string;
+  capsules: EmergencyCapsule[];
+  capsule_count: number;
+  total_capsules?: number;
+  audit_id: string;
+  expires_at: string;
+  family_notified: boolean | number;
+}
+
+export interface EmergencyAlertResponse {
+  notified: number;
+  members: string[];
+}
 
 // ── Timeline Types ──
 

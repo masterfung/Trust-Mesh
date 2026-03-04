@@ -690,11 +690,23 @@ class EmergencyAccessRequest(BaseModel):
     patient_username: str = Field(max_length=50)
 
 
+class EmergencyBeaconResponse(BaseModel):
+    tokens: dict[str, str]    # role → signed UCAN token
+    qr_urls: dict[str, str]   # role → full QR scan URL
+    patient_did: str
+    patient_name: str
+    pod_url: str
+    expires_in: int           # seconds (1800)
+    generated_at: str         # ISO-8601 timestamp
+    audit_id: str
+
+
 class EmergencyAccessResponse(BaseModel):
     patient_name: str
     role: str
     capsules: list[dict]
     capsule_count: int
+    total_capsules: int = 0
     categories: list[str]
     audit_id: str
     expires_at: datetime

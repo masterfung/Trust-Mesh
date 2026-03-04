@@ -7,6 +7,7 @@ import { useParams } from "next/navigation";
 import { TrustBadge, DecisionBadge } from "@/components/TrustBadge";
 import { Markdown } from "@/components/Markdown";
 import { LiveAgent } from "@/components/LiveAgent";
+import QRCode from "react-qr-code";
 
 // Demo scenario suggestions per pod username (shown when chat is empty)
 const DEMO_SCENARIOS: Record<string, { label: string; question: string; icon: string }[]> = {
@@ -930,6 +931,58 @@ function MentionInput({
 }
 
 
+// ═══════════════════════════════════════════════════════════════
+// Inline Emergency QR Card
+// ═══════════════════════════════════════════════════════════════
+
+const SCAN_URL_RE = /https?:\/\/\S+\/emergency\/scan\?\S+/g;
+
+function EmergencyQRCards({ response }: { response: string }) {
+  const urls = response.match(SCAN_URL_RE);
+  if (!urls || urls.length === 0) return null;
+
+  // Deduplicate
+  const unique = [...new Set(urls)];
+
+  return (
+    <div className="mt-3 flex flex-wrap gap-3 not-prose">
+      {unique.map((url, i) => {
+        let parsed: URL | null = null;
+        try { parsed = new URL(url); } catch { return null; }
+        const patient = parsed.searchParams.get("p") ?? "patient";
+        const tokenRoleHint = url.includes("paramedic")
+          ? "Paramedic"
+          : url.includes("attending")
+            ? "Physician"
+            : url.includes("er_nurse")
+              ? "ER Nurse"
+              : "Emergency";
+        return (
+          <div
+            key={i}
+            className="flex flex-col items-center gap-3 p-4 bg-red-950/30 border border-red-700/40 rounded-xl w-full sm:w-auto"
+          >
+            <span className="text-red-400 font-semibold text-xs uppercase tracking-wider text-center">
+              🚑 {tokenRoleHint} — {patient}
+            </span>
+            <div className="bg-white p-2.5 rounded-lg">
+              <QRCode value={url} size={150} />
+            </div>
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-red-300 hover:text-red-200 underline transition-colors text-center break-all"
+            >
+              Open emergency scan →
+            </a>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function QueryResultCard({
   result,
   users,
@@ -1090,6 +1143,8 @@ function QueryResultCard({
             )}
           </div>
         )}
+        {/* Inline QR cards for emergency scan URLs */}
+        {result.response && <EmergencyQRCards response={result.response} />}
 
         {/* Metadata */}
         {!streaming && (
