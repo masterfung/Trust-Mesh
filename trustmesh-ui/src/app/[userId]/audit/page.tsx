@@ -4,20 +4,8 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import { api, AuditLogEntry } from "@/lib/api";
-
-function timeAgo(dateStr: string): string {
-  const now = new Date();
-  const date = new Date(dateStr);
-  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return date.toLocaleDateString();
-}
+import { timeAgo } from "@/lib/utils";
+import { EmptyState } from "@/components/ui/empty-state";
 
 function eventTypeColor(type: string): string {
   switch (type) {
@@ -127,14 +115,17 @@ export default function AuditPage() {
           <div className="text-muted-foreground animate-pulse">Loading activity...</div>
         </div>
       ) : !logs || logs.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-center">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground mb-3">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-            <path d="M9 12l2 2 4-4"/>
-          </svg>
-          <p className="text-muted-foreground font-medium">No activity yet</p>
-          <p className="text-sm text-muted-foreground mt-1">Security events will appear here as they occur</p>
-        </div>
+        <EmptyState
+          className="py-20"
+          icon={
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              <path d="M9 12l2 2 4-4"/>
+            </svg>
+          }
+          title="No activity yet"
+          description="Security events will appear here as they occur"
+        />
       ) : (
         <div className="space-y-3">
           {logs.map((entry: AuditLogEntry) => (
