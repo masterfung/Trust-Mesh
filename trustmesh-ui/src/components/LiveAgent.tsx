@@ -1,4 +1,5 @@
 "use client";
+import QRCode from "react-qr-code";
 
 /**
  * LiveAgent — real-time bidirectional voice interface powered by Gemini Live.
@@ -385,12 +386,11 @@ export function LiveAgent({ userId, onClose }: Props) {
             </div>
           )}
           {transcript.map((t, i) => {
-            // Check if previous entry was a tool activity (insert chips between)
+            const scanUrls = t.role === "agent"
+              ? (t.text.match(/https?:\/\/\S+\/emergency\/scan\?\S+/g) ?? [])
+              : [];
             return (
-              <div
-                key={i}
-                className={`flex ${t.role === "user" ? "justify-end" : "justify-start"}`}
-              >
+              <div key={i} className={`flex flex-col ${t.role === "user" ? "items-end" : "items-start"}`}>
                 <div
                   className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm leading-relaxed ${
                     t.role === "user"
@@ -400,6 +400,25 @@ export function LiveAgent({ userId, onClose }: Props) {
                 >
                   {t.text}
                 </div>
+                {scanUrls.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-3 max-w-[85%]">
+                    {[...new Set(scanUrls)].map((url, j) => {
+                      let parsed: URL | null = null;
+                      try { parsed = new URL(url); } catch { return null; }
+                      const patient = parsed.searchParams.get("p") ?? "patient";
+                      const roleHint = url.includes("paramedic") ? "Paramedic"
+                        : url.includes("attending") ? "Physician"
+                        : url.includes("er_nurse") ? "ER Nurse" : "Emergency";
+                      return (
+                        <div key={j} className="flex flex-col items-center gap-2 p-3 bg-red-950/40 border border-red-700/40 rounded-xl">
+                          <span className="text-red-400 text-xs font-semibold">🚑 {roleHint} — {patient}</span>
+                          <div className="bg-white p-2 rounded-lg"><QRCode value={url} size={130} /></div>
+                          <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-red-300 underline">Open scan →</a>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}
