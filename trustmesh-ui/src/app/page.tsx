@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type User } from "@/lib/api";
+import { api, type User, setPodUrl, getPodUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -29,12 +29,7 @@ export default function Home() {
   const router = useRouter();
   const [authMode, setAuthMode] = useState<"none" | "login" | "signup">("none");
 
-  // Clear any stale pod URL on home page — user's pod is always the default (8000)
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("trustmesh_pod_url");
-    }
-  }, []);
+  // Note: we no longer clear the pod URL here so multi-pod logins persist.
 
   if (authLoading) {
     return (
@@ -209,15 +204,39 @@ export default function Home() {
   );
 }
 
+const DEMO_PODS = [
+  { label: "Your Pod (default)", url: "http://localhost:9000" },
+  { label: "Molly Johnson :9001", url: "http://localhost:9001" },
+  { label: "Peter Johnson :9002", url: "http://localhost:9002" },
+  { label: "Jane Johnson :9003", url: "http://localhost:9003" },
+  { label: "Grandma Rose :9004", url: "http://localhost:9004" },
+  { label: "Dr. Sarah Lee :9005", url: "http://localhost:9005" },
+  { label: "Kyle Rivera :9006", url: "http://localhost:9006" },
+  { label: "Amy Torres :9007", url: "http://localhost:9007" },
+  { label: "Dorothy Park :9008", url: "http://localhost:9008" },
+  { label: "Nurse Davis :9009", url: "http://localhost:9009" },
+  { label: "EMT Mike :9010", url: "http://localhost:9010" },
+  { label: "SparkleClean :9011", url: "http://localhost:9011" },
+  { label: "Riverside Hospital :9012", url: "http://localhost:9012" },
+  { label: "AceTutor :9013", url: "http://localhost:9013" },
+  { label: "City of Riverside :9014", url: "http://localhost:9014" },
+  { label: "HandyPro :9015", url: "http://localhost:9015" },
+  { label: "Dance Studio :9016", url: "http://localhost:9016" },
+];
+
 function LoginForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => void }) {
   const { login } = useAuth();
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isPending, setIsPending] = useState(false);
+  const [selectedPod, setSelectedPod] = useState(() =>
+    typeof window !== "undefined" ? getPodUrl() : "http://localhost:9000"
+  );
 
   const handleSubmit = async () => {
     setError("");
+    setPodUrl(selectedPod);
     setIsPending(true);
     try {
       const user = await login(name, password);
@@ -244,12 +263,24 @@ function LoginForm({ onDone, onSwitch }: { onDone: () => void; onSwitch: () => v
 
       <div className="space-y-4 mb-5">
         <div>
+          <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Pod</label>
+          <select
+            value={selectedPod}
+            onChange={(e) => setSelectedPod(e.target.value)}
+            className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+          >
+            {DEMO_PODS.map((p) => (
+              <option key={p.url} value={p.url}>{p.label}</option>
+            ))}
+          </select>
+        </div>
+        <div>
           <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Name, email, or @handle</label>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g., Amy Lee or amy@email.com"
+            placeholder="e.g., grandmarose"
             className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
             onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
           />
