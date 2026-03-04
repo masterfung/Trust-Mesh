@@ -168,6 +168,24 @@ export default function ProfilePage() {
           {saveMutation.isError && <span className="text-sm text-danger">{saveMutation.error.message}</span>}
         </div>
 
+        {/* Emergency Medical ID link */}
+        <div className="pt-4 border-t border-card-border">
+          <h2 className="text-sm font-semibold mb-3 text-muted-foreground">Emergency Access</h2>
+          <a
+            href={`/${userId}/emergency/beacon`}
+            className="flex items-center gap-3 p-3 bg-red-950/30 border border-red-700/40 hover:border-red-600 rounded-xl text-sm transition-colors group"
+          >
+            <span className="text-xl">🚨</span>
+            <div>
+              <p className="font-medium text-red-400 group-hover:text-red-300">Emergency Medical ID</p>
+              <p className="text-white/50 text-xs">Generate QR codes for EMT / Nurse / Doctor access</p>
+            </div>
+            <svg className="w-4 h-4 text-white/30 ml-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M5 12h14M12 5l7 7-7 7"/>
+            </svg>
+          </a>
+        </div>
+
         {/* Account Info (read-only) */}
         <div className="pt-4 border-t border-card-border">
           <h2 className="text-sm font-semibold mb-3 text-muted-foreground">Account Info</h2>

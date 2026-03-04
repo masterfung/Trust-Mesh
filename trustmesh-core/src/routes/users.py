@@ -104,6 +104,7 @@ async def create_user(data: UserCreate, request: Request, db: AsyncSession = Dep
         vault_key_salt=salt,
         encrypted_vault_key=encrypted_vault_key,
         agent_personality=data.agent_personality,
+        avatar_url=data.avatar_url or None,
     )
     db.add(user)
     await db.flush()
@@ -183,8 +184,10 @@ async def login(data: LoginRequest, request: Request, db: AsyncSession = Depends
         record_failed_login(client_ip, login_id)
         raise HTTPException(401, "Invalid name or password")
 
-    # Store vault key in transit engine (key stays in Zig, zeroed in Python)
-    transit_bridge.store_key(user.id, vault_master_key)
+    # Store vault key in transit engine (key stays in Zig, zeroed in Python).
+    # Skip if already loaded — repeated logins would otherwise exhaust MAX_VERSIONS=8.
+    if not transit_bridge.has_key(user.id):
+        transit_bridge.store_key(user.id, vault_master_key)
     transit_bridge._zero_bytes(vault_master_key)
 
     # Re-encrypt any messages that were stored with pod KEK while user was offline

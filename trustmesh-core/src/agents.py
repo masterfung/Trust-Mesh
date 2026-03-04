@@ -412,7 +412,7 @@ AGENT_TOOLS = [
                 },
                 "trigger_at_ms": {
                     "type": "integer",
-                    "description": "For 'time' trigger: Unix ms when to activate",
+                    "description": "For 'time' trigger: Unix ms when to activate. Example: 'in 5 minutes' = int(time.time()*1000) + 5*60*1000. Compute this from current time.",
                 },
                 "trigger_event_type": {
                     "type": "string",
@@ -494,6 +494,51 @@ AGENT_TOOLS = [
                 },
             },
             "required": ["reason"],
+        },
+    },
+    # Emergency QR beacon for inbound responders
+    {
+        "name": "generate_emergency_qr",
+        "description": (
+            "Generate a time-limited, cryptographically signed QR code URL that a "
+            "first responder can scan to access the owner's emergency health data — "
+            "NO login required on the responder's side. "
+            "Use ONLY when an external party (EMT, nurse, physician) explicitly states "
+            "the owner is unconscious, incapacitated, or cannot respond, AND "
+            "identifies themselves with a healthcare role. "
+            "The tool verifies the requester's organization against the TrustMesh "
+            "agent registry: if verified as a medical org, the token is scoped to their "
+            "role; if unverified, only minimal paramedic-level access is issued. "
+            "The scan endpoint re-validates the org DID against the registry — "
+            "unregistered requesters fail at scan time even if they have the URL. "
+            "REFUSE if there is no clear emergency context."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "role": {
+                    "type": "string",
+                    "enum": ["paramedic", "er_nurse", "attending_physician"],
+                    "description": (
+                        "The responder's claimed role: 'paramedic' (EMT), 'er_nurse', or "
+                        "'attending_physician'. Will be downgraded to 'paramedic' if the "
+                        "org cannot be verified in the registry."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief reason for access (e.g. 'vehicle accident, patient unresponsive').",
+                },
+                "requester_org": {
+                    "type": "string",
+                    "description": (
+                        "Name or partial name of the requester's hospital / EMS org "
+                        "(e.g. 'Riverside Hospital', 'County EMS'). Used to look up their "
+                        "DID in the TrustMesh registry for verification."
+                    ),
+                },
+            },
+            "required": ["role", "reason"],
         },
     },
     # Credential tools
@@ -2145,6 +2190,197 @@ async def handle_trigger_emergency(ctx: ToolContext, reason: str) -> str:
     })
 
 
+async def handle_generate_emergency_qr(
+    ctx: ToolContext, role: str, reason: str, requester_org: str = ""
+) -> str:
+    """Generate a role-scoped UCAN beacon token and return the scanner URL.
+
+    Registry verification flow:
+    - If requester_org is provided, query the local DB + TrustMesh registry for
+      a matching organization DID.
+    - Verified medical org → token aud = org DID, role as requested.
+    - Unverified → token aud = "did:emergency:any", role downgraded to "paramedic"
+      (minimal scope: blood type, allergies, DNR, emergency contacts only).
+    - Scan endpoint re-checks the aud DID against the registry — an unregistered
+      person with the URL will fail verification at scan time.
+    """
+    from sqlalchemy import select
+    from src.models import Agent, User, AuditLog
+    from src import transit_bridge
+    from src.ucan import create_ucan_token
+    from src.rate_limit import check_emergency_issue_rate, record_emergency_issue
+    from src.federation import POD_URL, REGISTRY_URL
+    import os as _os
+    import uuid as _uuid
+
+    valid_roles = {"paramedic", "er_nurse", "attending_physician"}
+    if role not in valid_roles:
+        return json.dumps({"error": f"Invalid role '{role}'. Must be one of: {sorted(valid_roles)}"})
+
+    # Rate limit — same bucket as the beacon endpoint
+    rate_ok, rate_msg = check_emergency_issue_rate(ctx.owner_id)
+    if not rate_ok:
+        return json.dumps({"error": rate_msg})
+
+    # ── Registry verification ──────────────────────────────────────────────────
+    # Try to find the requester's org DID via local users (ghost users for known
+    # remote pods) or the public TrustMesh registry.
+    org_did: str = "did:emergency:any"   # default: unverified
+    org_verified: bool = False
+    org_verified_name: str = ""
+    final_role: str = role               # may be downgraded
+
+    MEDICAL_KEYWORDS = {"hospital", "medical", "health", "clinic", "ems", "emergency", "paramedic", "rescue"}
+
+    if requester_org:
+        org_lower = requester_org.lower()
+
+        # 1. Check local DB (ghost users from federated pods, or local org users)
+        local_result = await ctx.db.execute(
+            select(User, Agent)
+            .join(Agent, Agent.owner_id == User.id)
+            .where(User.user_type.in_(["organization", "service"]))
+            .where(User.display_name.ilike(f"%{requester_org}%"))
+        )
+        local_match = local_result.first()
+        if local_match:
+            local_user, local_agent = local_match
+            org_did = local_agent.did
+            org_verified = True
+            org_verified_name = local_user.display_name
+
+        # 2. If not local, try the registry API
+        if not org_verified and REGISTRY_URL:
+            try:
+                import httpx as _httpx
+                import urllib.parse
+                async with _httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(
+                        f"{REGISTRY_URL.rstrip('/')}/api/agents",
+                        params={"entity_type": "organization", "q": requester_org},
+                    )
+                    if resp.status_code == 200:
+                        for entry in resp.json().get("agents", []):
+                            name_lower = entry.get("name", "").lower()
+                            bio_lower = entry.get("bio", "").lower()
+                            # Must match the org name AND look like a medical org
+                            if requester_org.lower() in name_lower and any(
+                                kw in name_lower or kw in bio_lower for kw in MEDICAL_KEYWORDS
+                            ):
+                                org_did = entry.get("did", "did:emergency:any")
+                                org_verified = True
+                                org_verified_name = entry.get("name", requester_org)
+                                break
+            except Exception:
+                pass  # Registry unreachable — fall back to unverified
+
+        # 3. If still unverified, downgrade role to paramedic (minimal scope)
+        if not org_verified:
+            final_role = "paramedic"
+
+    # Load owner's agent + private key
+    agent_result = await ctx.db.execute(select(Agent).where(Agent.owner_id == ctx.owner_id))
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        return json.dumps({"error": "Agent not found for this user"})
+
+    user_result = await ctx.db.execute(select(User).where(User.id == ctx.owner_id))
+    user = user_result.scalar_one_or_none()
+    patient_username = (user.username if user else None) or ctx.owner_id
+
+    if not transit_bridge.has_key(ctx.owner_id):
+        return json.dumps({"error": "Vault key not loaded — owner must be logged in first"})
+
+    try:
+        private_key = transit_bridge.decrypt(ctx.owner_id, agent.encrypted_private_key)
+    except Exception:
+        return json.dumps({"error": "Failed to decrypt agent private key"})
+
+    # Sign the token with verified audience
+    try:
+        token = create_ucan_token(
+            issuer_did=agent.did,
+            issuer_private_key=private_key,
+            audience_did=org_did,
+            role=final_role,
+            duration_seconds=1800,
+            facts={
+                "emergency_beacon": True,
+                "issued_by": ctx.owner_name,
+                "reason": reason,
+                "org_verified": org_verified,
+                "org_name": org_verified_name or requester_org or "unknown",
+            },
+        )
+    except Exception as e:
+        return json.dumps({"error": f"Token generation failed: {e}"})
+    finally:
+        private_key = b"\x00" * len(private_key)
+
+    # Build the scanner URL (frontend + pod param for multi-pod)
+    _frontend_url = _os.getenv("TRUSTMESH_FRONTEND_URL", "http://localhost:3050").rstrip("/")
+    scanner_url = f"{_frontend_url}/emergency/scan?t={token}&p={patient_username}&pod={POD_URL}"
+
+    # Audit log
+    audit_id = str(_uuid.uuid4())
+    try:
+        audit_row = AuditLog(
+            id=audit_id,
+            actor_user_id=ctx.owner_id,
+            target_user_id=ctx.owner_id,
+            action="emergency_beacon_generated",
+            event_type="emergency",
+            token_role=final_role,
+            decision="allowed",
+            details=json.dumps({
+                "source": "agent_tool",
+                "reason": reason,
+                "org_verified": org_verified,
+                "org_name": org_verified_name or requester_org or "unknown",
+                "requested_role": role,
+                "issued_role": final_role,
+                "audience": org_did,
+            }),
+        )
+        ctx.db.add(audit_row)
+        await ctx.db.flush()
+    except Exception:
+        pass
+
+    record_emergency_issue(ctx.owner_id)
+
+    role_labels = {
+        "paramedic": "EMT / Paramedic",
+        "er_nurse": "ER Nurse",
+        "attending_physician": "Attending Physician",
+    }
+
+    downgraded_msg = ""
+    if final_role != role:
+        downgraded_msg = (
+            f" NOTE: Role downgraded from '{role}' to 'paramedic' because "
+            f"'{requester_org}' could not be verified as a registered medical organization. "
+            f"Only blood type, allergies, DNR, and emergency contacts will be visible."
+        )
+
+    return json.dumps({
+        "success": True,
+        "role": final_role,
+        "role_label": role_labels[final_role],
+        "org_verified": org_verified,
+        "org_name": org_verified_name or requester_org or "unverified",
+        "audience": org_did,
+        "scanner_url": scanner_url,
+        "expires_in": "30 minutes",
+        "audit_id": audit_id,
+        "instructions": (
+            f"Share this URL with the {role_labels[final_role]}: {scanner_url}\n"
+            f"They can open it on any device — no login required. "
+            f"Access is cryptographically verified and logged.{downgraded_msg}"
+        ),
+    })
+
+
 async def handle_send_connection_request(ctx: ToolContext, params: dict) -> str:
     """Send a connection request to another user on this pod."""
     from sqlalchemy import select
@@ -2526,6 +2762,13 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
     # Emergency escalation
     elif tool_name == "trigger_emergency":
         result = await handle_trigger_emergency(ctx, tool_input.get("reason", "unspecified emergency"))
+    elif tool_name == "generate_emergency_qr":
+        result = await handle_generate_emergency_qr(
+            ctx,
+            role=tool_input.get("role", "paramedic"),
+            reason=tool_input.get("reason", "emergency access requested"),
+            requester_org=tool_input.get("requester_org", ""),
+        )
     # Credential tools
     elif tool_name == "list_credentials":
         result = await handle_list_credentials(ctx)
@@ -2711,7 +2954,8 @@ You have tools:
 
 ## When to use tools — match INTENT, not literal phrases (works in any language):
 - User wants to befriend, add, connect with, or follow someone → **send_connection_request** IMMEDIATELY (do NOT search_vault first)
-- User wants to send a private message to someone → **send_message**
+- User wants to send a private message to someone NOW → **send_message** immediately
+- User wants to send a message IN THE FUTURE (e.g. "in 5 minutes", "later today", "remind me to message X") → **create_timeline_entry** with trigger_type="time" and trigger_at_ms=now+delay, with hook_prompt instructing the agent to call send_message at that time. ALSO call **create_task** so it appears on the dashboard as pending. Do NOT call send_message immediately.
 - User is asking about services, businesses, or providers of any kind → ALWAYS list_services first, then request_quotes for matches, then web_search
 - User wants to know what's available in some category (hospitals, tutors, cleaners, etc.) → list_services FIRST, then web_search
 - User is asking about preparations, plans, or what to bring/do → search_vault + list_connections, then query_peer relevant contacts

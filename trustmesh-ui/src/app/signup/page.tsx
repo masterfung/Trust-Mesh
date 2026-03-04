@@ -5,6 +5,27 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
 import Link from "next/link";
 import { Loader2 } from "lucide-react";
+import { setPodUrl, getPodUrl } from "@/lib/api";
+
+const DEMO_PODS = [
+  { label: "Your Pod (default) :9000", url: "http://localhost:9000" },
+  { label: "Molly Johnson :9001", url: "http://localhost:9001" },
+  { label: "Peter Johnson :9002", url: "http://localhost:9002" },
+  { label: "Jane Johnson :9003", url: "http://localhost:9003" },
+  { label: "Grandma Rose :9004", url: "http://localhost:9004" },
+  { label: "Dr. Sarah Lee :9005", url: "http://localhost:9005" },
+  { label: "Kyle Rivera :9006", url: "http://localhost:9006" },
+  { label: "Amy Torres :9007", url: "http://localhost:9007" },
+  { label: "Dorothy Park :9008", url: "http://localhost:9008" },
+  { label: "Nurse Davis :9009", url: "http://localhost:9009" },
+  { label: "EMT Mike :9010", url: "http://localhost:9010" },
+  { label: "SparkleClean :9011", url: "http://localhost:9011" },
+  { label: "Riverside Hospital :9012", url: "http://localhost:9012" },
+  { label: "AceTutor :9013", url: "http://localhost:9013" },
+  { label: "City of Riverside :9014", url: "http://localhost:9014" },
+  { label: "HandyPro :9015", url: "http://localhost:9015" },
+  { label: "Dance Studio :9016", url: "http://localhost:9016" },
+];
 
 function validatePasswordComplexity(pw: string): string | null {
   if (pw.length < 16) return "Password must be at least 16 characters";
@@ -31,6 +52,9 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [selectedPod, setSelectedPod] = useState(() =>
+    typeof window !== "undefined" ? getPodUrl() : "http://localhost:9000"
+  );
 
   const passwordError = password.length > 0 ? validatePasswordComplexity(password) : null;
   const nameError = displayName.length > 0 ? validateName(displayName) : null;
@@ -47,8 +71,10 @@ export default function SignupPage() {
   };
 
   const mutation = useMutation({
-    mutationFn: () =>
-      signup({ display_name: displayName.trim(), bio, password, email: email || undefined, avatar_url: avatarPreview || undefined }),
+    mutationFn: () => {
+      setPodUrl(selectedPod);
+      return signup({ display_name: displayName.trim(), bio, password, email: email || undefined, avatar_url: avatarPreview || undefined });
+    },
     onSuccess: (newUser) => {
       queryClient.invalidateQueries({ queryKey: ["users"] });
       window.location.href = `/${newUser.id}/onboard`;
@@ -157,6 +183,21 @@ export default function SignupPage() {
                 ) : (
                   <p className="text-xs text-muted-foreground mt-1">Protects your private memories with end-to-end encryption</p>
                 )}
+              </div>
+
+              {/* Pod selector */}
+              <div>
+                <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Pod</label>
+                <select
+                  value={selectedPod}
+                  onChange={(e) => setSelectedPod(e.target.value)}
+                  className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50 appearance-none cursor-pointer"
+                >
+                  {DEMO_PODS.map((p) => (
+                    <option key={p.url} value={p.url}>{p.label}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground mt-1">Create your account on this pod.</p>
               </div>
 
               {/* Bio */}

@@ -283,6 +283,7 @@ cmd_start() {
   _kill_port 9000
   TRUSTMESH_POD_NAME="My Pod" \
   TRUSTMESH_POD_URL="http://localhost:9000" \
+  TRUSTMESH_FRONTEND_URL="http://localhost:${FRONTEND_PORT}" \
   TRUSTMESH_DB="$DATA_DIR/user.db" \
   TRUSTMESH_POOL_SYNC_SECRET="$TRUSTMESH_POOL_SYNC_SECRET" \
   TRUSTMESH_REGISTRY_URL="http://localhost:${REGISTRY_PORT}" \
@@ -307,6 +308,7 @@ cmd_start() {
     # Each pod gets its own env vars (all share one Citadel sidecar)
     TRUSTMESH_POD_NAME="${POD_NAMES[$key]:-$key}" \
     TRUSTMESH_POD_URL="http://localhost:${port}" \
+    TRUSTMESH_FRONTEND_URL="http://localhost:${FRONTEND_PORT}" \
     TRUSTMESH_DB="$db_path" \
     TRUSTMESH_POOL_SYNC_SECRET="$TRUSTMESH_POOL_SYNC_SECRET" \
     TRUSTMESH_REGISTRY_URL="http://localhost:${REGISTRY_PORT}" \

@@ -1,18 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { api, type RegistryAgent, type RegistryPodAgent } from "@/lib/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api, type RegistryAgent, type RegistryPodAgent, type User } from "@/lib/api";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Search, Globe, Box, User, Building2, Landmark, ExternalLink, Loader2 } from "lucide-react";
+import { Search, Globe, Box, User as UserIcon, Building2, Landmark, ExternalLink, UserPlus, Check } from "lucide-react";
 
 /* ── Shared ── */
 
 const ENTITY_STYLE: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
-  person:       { icon: <User size={12} />,     color: "text-blue-400 bg-blue-500/15 border-blue-500/25",     label: "Person" },
+  person:       { icon: <UserIcon size={12} />, color: "text-blue-400 bg-blue-500/15 border-blue-500/25",     label: "Person" },
   organization: { icon: <Building2 size={12} />, color: "text-amber-400 bg-amber-500/15 border-amber-500/25", label: "Organization" },
   government:   { icon: <Landmark size={12} />,  color: "text-emerald-400 bg-emerald-500/15 border-emerald-500/25", label: "Government" },
   service:      { icon: <Building2 size={12} />, color: "text-amber-400 bg-amber-500/15 border-amber-500/25", label: "Service" },
@@ -36,7 +36,24 @@ const FILTER_OPTIONS = [
 
 /* ── Local Agent Card ── */
 
-function LocalAgentCard({ agent, userId }: { agent: RegistryAgent; userId: string }) {
+function LocalAgentCard({
+  agent, userId, currentUserId, toUserId,
+}: { agent: RegistryAgent; userId: string; currentUserId: string; toUserId?: string }) {
+  const queryClient = useQueryClient();
+  const [sent, setSent] = useState(false);
+
+  const connectMutation = useMutation({
+    mutationFn: () =>
+      api.sendConnectionRequest(currentUserId, toUserId ?? "", `Hi, I'd like to connect with you on TrustMesh.`),
+    onSuccess: () => {
+      setSent(true);
+      queryClient.invalidateQueries({ queryKey: ["connections", currentUserId] });
+    },
+  });
+
+  // Don't show connect button for yourself or when we can't resolve the user ID
+  const isSelf = toUserId === currentUserId || !toUserId;
+
   return (
     <div className="bg-card border border-card-border rounded-2xl p-5 hover:border-accent/30 hover:bg-card-hover transition-all group">
       <div className="flex items-start gap-3 mb-3">
@@ -80,15 +97,31 @@ function LocalAgentCard({ agent, userId }: { agent: RegistryAgent; userId: strin
       )}
 
       <div className="flex items-center justify-between mt-auto pt-3 border-t border-card-border/50">
-        <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[60%]" title={agent.did}>
+        <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[45%]" title={agent.did}>
           {agent.did}
         </span>
-        <Link
-          href={`/${userId}/chat`}
-          className="shrink-0 px-3 py-1.5 text-xs font-medium text-accent hover:text-accent-hover bg-accent/5 hover:bg-accent/10 rounded-lg transition-all"
-        >
-          Query Agent
-        </Link>
+        <div className="flex items-center gap-2 shrink-0">
+          {!isSelf && (
+            <button
+              type="button"
+              onClick={() => connectMutation.mutate()}
+              disabled={sent || connectMutation.isPending}
+              className={`px-2.5 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1 ${
+                sent
+                  ? "bg-green-500/10 text-green-400 cursor-default"
+                  : "bg-card-hover text-muted-foreground hover:text-foreground hover:bg-card-border/50"
+              } disabled:opacity-50`}
+            >
+              {sent ? <><Check size={11} /> Sent</> : <><UserPlus size={11} /> Connect</>}
+            </button>
+          )}
+          <Link
+            href={`/${userId}/chat`}
+            className="px-3 py-1.5 text-xs font-medium text-accent hover:text-accent-hover bg-accent/5 hover:bg-accent/10 rounded-lg transition-all"
+          >
+            Query
+          </Link>
+        </div>
       </div>
     </div>
   );
@@ -138,11 +171,14 @@ function PublicAgentCard({ agent }: { agent: RegistryPodAgent }) {
             <span className="truncate max-w-[120px]" title={agent.pod_url}>{agent.pod_url.replace(/^https?:\/\//, "")}</span>
           </span>
         </div>
-        {agent.registered_at && (
-          <span className="text-[10px] text-muted-foreground shrink-0">
-            {new Date(agent.registered_at).toLocaleDateString()}
-          </span>
-        )}
+        <a
+          href={agent.pod_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 px-3 py-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/5 hover:bg-emerald-500/10 rounded-lg transition-all flex items-center gap-1"
+        >
+          <ExternalLink size={11} /> Visit Pod
+        </a>
       </div>
     </div>
   );
@@ -282,6 +318,17 @@ export default function DiscoverPage() {
     staleTime: 60_000,
   });
 
+  const { data: users } = useQuery({
+    queryKey: ["users"],
+    queryFn: api.listUsers,
+    staleTime: 60_000,
+  });
+
+  // Build username→id map for connection requests
+  const usernameToId = new Map<string, string>(
+    (users ?? []).filter((u: User) => !!u.username).map((u: User) => [u.username!, u.id])
+  );
+
   const localAgents: RegistryAgent[] = hasFilters ? (searchData?.results ?? []) : (allData?.agents ?? []);
   const localCount = hasFilters ? (searchData?.count ?? 0) : (allData?.count ?? 0);
   const localLoading = hasFilters ? searchLoading : allLoading;
@@ -340,7 +387,13 @@ export default function DiscoverPage() {
           ) : localAgents.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {localAgents.map((agent) => (
-                <LocalAgentCard key={agent.did} agent={agent} userId={userId} />
+                <LocalAgentCard
+                  key={agent.did}
+                  agent={agent}
+                  userId={userId}
+                  currentUserId={userId}
+                  toUserId={usernameToId.get(agent.username)}
+                />
               ))}
             </div>
           ) : (

@@ -60,6 +60,21 @@ export default function ConnectionsPage() {
     (u: User) => u.id !== userId && !connectedIds.has(u.id) && !pendingIds.has(u.id)
   ) ?? [];
 
+  // Network members — people in shared networks who aren't direct connections
+  const networkMemberMap = new Map<string, { member: User; networkNames: string[] }>();
+  for (const net of networks ?? []) {
+    for (const member of net.members ?? []) {
+      if (member.id === userId || connectedIds.has(member.id)) continue;
+      const existing = networkMemberMap.get(member.id);
+      if (existing) {
+        existing.networkNames.push(net.name);
+      } else {
+        networkMemberMap.set(member.id, { member, networkNames: [net.name] });
+      }
+    }
+  }
+  const networkMembers = Array.from(networkMemberMap.values());
+
   const acceptMutation = useMutation({
     mutationFn: ({ requestId, toLabel }: { requestId: string; toLabel?: string }) =>
       api.updateConnectionRequest(requestId, "accepted", toLabel),
@@ -97,8 +112,8 @@ export default function ConnectionsPage() {
         <div>
           <h1 className="text-2xl font-bold">People</h1>
           <p className="text-muted-foreground text-sm">
-            {connections?.length
-              ? `${connections.length} trusted connection${connections.length !== 1 ? "s" : ""}`
+            {(connections?.length || networkMembers.length)
+              ? `${(connections?.length ?? 0) + networkMembers.length} trusted people`
               : "People you trust and share knowledge with"}
           </p>
         </div>
@@ -300,6 +315,46 @@ export default function ConnectionsPage() {
             )}
           </div>
         </>
+      )}
+
+      {/* Network Members (trusted via shared network, not direct connection) */}
+      {viewMode === "list" && networkMembers.length > 0 && (
+        <div className="mt-6">
+          <div className="flex items-center gap-2 mb-3">
+            <h2 className="text-sm font-semibold text-muted-foreground">
+              Trusted via Network
+              <span className="ml-1.5 text-xs font-normal">({networkMembers.length})</span>
+            </h2>
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-400 font-medium border border-violet-500/20">shared pool</span>
+          </div>
+          <div className="space-y-2">
+            {networkMembers.map(({ member, networkNames }) => (
+              <div key={member.id} className="bg-card border border-card-border rounded-2xl p-4 flex items-center gap-3">
+                <div className="w-11 h-11 rounded-xl bg-violet-500/15 flex items-center justify-center text-violet-400 font-bold text-base shrink-0">
+                  {member.display_name?.[0]?.toUpperCase() || "?"}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-sm font-semibold">{member.display_name}</p>
+                    {member.user_type === "organization" && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold uppercase tracking-wide">Org</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {networkNames.join(", ")}
+                    {member.username && !member.username.startsWith("remote:") && (
+                      <span className="text-muted-foreground/60"> · @{member.username}</span>
+                    )}
+                  </p>
+                </div>
+                <span className="inline-flex items-center gap-1 text-[11px] text-violet-400 bg-violet-500/10 px-2 py-0.5 rounded-lg font-medium border border-violet-500/20 shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400" />
+                  Network
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Disconnect Confirmation */}

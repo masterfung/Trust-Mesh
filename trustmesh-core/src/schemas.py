@@ -16,6 +16,7 @@ class UserCreate(BaseModel):
     is_discoverable: bool = False
     password: str = Field(min_length=16, max_length=128)
     agent_personality: str | None = Field(default=None, max_length=1000)
+    avatar_url: str | None = Field(default=None, max_length=512_000)
     # Username is optional at signup — auto-generated if not provided.
     # Public handle is claimed later via Go Live.
     username: str | None = Field(default=None, min_length=2, max_length=50)

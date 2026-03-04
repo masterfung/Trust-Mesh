@@ -25,6 +25,7 @@ const pin_handler = @import("handlers/pin.zig");
 const users_handler = @import("handlers/users.zig");
 const connections_handler = @import("handlers/connections.zig");
 const capsules_handler = @import("handlers/capsules.zig");
+const emergency_handler = @import("handlers/emergency.zig");
 
 // ── Globals ──
 var _gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -140,6 +141,12 @@ pub fn main() !void {
     capsules_handler.setDatabase(&database);
     capsules_handler.setTransitEngine(&transit_engine);
     capsules_handler.registerRoutes();
+
+    // Emergency beacon + QR scan (self-issued UCAN)
+    emergency_handler.setDatabase(&database);
+    emergency_handler.setTransitEngine(&transit_engine);
+    emergency_handler.setRateLimiter(&rate_limiter);
+    emergency_handler.registerRoutes();
 
     // ── Start HTTP server ──
     // C2: Read proxy shared secret from environment

@@ -418,7 +418,7 @@ export default function ChatPage() {
 
         {/* Question Input with @-mention */}
         <div className="mb-4">
-          <div className="relative">
+          <div className="flex items-end gap-2 bg-background border border-card-border rounded-xl px-3 py-2 focus-within:ring-2 focus-within:ring-accent/50 focus-within:border-accent/50 transition-all">
             <MentionInput
               value={question}
               onChange={setQuestion}
@@ -433,17 +433,17 @@ export default function ChatPage() {
               placeholder="Ask your agent anything... (type @ to ask another agent)"
               disabled={false}
             />
-            <div className="absolute right-1.5 top-1.5 flex items-center gap-1">
+            <div className="flex items-center gap-1 shrink-0 pb-0.5">
               <button
                 type="button"
                 onClick={toggleVoice}
                 disabled={!hasSpeechRecognition}
-                className={`p-2 rounded-lg transition-all ${
+                className={`p-1.5 rounded-lg transition-all ${
                   !hasSpeechRecognition
                     ? "opacity-30 cursor-not-allowed text-muted-foreground"
                     : isListening
                       ? "bg-red-500/20 text-red-400 animate-pulse"
-                      : "bg-card-hover text-muted-foreground hover:text-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-card-hover"
                 }`}
                 title={!hasSpeechRecognition ? "Voice input not supported in this browser (try Chrome)" : isListening ? "Stop listening" : "Voice input"}
               >
@@ -457,7 +457,7 @@ export default function ChatPage() {
               <button
                 type="submit"
                 disabled={!question.trim() || isStreaming}
-                className="px-4 py-2 bg-accent hover:bg-accent-hover text-accent-fg text-sm font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                className="px-3 py-1.5 bg-accent hover:bg-accent-hover text-accent-fg text-xs font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-all"
               >
                 {isStreaming ? (
                   <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
@@ -542,15 +542,41 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* History */}
+      {/* History (collapsed by default) */}
       {history && history.length > 0 && (
-        <div>
-          <h2 className="text-sm font-semibold text-muted-foreground mb-3">Chat History</h2>
-          <div className="space-y-3">
-            {history.map((r: QueryResult) => (
-              <QueryResultCard key={r.id} result={r} users={users ?? []} currentUserId={userId} />
-            ))}
-          </div>
+        <HistorySection history={history} users={users ?? []} userId={userId} />
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// History Section (collapsed by default)
+// ═══════════════════════════════════════════════════════════════
+
+function HistorySection({ history, users, userId }: { history: QueryResult[]; users: User[]; userId: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-2 group"
+      >
+        <svg
+          width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          className={`transition-transform ${open ? "rotate-90" : ""}`}
+        >
+          <path d="M9 18l6-6-6-6" />
+        </svg>
+        <span className="group-hover:underline">Chat History</span>
+        <span className="px-1.5 py-0.5 rounded bg-card-hover text-[10px] font-medium">{history.length}</span>
+      </button>
+      {open && (
+        <div className="space-y-3">
+          {history.map((r: QueryResult) => (
+            <QueryResultCard key={r.id} result={r} users={users} currentUserId={userId} />
+          ))}
         </div>
       )}
     </div>
@@ -780,7 +806,7 @@ function MentionInput({
   }, []);
 
   return (
-    <div className="relative">
+    <div className="relative flex-1 min-w-0">
       <textarea
         ref={inputRef}
         value={value}
@@ -788,8 +814,8 @@ function MentionInput({
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         rows={1}
-        className="w-full bg-background border border-card-border rounded-xl px-4 py-3 text-sm pr-32 placeholder:text-muted-foreground resize-none overflow-y-auto"
-        style={{ maxHeight: 160, minHeight: "2.625rem" }}
+        className="w-full bg-transparent text-sm placeholder:text-muted-foreground resize-none overflow-y-auto focus:outline-none"
+        style={{ maxHeight: 160, minHeight: "1.5rem" }}
         disabled={disabled}
       />
 
@@ -797,7 +823,7 @@ function MentionInput({
       {showMentions && allMentionItems.length > 0 && (
         <div
           ref={dropdownRef}
-          className="absolute left-0 right-24 bottom-full mb-1 bg-card border border-card-border rounded-xl shadow-lg overflow-hidden z-50 max-h-80 overflow-y-auto"
+          className="absolute left-0 right-0 bottom-full mb-1 bg-card border border-card-border rounded-xl shadow-lg overflow-hidden z-50 max-h-80 overflow-y-auto"
         >
           {/* Local results */}
           {filteredUsers.length > 0 && (

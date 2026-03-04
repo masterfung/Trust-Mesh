@@ -35,6 +35,8 @@ pod_app = typer.Typer(help="Pod federation management.")
 reg_app = typer.Typer(help="Public registry operations.")
 mcp_app = typer.Typer(help="MCP server for Claude Desktop / Cursor integration.")
 tl_app = typer.Typer(help="Timeline engine — view and manage entries.")
+emergency_app = typer.Typer(help="Emergency access tools (beacon QR generation, token presentation).")
+audit_app = typer.Typer(help="Audit log commands.")
 
 app.add_typer(vault_app, name="vault")
 app.add_typer(agent_app, name="agent")
@@ -44,6 +46,8 @@ app.add_typer(pod_app, name="pod")
 app.add_typer(reg_app, name="registry")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(tl_app, name="timeline")
+app.add_typer(emergency_app, name="emergency")
+app.add_typer(audit_app, name="audit")
 
 console = Console()
 
@@ -1434,6 +1438,190 @@ def timeline_tick():
         import time as _time
         delta_sec = max(0, (next_wake - int(_time.time() * 1000)) // 1000)
         console.print(f"Next wake: in {delta_sec}s")
+
+
+# ── Emergency commands ──
+
+
+@emergency_app.command("beacon")
+def emergency_beacon():
+    """Generate self-signed QR beacon tokens for EMT / Nurse / Doctor roles."""
+    session = _require_session()
+    user_id = session.get("user_id")
+    if not user_id:
+        console.print("[red]Session missing user_id. Re-login.[/red]")
+        raise typer.Exit(1)
+
+    data = _api("POST", f"/api/users/{user_id}/emergency/beacon", session=session)
+
+    pod_url = session.get("pod_url", "http://localhost:9000")
+    username = session.get("username", "")
+    patient_name = data.get("patient_name", "")
+    expires_in = data.get("expires_in", 1800)
+    audit_id = data.get("audit_id", "")
+
+    console.print(f"\n[bold red]🚨 Emergency Medical ID — {patient_name}[/bold red]")
+    console.print(f"Tokens expire in [yellow]{expires_in // 60}m {expires_in % 60}s[/yellow]")
+    console.print(f"Audit ID: [dim]{audit_id}[/dim]\n")
+
+    table = Table(title="QR Beacon URLs", show_lines=True)
+    table.add_column("Role", style="bold")
+    table.add_column("QR URL (embed in QR code)", style="cyan", no_wrap=False)
+    table.add_column("Token Hash (first 16)", style="dim")
+
+    import hashlib as _hashlib
+
+    roles_display = {
+        "paramedic": ("🚑 EMT / Paramedic", "red"),
+        "er_nurse": ("🏥 ER Nurse", "blue"),
+        "attending_physician": ("👨‍⚕️ Attending Physician", "green"),
+    }
+    tokens = data.get("tokens", {})
+    for role_key, (label, color) in roles_display.items():
+        token = tokens.get(role_key, "")
+        if not token:
+            continue
+        qr_url = f"{pod_url}/emergency/scan?t={token}&p={username}"
+        t_hash = _hashlib.sha256(token.encode()).hexdigest()[:16]
+        table.add_row(f"[{color}]{label}[/{color}]", qr_url, t_hash)
+
+    console.print(table)
+    console.print("\n[dim]Scan URL with any QR code generator to create printable codes.[/dim]")
+
+
+@emergency_app.command("access")
+def emergency_access(
+    token: str = typer.Argument(..., help="UCAN token from QR code"),
+    patient: str = typer.Argument(..., help="Patient username"),
+):
+    """Present a UCAN token and view role-scoped health data (for testing)."""
+    import urllib.parse as _up
+
+    # This doesn't require auth — matches the QR scan endpoint behaviour
+    session = _load_session()
+    pod_url = session.get("pod_url", "http://localhost:9000") if session else "http://localhost:9000"
+
+    t_enc = _up.quote(token, safe="")
+    p_enc = _up.quote(patient, safe="")
+    url = f"/api/emergency/qr?t={t_enc}&p={p_enc}"
+
+    with httpx.Client(base_url=pod_url, timeout=30.0) as client:
+        resp = client.get(url)
+
+    if resp.status_code >= 400:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        console.print(f"[red]Error {resp.status_code}: {detail}[/red]")
+        raise typer.Exit(1)
+
+    data = resp.json()
+    role = data.get("role", "unknown")
+    patient_name = data.get("patient_name", "unknown")
+    capsules = data.get("capsules", [])
+    audit_id = data.get("audit_id", "")
+
+    role_styles = {
+        "paramedic": ("🚑 PARAMEDIC", "red"),
+        "er_nurse": ("🏥 ER NURSE", "blue"),
+        "attending_physician": ("👨‍⚕️ ATTENDING PHYSICIAN", "green"),
+    }
+    label, color = role_styles.get(role, (role.upper(), "white"))
+
+    console.print(f"\n[bold {color}]{label} ACCESS — {patient_name.upper()}[/bold {color}]")
+    console.print(f"Capsules accessed: [yellow]{len(capsules)}[/yellow]  |  Audit: [dim]{audit_id}[/dim]\n")
+
+    for cap in capsules:
+        console.print(f"[bold]{cap.get('title', 'Untitled')}[/bold] [dim]({cap.get('category', '')})[/dim]")
+        console.print(f"  {cap.get('content', '')[:300]}")
+        console.print()
+
+
+# ── Audit commands ──
+
+
+@audit_app.command("list")
+def audit_list(
+    event_type: str = typer.Option(None, "--type", "-t", help="Filter by event_type (e.g. emergency, query)"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of entries to show"),
+):
+    """List your audit log entries."""
+    session = _require_session()
+    user_id = session.get("user_id")
+
+    params: dict = {"limit": limit}
+    if event_type:
+        params["event_type"] = event_type
+
+    import urllib.parse as _up
+    qs = _up.urlencode(params)
+    data = _api("GET", f"/api/users/{user_id}/audit?{qs}", session=session)
+
+    table = Table(title="Audit Log", show_lines=False)
+    table.add_column("Time", style="dim", no_wrap=True)
+    table.add_column("Action", style="cyan")
+    table.add_column("Event Type", style="yellow")
+    table.add_column("Role", style="blue")
+    table.add_column("Decision", style="bold")
+    table.add_column("Reason", style="dim")
+
+    for entry in data:
+        decision = entry.get("decision", "")
+        dec_color = "green" if decision == "allowed" else "red"
+        table.add_row(
+            entry.get("created_at", "")[:19],
+            entry.get("action", ""),
+            entry.get("event_type", ""),
+            entry.get("token_role", ""),
+            f"[{dec_color}]{decision}[/{dec_color}]",
+            entry.get("reason", ""),
+        )
+
+    console.print(table)
+
+
+@audit_app.command("emergency")
+def audit_emergency(
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of entries to show"),
+):
+    """List emergency access events with FHIR bundle links."""
+    session = _require_session()
+    user_id = session.get("user_id")
+    pod_url = session.get("pod_url", "http://localhost:9000")
+
+    import urllib.parse as _up
+    qs = _up.urlencode({"limit": limit})
+    data = _api("GET", f"/api/users/{user_id}/audit/emergency?{qs}", session=session)
+
+    table = Table(title="🚨 Emergency Access Events", show_lines=True)
+    table.add_column("Time", style="dim", no_wrap=True)
+    table.add_column("Action", style="cyan")
+    table.add_column("Role", style="bold")
+    table.add_column("Decision", style="bold")
+    table.add_column("Reason", style="dim")
+    table.add_column("FHIR Bundle", style="blue")
+
+    for entry in data:
+        audit_id = entry.get("id", "")
+        action = entry.get("action", "")
+        decision = entry.get("decision", "")
+        dec_color = "green" if decision == "allowed" else "red"
+        fhir_url = (
+            f"{pod_url}/emergency/{audit_id}/fhir"
+            if action == "emergency_data_access"
+            else ""
+        )
+        table.add_row(
+            entry.get("created_at", "")[:19],
+            action,
+            entry.get("token_role", ""),
+            f"[{dec_color}]{decision}[/{dec_color}]",
+            entry.get("reason", ""),
+            fhir_url,
+        )
+
+    console.print(table)
 
 
 # ── MCP serve ──

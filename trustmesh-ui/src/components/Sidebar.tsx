@@ -121,6 +121,24 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    label: "Safety",
+    requiresSetup: true,
+    items: [
+      {
+        href: "/emergency/beacon",
+        label: "Emergency Medical ID",
+        requiresSetup: true,
+        icon: (
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
     label: "Automation",
     requiresSetup: true,
     items: [
@@ -254,12 +272,16 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
                       href={href}
                       onClick={handleNavClick}
                       className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition-all ${
-                        isActive
+                        item.href === "/emergency/beacon"
+                          ? isActive
+                            ? "bg-red-900/40 text-red-400 font-medium"
+                            : "text-red-400/70 hover:text-red-400 hover:bg-red-950/40"
+                          : isActive
                           ? "bg-accent/10 text-accent font-medium"
                           : "text-muted-foreground hover:text-foreground hover:bg-card-hover"
                       }`}
                     >
-                      <span className={isActive ? "text-accent" : "text-muted-foreground/70"}>{item.icon}</span>
+                      <span className={item.href === "/emergency/beacon" ? "text-red-400/80" : isActive ? "text-accent" : "text-muted-foreground/70"}>{item.icon}</span>
                       <span className="flex-1">{item.label}</span>
                       {item.href === "/inbox" && inboxUnreadCount > 0 && (
                         <span className="flex items-center justify-center min-w-[16px] h-[16px] px-1 text-[9px] font-bold text-white bg-danger rounded-full">
