@@ -26,7 +26,7 @@ from sqlalchemy import select, or_
 from src.crypto import decrypt, derive_vault_key, public_key_to_b64
 from src.database import async_session, init_db
 from src.models import Agent, Connection, KnowledgeCapsule, Network, NetworkMembership, User, parse_profile_data
-from src.routes import audit, briefing, capsules, connections, emergency, fhir, intake, invites, live, messages, networks, notifications, pin, pod, queries, registry, services, tasks, timeline, users
+from src.routes import _internal, audit, briefing, capsules, connections, emergency, fhir, intake, invites, live, messages, networks, notifications, pin, pod, queries, registry, research, services, tasks, timeline, users
 from src.schemas import GraphEdge, GraphNetwork, GraphNode, GraphResponse
 
 # Transit-backed vault key store. Keys live in Zig memory (secureZero on removal).
@@ -250,7 +250,7 @@ app.add_middleware(
         "http://localhost:9100",  # Public registry
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-CSRF-Token", "X-Pool-Sync-Secret", "Cookie"],
     max_age=3600,
 )
@@ -277,6 +277,8 @@ app.include_router(registry.router)
 app.include_router(timeline.router)
 app.include_router(live.router)
 app.include_router(messages.router)
+app.include_router(research.router)
+app.include_router(_internal.router)
 
 
 @app.middleware("http")
@@ -287,6 +289,18 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'self' "
+        "https://agent.tinyfish.ai "
+        "https://generativelanguage.googleapis.com; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self';"
+    )
     if not os.getenv("TRUSTMESH_DEV_MODE"):
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
     return response
@@ -333,7 +347,7 @@ async def demo_warmup(request: Request):
         value=session_token,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=not os.getenv("TRUSTMESH_DEV_MODE"),
         max_age=86400,
         path="/",
     )

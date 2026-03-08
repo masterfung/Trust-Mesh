@@ -419,6 +419,17 @@ const PROXY_FORWARD_HEADERS = [_][]const u8{
     "cache-control",
 };
 
+/// Called by handlers when a path prefix matched but the specific sub-path is
+/// not their responsibility. Forwards the request to the Python backend.
+/// Use this instead of returning .not_found for "I don't own this route" cases.
+pub fn proxyFromHandler(ctx: *RequestContext) !void {
+    var origin: ?[]const u8 = null;
+    if (ctx.getHeader("origin")) |o| {
+        origin = try ctx.allocator.dupe(u8, o);
+    }
+    try proxyToPython(ctx._request, ctx.body, ctx.path, ctx.query, origin, ctx.head_buffer, ctx.config, ctx.allocator);
+}
+
 fn proxyToPython(
     server_request: *http.Server.Request,
     body: []const u8,

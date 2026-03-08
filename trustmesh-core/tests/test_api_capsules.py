@@ -386,26 +386,39 @@ async def test_send_connection_request_to_self(client):
 
 @pytest.mark.asyncio
 async def test_accept_connection_request(client):
-    """18. Accept connection request returns 200, creates connection."""
+    """18. Accept connection request (via DB) creates connection visible in list."""
+    import uuid
+    from datetime import datetime, timezone
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from src.database import engine
+    from src.models import Connection, ConnectionRequest
+
     user_a, cookies_a = await signup_user(client, VALID_USER_A)
     user_b, cookies_b = await signup_user(client, VALID_USER_B)
 
-    # Send request from A to B
-    req_payload = {
-        "from_user_id": user_a["id"],
-        "to_user_id": user_b["id"],
-        "message": "Let's connect",
-    }
+    # Send request from A to B via HTTP
     _as_user(client, cookies_a)
-    req_resp = await client.post("/api/connections/request", json=req_payload)
+    req_resp = await client.post("/api/connections/request", json={
+        "from_user_id": user_a["id"], "to_user_id": user_b["id"], "message": "Let's connect",
+    })
     assert req_resp.status_code == 200
     request_id = req_resp.json()["id"]
 
-    # Accept as B (the recipient)
-    _as_user(client, cookies_b)
-    accept_resp = await client.put(f"/api/connection-requests/{request_id}", json={"status": "accepted"})
-    assert accept_resp.status_code == 200
-    assert accept_resp.json()["status"] == "accepted"
+    # Accept directly via DB (PUT handler is native Zig; Python tests bypass it)
+    now = datetime.now(timezone.utc)
+    async with AsyncSession(engine) as db:
+        req = await db.get(ConnectionRequest, request_id)
+        assert req is not None
+        req.status = "accepted"
+        req.reviewed_at = now
+        db.add(Connection(
+            id=str(uuid.uuid4()),
+            from_user_id=user_a["id"],
+            to_user_id=user_b["id"],
+            status="accepted",
+            accepted_at=now,
+        ))
+        await db.commit()
 
     # Verify connection appears in B's connection list
     _as_user(client, cookies_b)
@@ -418,24 +431,22 @@ async def test_accept_connection_request(client):
 
 @pytest.mark.asyncio
 async def test_accept_connection_by_wrong_user(client):
-    """19. Accept connection by wrong user (not the recipient) returns 403."""
+    """19. PUT /api/connection-requests/{id} is handled by Zig kernel.
+    Auth enforcement (403 for wrong user) is covered by Zig unit tests.
+    Verify the Python layer no longer exposes this route.
+    """
     user_a, cookies_a = await signup_user(client, VALID_USER_A)
     user_b, _cookies_b = await signup_user(client, VALID_USER_B)
 
-    # Send request from A to B
-    req_payload = {
-        "from_user_id": user_a["id"],
-        "to_user_id": user_b["id"],
-        "message": "Connect",
-    }
     _as_user(client, cookies_a)
-    req_resp = await client.post("/api/connections/request", json=req_payload)
+    req_resp = await client.post("/api/connections/request", json={
+        "from_user_id": user_a["id"], "to_user_id": user_b["id"], "message": "Connect",
+    })
     request_id = req_resp.json()["id"]
 
-    # A (the sender) tries to accept -- should be denied
-    _as_user(client, cookies_a)
+    # Route no longer exists in Python layer — expect 404 or 405
     accept_resp = await client.put(f"/api/connection-requests/{request_id}", json={"status": "accepted"})
-    assert accept_resp.status_code == 403
+    assert accept_resp.status_code in (404, 405)
 
 
 @pytest.mark.asyncio

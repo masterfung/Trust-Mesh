@@ -41,11 +41,14 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
     bio: Mapped[str] = mapped_column(Text, default="")
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)  # base64 data URI or external URL
-    user_type: Mapped[str] = mapped_column(String(20), default="person")  # "person" | "organization" | "government"
+    user_type: Mapped[str] = mapped_column(String(20), default="person")  # "person" | "organization"
+    org_subtype: Mapped[str | None] = mapped_column(String(20), nullable=True)  # null for persons; org: "company"|"nonprofit"|"healthcare"|"education"|"emergency"|"government"
+    agent_mode: Mapped[str] = mapped_column(String(20), default="private")  # "private" (person) | "internal" (org default) | "public" (org after toggle)
     profile_data: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON structured profile
     is_discoverable: Mapped[bool] = mapped_column(Boolean, default=False)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     is_remote: Mapped[bool] = mapped_column(Boolean, default=False)
+    connectivity_mode: Mapped[str] = mapped_column(String(30), default="invite_only")  # relay_primary | direct_with_fallback | invite_only
     remote_pod_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     remote_did: Mapped[str | None] = mapped_column(String(100), nullable=True)
     vault_key_salt: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
@@ -69,6 +72,7 @@ class Agent(Base):
     public_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     encrypted_private_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     did: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    encryption_public_key: Mapped[str | None] = mapped_column(String(100), nullable=True)  # X25519 b64url — for relay payload encryption
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     owner: Mapped["User"] = relationship(back_populates="agent")

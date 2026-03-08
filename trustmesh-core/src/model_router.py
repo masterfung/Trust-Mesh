@@ -48,6 +48,8 @@ class ModelResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     stop_reason: str = "end_turn"  # "end_turn" or "tool_use"
     raw: object = None  # Original response for debugging
+    provider: str = "anthropic"  # "anthropic", "gemini", or "tee"
+    model_id: str = ""  # Actual model ID used
 
 
 # ── Provider config ────────────────────────────────────────────
@@ -367,12 +369,30 @@ class ModelRouter:
         Returns:
             Unified ModelResponse — same shape regardless of provider.
         """
-        if sensitivity == "sensitive" and self._tee_client:
-            tee_model = self._tee_models.get(model, self._tee_models.get("default", model))
-            log.warning(f"[ROUTING] sensitivity={sensitivity} → TEE ({self._tee_provider}, {tee_model})")
-            return await self._tee_complete(messages, system, model, tools, max_tokens)
+        if sensitivity == "sensitive":
+            if self._tee_client:
+                tee_model = self._tee_models.get(model, self._tee_models.get("default", model))
+                log.warning(f"[ROUTING] sensitivity={sensitivity} → TEE ({self._tee_provider}, {tee_model})")
+                return await self._tee_complete(messages, system, model, tools, max_tokens)
+            # TEE unavailable — Anthropic only, never Gemini for sensitive data
+            log.warning(
+                "[ROUTING] TEE unavailable for sensitive query — using Anthropic fallback. "
+                "Data will be processed under Anthropic data processing agreement."
+            )
+            return await self._anthropic_complete(messages, system, model, tools, max_tokens)
 
-        if self._gemini_client:
+        # Skip Gemini for multi-turn tool loops: thinking models attach thought_signatures
+        # to tool call responses, but our Anthropic-format message history strips them
+        # during conversion. Re-sending without thought_signatures causes a 400 error.
+        # Detect tool_result in history → this is a continuation turn → use Anthropic directly.
+        has_tool_history = any(
+            isinstance(msg.get("content"), list) and
+            any(isinstance(b, dict) and b.get("type") == "tool_result"
+                for b in msg["content"])
+            for msg in messages
+        )
+
+        if self._gemini_client and not has_tool_history:
             gemini_model = self._gemini_models.get(model, self._gemini_models.get("default", model))
             log.warning(f"[ROUTING] → Gemini ({gemini_model})")
             try:
@@ -431,7 +451,10 @@ class ModelRouter:
             kwargs["tool_choice"] = "auto"
 
         response = await self._gemini_client.chat.completions.create(**kwargs)
-        return _openai_response_to_model_response(response)
+        result = _openai_response_to_model_response(response)
+        result.provider = "gemini"
+        result.model_id = model_id
+        return result
 
     async def _gemini_stream(self, messages, system, model, max_tokens):
         """Stream from Gemini via OpenAI-compatible endpoint."""
@@ -467,7 +490,10 @@ class ModelRouter:
             kwargs["tools"] = tools
 
         response = await self._anthropic.messages.create(**kwargs)
-        return _anthropic_response_to_model_response(response)
+        result = _anthropic_response_to_model_response(response)
+        result.provider = "anthropic"
+        result.model_id = model_id
+        return result
 
     async def _anthropic_stream(self, messages, system, model, max_tokens):
         """Stream from Anthropic API."""
@@ -502,7 +528,10 @@ class ModelRouter:
             kwargs["tool_choice"] = "auto"
 
         response = await self._tee_client.chat.completions.create(**kwargs)
-        return _openai_response_to_model_response(response)
+        result = _openai_response_to_model_response(response)
+        result.provider = "tee"
+        result.model_id = model_id
+        return result
 
     async def _tee_stream(self, messages, system, model, max_tokens):
         """Stream from TEE provider (OpenAI-compatible API)."""

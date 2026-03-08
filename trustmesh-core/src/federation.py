@@ -5,9 +5,11 @@ Federation lets pods discover each other's agents and proxy gossip queries acros
 """
 
 import asyncio
+import ipaddress
 import logging
 import os
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select
@@ -26,6 +28,42 @@ REGISTRY_URL = os.getenv("TRUSTMESH_REGISTRY_URL", "")
 
 # Timeout for cross-pod HTTP calls
 FEDERATION_TIMEOUT = 15.0
+
+# ── SSRF protection ─────────────────────────────────────────────
+
+_PRIVATE_NETS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+]
+_BLOCKED_HOSTNAMES = frozenset([
+    "localhost", "metadata.google.internal", "169.254.169.254",
+    "instance-data", "computeMetadata",
+])
+
+
+def _validate_peer_url(url: str) -> None:
+    """Raise ValueError if url targets a private/metadata/loopback address."""
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError(f"Invalid peer URL (no hostname): {url!r}")
+    if host.lower() in _BLOCKED_HOSTNAMES:
+        raise ValueError(f"Peer URL targets blocked host: {host!r}")
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Peer URL has disallowed scheme: {parsed.scheme!r}")
+    try:
+        addr = ipaddress.ip_address(host)
+        if any(addr in net for net in _PRIVATE_NETS):
+            raise ValueError(f"Peer URL targets private address: {host!r}")
+    except ValueError as e:
+        if "targets" in str(e) or "disallowed" in str(e) or "blocked" in str(e):
+            raise  # re-raise our own checks
+        pass  # hostname (not IP literal) — allow, DNS resolves later
 
 
 async def get_pod_info() -> dict:
@@ -61,6 +99,11 @@ async def get_pod_info() -> dict:
 
 async def ping_peer(peer_url: str) -> dict | None:
     """Ping a peer pod and return its info, or None if unreachable."""
+    try:
+        _validate_peer_url(peer_url)
+    except ValueError as exc:
+        logger.warning("federation: SSRF check rejected %r — %s", peer_url, exc)
+        return None
     try:
         async with httpx.AsyncClient(timeout=FEDERATION_TIMEOUT) as client:
             r = await client.get(f"{peer_url.rstrip('/')}/api/pod")
@@ -232,6 +275,11 @@ async def remote_query(
     We send our agent DID so the remote pod can verify identity.
     """
     try:
+        _validate_peer_url(peer_url)
+    except ValueError as exc:
+        logger.warning("federation: SSRF check rejected %r — %s", peer_url, exc)
+        return None
+    try:
         import json as _json
         from src.federation_auth import sign_federation_request
 
@@ -286,10 +334,13 @@ async def get_or_create_ghost_user(
     # Verify the DID is actually listed in the remote pod's agent card
     verified_did = await _verify_did_on_pod(remote_did, remote_pod_url)
     if not verified_did:
-        logger.warning(f"Ghost DID {remote_did[:20]}... not found on {remote_pod_url} agent card — proceeding with caution")
+        logger.warning(
+            "Ghost DID %s... rejected — not found on %s agent card",
+            remote_did[:20], remote_pod_url,
+        )
+        raise ValueError(f"DID {remote_did[:20]}... not verified on {remote_pod_url}")
 
     # Extract hostname from pod URL for username
-    from urllib.parse import urlparse
     hostname = urlparse(remote_pod_url).hostname or "unknown"
 
     ghost = User(
@@ -376,6 +427,11 @@ async def send_pool_invite(
     The remote pod will create a ghost user for us and add it to their copy
     of the pool (if they have one), or just acknowledge.
     """
+    try:
+        _validate_peer_url(peer_url)
+    except ValueError as exc:
+        logger.warning("federation: SSRF check rejected %r — %s", peer_url, exc)
+        return None
     try:
         async with httpx.AsyncClient(timeout=FEDERATION_TIMEOUT) as client:
             r = await client.post(

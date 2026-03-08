@@ -1,12 +1,8 @@
-// handlers/users.zig — Native Zig handlers for user reads (page load hot path).
-//
-// Mutations stay in Python (profile update calls registry, needs async HTTP).
+// handlers/users.zig — Native Zig handlers for user reads + connectivity mutation.
 //
 // Routes:
-//   GET /api/users              → handleListUsers (discoverable users)
-//   GET /api/users/{id}         → handleGetUser
-//   GET /api/users/{id}/agent   → handleGetAgent
-//   GET /api/users/{id}/agent/card → handleGetAgentCard
+//   GET   /api/users                    → handleListUsers (discoverable users)
+//   PATCH /api/users/{id}/connectivity  → handlePatchConnectivity
 
 const std = @import("std");
 const podos = @import("podos");
@@ -16,16 +12,19 @@ const common = @import("common.zig");
 const json_mod = podos.json;
 
 var _db: ?*podos.db.Database = null;
+var _session_store: ?*podos.session.SessionStore = null;
 
 pub fn setDatabase(d: *podos.db.Database) void {
     _db = d;
 }
 
+pub fn setSessionStore(store: *podos.session.SessionStore) void {
+    _session_store = store;
+}
+
 pub fn registerRoutes() void {
     router.addExact(.GET, "/api/users", handleListUsers);
-    // Prefix routes for /api/users/{id}, /api/users/{id}/agent, /api/users/{id}/agent/card
-    // These are dispatched by the GET prefix handler in notifications/audit/pin
-    // but we register specific exact patterns to avoid conflicts
+    router.addPrefix(.PATCH, "/api/users/", handlePatchUser);
 }
 
 // ═══════════════════════════════════════════
@@ -116,4 +115,79 @@ fn handleListUsers(ctx: *http.RequestContext) !void {
 
     try result.appendSlice(ctx.allocator, "]");
     try ctx.json(.ok, result.items);
+}
+
+// ═══════════════════════════════════════════
+//  PATCH /api/users/{id}/connectivity
+// ═══════════════════════════════════════════
+
+fn handlePatchUser(ctx: *http.RequestContext) !void {
+    const database = _db orelse return ctx.sendError(.service_unavailable, "DB not ready");
+
+    // Only handle /connectivity suffix
+    if (!std.mem.endsWith(u8, ctx.path, "/connectivity")) {
+        return ctx.sendError(.not_found, "Not found");
+    }
+
+    var uid_buf: [128]u8 = undefined;
+    const auth_user_id = common.requireAuth(ctx, &uid_buf) orelse return;
+
+    // Extract user_id from path: /api/users/{id}/connectivity
+    const prefix = "/api/users/";
+    if (!std.mem.startsWith(u8, ctx.path, prefix)) {
+        return ctx.sendError(.bad_request, "Invalid path");
+    }
+    const rest = ctx.path[prefix.len..];
+    const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return ctx.sendError(.bad_request, "Invalid path");
+    const path_user_id = rest[0..slash];
+
+    // Authorization: user can only update their own connectivity mode
+    if (!std.mem.eql(u8, auth_user_id, path_user_id)) {
+        return ctx.sendError(.forbidden, "Access denied");
+    }
+
+    // Parse body
+    if (ctx.body.len == 0) return ctx.sendError(.bad_request, "Request body required");
+
+    const ConnectivityUpdate = struct {
+        connectivity_mode: ?[]const u8 = null,
+    };
+
+    const parsed = json_mod.parse(ConnectivityUpdate, ctx.allocator, ctx.body) catch
+        return ctx.sendError(.bad_request, "Invalid JSON");
+    defer parsed.deinit();
+
+    const mode = parsed.value.connectivity_mode orelse return ctx.sendError(.bad_request, "connectivity_mode required");
+
+    // Validate against allowlist
+    const valid = [_][]const u8{ "relay_primary", "direct_with_fallback", "invite_only" };
+    var mode_valid = false;
+    for (valid) |v| {
+        if (std.mem.eql(u8, mode, v)) {
+            mode_valid = true;
+            break;
+        }
+    }
+    if (!mode_valid) {
+        return ctx.sendError(.bad_request, "connectivity_mode must be relay_primary, direct_with_fallback, or invite_only");
+    }
+
+    // UPDATE users SET connectivity_mode=? WHERE id=?
+    {
+        var stmt = database.prepare(
+            "UPDATE users SET connectivity_mode=? WHERE id=?",
+        ) catch return ctx.sendError(.internal_server_error, "DB error");
+        defer stmt.finalize();
+        stmt.bindText(1, mode.ptr, @intCast(mode.len)) catch return ctx.sendError(.internal_server_error, "DB error");
+        stmt.bindText(2, auth_user_id.ptr, @intCast(auth_user_id.len)) catch return ctx.sendError(.internal_server_error, "DB error");
+        _ = stmt.step() catch return ctx.sendError(.internal_server_error, "Update failed");
+    }
+
+    var esc_mode: [64]u8 = undefined;
+    const emode = json_mod.escapeJsonString(mode, &esc_mode) catch mode.len;
+    const body = try std.fmt.allocPrint(ctx.allocator,
+        "{{\"status\":\"ok\",\"connectivity_mode\":\"{s}\"}}",
+        .{esc_mode[0..emode]},
+    );
+    try ctx.json(.ok, body);
 }

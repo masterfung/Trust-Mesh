@@ -44,14 +44,16 @@ fn handleGetCapsules(ctx: *http.RequestContext) !void {
     if (std.mem.indexOf(u8, ctx.path, "/capsules")) |_| {
         return handleListCapsules(ctx);
     }
-    return ctx.sendError(.not_found, "Not found");
+    // Not a capsule GET route — forward to Python proxy
+    return http.proxyFromHandler(ctx);
 }
 
 fn handlePostCapsules(ctx: *http.RequestContext) !void {
     if (std.mem.indexOf(u8, ctx.path, "/capsules")) |_| {
         return handleCreateCapsule(ctx);
     }
-    return ctx.sendError(.not_found, "Not found");
+    // Not a capsule POST route — forward to Python proxy
+    return http.proxyFromHandler(ctx);
 }
 
 // ═══════════════════════════════════════════

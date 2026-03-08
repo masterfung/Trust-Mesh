@@ -10,6 +10,7 @@ Agents have two modes:
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -199,6 +200,62 @@ AGENT_TOOLS = [
                 },
             },
             "required": ["url", "goal"],
+        },
+    },
+    {
+        "name": "research_parallel",
+        "description": (
+            "Browse multiple websites simultaneously using TinyFish — each URL gets its own "
+            "AI browser session running in parallel. Use for comparing agencies, gathering "
+            "reviews from multiple sources, or checking listings across several sites at once. "
+            "Results are aggregated into a comparison summary. Much faster than sequential browsing. "
+            "Max 8 URLs. Takes 60-120s total regardless of URL count."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "url": {"type": "string"},
+                            "goal": {"type": "string", "description": "What to extract from this page"},
+                            "label": {"type": "string", "description": "Display name e.g. 'SeniorHelpers Riverside'"},
+                        },
+                        "required": ["url", "goal"],
+                    },
+                },
+                "save_as_capsule": {"type": "boolean", "default": False},
+                "capsule_title": {"type": "string"},
+                "capsule_visibility": {
+                    "type": "string",
+                    "enum": ["private", "internal", "open"],
+                    "default": "private",
+                },
+                "share_with_network": {
+                    "type": "string",
+                    "description": "Network name to auto-share results with",
+                },
+            },
+            "required": ["tasks"],
+        },
+    },
+    {
+        "name": "check_conflicts",
+        "description": (
+            "Check if a stated fact conflicts with anything in the vault. Call this when the "
+            "user states a date, name, location, or amount that you want to verify against "
+            "stored knowledge before acting on it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "claim": {"type": "string", "description": "The fact the user just stated"},
+                "search_query": {"type": "string", "description": "What to search in vault to verify"},
+            },
+            "required": ["claim", "search_query"],
         },
     },
     {
@@ -733,6 +790,9 @@ async def handle_search_vault(ctx: ToolContext, query: str) -> str:
             "emergency_accessible": c.emergency_accessible,
             "category": c.category,
             "content": content[:500],  # Truncate for context window
+            "freshness": c.freshness,
+            "last_verified_at": c.last_verified_at.isoformat() if c.last_verified_at else None,
+            "authority_weight": c.authority_weight,
         })
 
     return json.dumps({
@@ -935,23 +995,138 @@ async def handle_web_search(ctx: ToolContext, query: str, context: str = "") -> 
         return json.dumps({"success": False, "error": str(e), "results": []})
 
 
-async def handle_browse_web(ctx: ToolContext, params: dict) -> str:
-    """Browse a real website and extract structured data via TinyFish."""
+# ── TinyFish PII protection ──────────────────────────────────────────
+
+_PII_PATTERNS = [
+    re.compile(r'\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b'),          # phone
+    re.compile(r'\b[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}\b'),           # email
+    re.compile(r'\b\d{3}-\d{2}-\d{4}\b'),                        # SSN
+    re.compile(r'\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b'),    # card
+]
+
+# Only these capsule types are safe to include in goals sent to external services
+_TINYFISH_SAFE_TYPES = frozenset({"preference"})
+
+
+def _redact_pii(text: str) -> str:
+    """Redact phone, email, SSN, and card patterns from text."""
+    for pattern in _PII_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    return text
+
+
+async def _enrich_goal_with_vault_context(
+    ctx: "ToolContext", goal: str, categories: list[str] | None = None,
+    tinyfish_safe: bool = False,
+) -> tuple[str, list[dict]]:
+    """Pull relevant, fresh vault context to personalize a TinyFish goal.
+
+    Returns (enriched_goal, context_manifest) where manifest describes
+    each piece of vault data used (for UI authorization display).
+    """
+    from src import research_bridge
+
+    try:
+        result_str = await handle_search_vault(ctx, goal)
+        result = json.loads(result_str)
+    except Exception:
+        return goal, []
+
+    now = datetime.now(timezone.utc)
+    useful_types = ("preference", "contact", "schedule", "memory", "procedure")
+    # When sending to external services, restrict to non-PII capsule types only
+    allowed_types = _TINYFISH_SAFE_TYPES if tinyfish_safe else useful_types
+    context_items = []
+
+    for cap in result.get("capsules", []):
+        if cap["capsule_type"] not in allowed_types:
+            continue
+        if categories and cap.get("category") not in categories:
+            continue
+
+        freshness = cap.get("freshness", "permanent")
+        last_verified = cap.get("last_verified_at")
+        if freshness == "temporary" and last_verified:
+            try:
+                days_old = (now - datetime.fromisoformat(last_verified)).days
+                confidence = f"[Verified {days_old}d ago — may have changed]" if days_old > 7 else "[Recent]"
+            except Exception:
+                confidence = "[Temporary]"
+        elif freshness == "recurring":
+            confidence = "[Recurring — verify current schedule]"
+        else:
+            confidence = "[Permanent fact]"
+
+        authority_weight = cap.get("authority_weight", 1.0)
+        last_verified_for_score = last_verified or "2020-01-01T00:00:00+00:00"
+        try:
+            days_since = (now - datetime.fromisoformat(last_verified_for_score)).days
+        except Exception:
+            days_since = 0
+
+        content = cap["content"][:150]
+        if tinyfish_safe:
+            content = _redact_pii(content)
+
+        context_items.append({
+            "title": cap["title"],
+            "content": content,
+            "capsule_type": cap["capsule_type"],
+            "freshness": freshness,
+            "confidence": confidence,
+            "authority_weight": authority_weight,
+            "capsule_id": cap["id"],
+            "_score": research_bridge.freshness_score(freshness, days_since, authority_weight),
+        })
+
+    # Sort: highest freshness score first
+    context_items.sort(key=lambda c: -c["_score"])
+    # Strip internal sort key before returning
+    for c in context_items:
+        c.pop("_score", None)
+
+    if context_items:
+        context_lines = "\n".join(
+            f"- {c['title']}: {c['content']} {c['confidence']}"
+            for c in context_items
+        )
+        enriched = goal + f"\n\nApply these verified user preferences and facts:\n{context_lines}"
+        return enriched, context_items
+
+    return goal, []
+
+
+def _infer_categories(goal: str) -> list[str]:
+    """Infer relevant capsule categories from a goal string."""
+    goal_lower = goal.lower()
+    categories = []
+    if any(w in goal_lower for w in ("home care", "health", "medical", "medication", "hospital", "doctor", "nurse", "care", "therapy")):
+        categories.append("health")
+    if any(w in goal_lower for w in ("home", "house", "repair", "cleaning", "moving")):
+        categories.append("home")
+    if any(w in goal_lower for w in ("work", "job", "business", "office", "career")):
+        categories.append("work")
+    if any(w in goal_lower for w in ("family", "parent", "child", "grandma", "grandpa", "brother", "sister")):
+        categories.append("family")
+    if any(w in goal_lower for w in ("prefer", "like", "food", "diet", "language", "prefer")):
+        categories.append("personal")
+    # Default: include health and personal for most searches
+    if not categories:
+        categories = ["health", "personal", "family"]
+    return categories
+
+
+async def _call_tinyfish_single(
+    url: str, goal: str, label: str, ctx: "ToolContext"
+) -> dict:
+    """Single TinyFish browse session. Returns result dict (success/error)."""
     import asyncio
     import aiohttp
+    from src import research_bus
 
     api_key = os.getenv("TINYFISH_API_KEY", "")
     if not api_key:
-        return json.dumps({
-            "success": False,
-            "error": "Web browsing unavailable (TINYFISH_API_KEY not configured)",
-        })
-
-    url = params["url"]
-    goal = params["goal"]
-    save_as_capsule = params.get("save_as_capsule", False)
-    capsule_title = params.get("capsule_title", "")
-    capsule_visibility = params.get("capsule_visibility", "private")
+        return {"url": url, "label": label, "success": False, "error": "TINYFISH_API_KEY not configured"}
 
     endpoint = "https://agent.tinyfish.ai/v1/automation/run-sse"
     headers = {
@@ -964,6 +1139,12 @@ async def handle_browse_web(ctx: ToolContext, params: dict) -> str:
     result_data = None
 
     try:
+        await research_bus.publish(ctx.owner_id, {
+            "type": "research_started",
+            "label": label or url[:50],
+            "url": url,
+        })
+
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 endpoint,
@@ -973,7 +1154,13 @@ async def handle_browse_web(ctx: ToolContext, params: dict) -> str:
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    return json.dumps({"success": False, "error": f"HTTP {resp.status}: {body[:200]}"})
+                    await research_bus.publish(ctx.owner_id, {
+                        "type": "research_done",
+                        "label": label or url[:50],
+                        "success": False,
+                        "error": f"HTTP {resp.status}",
+                    })
+                    return {"url": url, "label": label, "success": False, "error": f"HTTP {resp.status}: {body[:200]}"}
 
                 async for line in resp.content:
                     line = line.decode("utf-8").strip()
@@ -988,45 +1175,129 @@ async def handle_browse_web(ctx: ToolContext, params: dict) -> str:
                         if event_type == "PROGRESS":
                             purpose = event.get("purpose", "")
                             steps.append(purpose)
-                            log.info("browse_web [%s] step: %s", url[:50], purpose[:80])
+                            log.info("tinyfish [%s] step: %s", url[:50], purpose[:80])
+                            await research_bus.publish(ctx.owner_id, {
+                                "type": "research_step",
+                                "label": label or url[:50],
+                                "step": purpose[:120],
+                            })
                         elif event_type == "COMPLETE":
                             result_data = event.get("resultJson") or event.get("result")
                         elif event_type == "ERROR":
-                            return json.dumps({
+                            err_msg = event.get("message", "TinyFish error")
+                            await research_bus.publish(ctx.owner_id, {
+                                "type": "research_done",
+                                "label": label or url[:50],
                                 "success": False,
-                                "error": event.get("message", "TinyFish error"),
-                                "steps": steps,
+                                "error": err_msg,
                             })
+                            return {"url": url, "label": label, "success": False, "error": err_msg, "steps": steps}
                     except json.JSONDecodeError:
                         pass
 
     except asyncio.TimeoutError:
-        return json.dumps({
+        await research_bus.publish(ctx.owner_id, {
+            "type": "research_done",
+            "label": label or url[:50],
             "success": False,
-            "error": "Browse timed out after 180s. Try a more direct URL or simpler goal.",
-            "steps_completed": steps,
+            "error": "Timed out",
         })
+        return {"url": url, "label": label, "success": False, "error": "Browse timed out after 180s", "steps_completed": steps}
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        await research_bus.publish(ctx.owner_id, {
+            "type": "research_done",
+            "label": label or url[:50],
+            "success": False,
+            "error": str(e),
+        })
+        return {"url": url, "label": label, "success": False, "error": str(e)}
 
-    if result_data is None:
+    summary = ""
+    if result_data is not None:
+        summary = (json.dumps(result_data)[:200] if not isinstance(result_data, str) else result_data[:200])
+
+    await research_bus.publish(ctx.owner_id, {
+        "type": "research_done",
+        "label": label or url[:50],
+        "success": True,
+        "summary": summary,
+    })
+
+    return {
+        "url": url,
+        "label": label,
+        "success": True,
+        "steps_taken": len(steps),
+        "result": result_data,
+    }
+
+
+async def handle_browse_web(ctx: ToolContext, params: dict) -> str:
+    """Browse a real website and extract structured data via TinyFish.
+
+    Automatically enriches the goal with vault context (preferences, health info)
+    and scans the result with Citadel before returning.
+    """
+    from src import research_bridge
+
+    if not os.getenv("TINYFISH_API_KEY", ""):
         return json.dumps({
             "success": False,
-            "error": "No result returned from browser.",
-            "steps_completed": steps,
+            "error": "Web browsing unavailable (TINYFISH_API_KEY not configured)",
         })
 
-    # Optionally save result as a vault capsule
+    url = params["url"]
+    goal = params["goal"]
+    save_as_capsule = params.get("save_as_capsule", False)
+    capsule_title = params.get("capsule_title", "")
+    capsule_visibility = params.get("capsule_visibility", "private")
+
+    # Check Zig research cache before dispatching TinyFish
+    cached = research_bridge.cache_get(url, goal)
+    if cached:
+        log.info("browse_web: returning cached result for %s", url[:50])
+        try:
+            return cached
+        except Exception:
+            pass
+
+    # Enrich goal with vault context (tinyfish_safe=True: only preferences, PII redacted)
+    categories = _infer_categories(goal)
+    enriched_goal, context_items = await _enrich_goal_with_vault_context(
+        ctx, goal, categories, tinyfish_safe=True
+    )
+
+    # Browse via shared TinyFish helper (publishes bus events)
+    result = await _call_tinyfish_single(url, enriched_goal, url[:50], ctx)
+
+    if not result.get("success"):
+        return json.dumps(result)
+
+    result_data = result.get("result")
+
+    # Citadel scan — TinyFish output is from untrusted websites
+    from src import citadel
+    result_text = json.dumps(result_data) if result_data is not None else ""
+    scan = await citadel.scan_output(result_text, trust_level="public")
+    citadel_flagged = not scan.is_safe
+    if citadel_flagged:
+        log.warning("browse_web: Citadel flagged TinyFish result for %s: %s", url[:50], scan.findings)
+
+    # Optionally save result as a vault capsule (temporary, expires in 7 days)
     saved_capsule_id = None
     if save_as_capsule and capsule_title:
         try:
+            from datetime import timedelta
             content = json.dumps(result_data) if not isinstance(result_data, str) else result_data
+            if citadel_flagged:
+                content = f"[Security notice: content flagged during scan]\n\n{content}"
             save_params = {
                 "title": capsule_title,
                 "content": content,
                 "capsule_type": "memory",
                 "visibility": capsule_visibility,
-                "category": "research",
+                "category": "general",
+                "freshness": "temporary",
             }
             save_result_str = await handle_save_capsule(ctx, save_params)
             save_result = json.loads(save_result_str)
@@ -1035,12 +1306,147 @@ async def handle_browse_web(ctx: ToolContext, params: dict) -> str:
         except Exception as e:
             log.warning("browse_web: failed to save capsule: %s", e)
 
-    return json.dumps({
+    output = json.dumps({
         "success": True,
         "url": url,
-        "steps_taken": len(steps),
+        "steps_taken": result.get("steps_taken", 0),
         "result": result_data,
+        "vault_context_used": context_items,
+        **({"citadel_flagged": True, "citadel_findings": scan.findings} if citadel_flagged else {}),
         **({"saved_capsule_id": saved_capsule_id} if saved_capsule_id else {}),
+    })
+
+    # Store in research cache
+    research_bridge.cache_put(url, goal, output)
+
+    return output
+
+
+async def handle_research_parallel(ctx: ToolContext, params: dict) -> str:
+    """Browse multiple websites simultaneously using TinyFish parallel sessions."""
+    import asyncio
+    from src import research_bus
+
+    if not os.getenv("TINYFISH_API_KEY", ""):
+        return json.dumps({
+            "success": False,
+            "error": "Web browsing unavailable (TINYFISH_API_KEY not configured)",
+        })
+
+    tasks = params.get("tasks", [])[:8]  # cap at 8
+    if not tasks:
+        return json.dumps({"success": False, "error": "No tasks provided"})
+
+    save_as_capsule = params.get("save_as_capsule", False)
+    capsule_title = params.get("capsule_title", "")
+    share_with_network = params.get("share_with_network", "")
+    # Default to internal when sharing with a network so peers can actually read it
+    capsule_visibility = params.get("capsule_visibility", "internal" if share_with_network else "private")
+
+    # Enrich all goals with shared vault context (tinyfish_safe=True: only preferences, PII redacted)
+    combined_goal = tasks[0]["goal"] if tasks else ""
+    categories = _infer_categories(combined_goal)
+    enriched_goal, context_items = await _enrich_goal_with_vault_context(
+        ctx, combined_goal, categories, tinyfish_safe=True
+    )
+
+    # Announce parallel research start
+    labels = [t.get("label", t["url"][:40]) for t in tasks]
+    await research_bus.publish(ctx.owner_id, {
+        "type": "research_parallel_started",
+        "tasks": labels,
+        "count": len(tasks),
+    })
+
+    # Dispatch all TinyFish sessions in parallel
+    coros = [
+        _call_tinyfish_single(
+            t["url"],
+            enriched_goal if t["goal"] == tasks[0]["goal"] else t["goal"],
+            t.get("label", t["url"][:40]),
+            ctx,
+        )
+        for t in tasks
+    ]
+    results = await asyncio.gather(*coros, return_exceptions=True)
+
+    per_url = []
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            per_url.append({"label": labels[i], "success": False, "error": str(r)})
+        else:
+            per_url.append(r)
+
+    # Citadel scan of aggregated results
+    from src import citadel
+    all_text = json.dumps([r.get("result") for r in per_url if r.get("success")])
+    scan = await citadel.scan_output(all_text, trust_level="public")
+    if not scan.is_safe:
+        log.warning("research_parallel: Citadel flagged results: %s", scan.findings)
+
+    # Build aggregated summary
+    summaries = []
+    for r in per_url:
+        if r.get("success") and r.get("result"):
+            result_str = json.dumps(r["result"]) if not isinstance(r["result"], str) else r["result"]
+            summaries.append(f"{r.get('label', r.get('url', '?'))}: {result_str[:300]}")
+    aggregated_summary = "\n\n".join(summaries) if summaries else "No results"
+
+    # Optionally save aggregated result as capsule
+    saved_capsule_id = None
+    if save_as_capsule and capsule_title:
+        try:
+            save_params = {
+                "title": capsule_title,
+                "content": aggregated_summary,
+                "capsule_type": "memory",
+                "visibility": capsule_visibility,
+                "category": "general",
+                "freshness": "temporary",
+            }
+            if share_with_network:
+                save_params["network_names"] = [share_with_network]
+            save_result_str = await handle_save_capsule(ctx, save_params)
+            save_result = json.loads(save_result_str)
+            if save_result.get("success"):
+                saved_capsule_id = save_result.get("capsule_id")
+        except Exception as e:
+            log.warning("research_parallel: failed to save capsule: %s", e)
+
+    return json.dumps({
+        "success": True,
+        "results": per_url,
+        "aggregated_summary": aggregated_summary,
+        "vault_context_used": context_items,
+        **({"citadel_flagged": True, "citadel_findings": scan.findings} if not scan.is_safe else {}),
+        **({"saved_capsule_id": saved_capsule_id} if saved_capsule_id else {}),
+    })
+
+
+async def handle_check_conflicts(ctx: ToolContext, params: dict) -> str:
+    """Check if a stated claim conflicts with vault data."""
+    claim = params.get("claim", "")
+    search_query = params.get("search_query", "")
+
+    vault_result_str = await handle_search_vault(ctx, search_query)
+    vault_result = json.loads(vault_result_str)
+
+    excerpts = []
+    for cap in vault_result.get("capsules", [])[:3]:
+        excerpts.append({
+            "title": cap["title"],
+            "content_snippet": cap["content"][:200],
+            "capsule_type": cap["capsule_type"],
+            "freshness": cap.get("freshness", "permanent"),
+        })
+
+    return json.dumps({
+        "claim": claim,
+        "vault_excerpts": excerpts,
+        "message": (
+            f"Found {len(excerpts)} vault entries related to your search. "
+            "Compare the claim against the excerpts to identify conflicts."
+        ),
     })
 
 
@@ -2381,6 +2787,103 @@ async def handle_generate_emergency_qr(
     })
 
 
+async def _send_federated_connection_request(ctx, ghost, message: str, relationship_type: str) -> str:
+    """Send a cross-pod connection request to a remote user via their pod.
+
+    Also creates a local pending ConnectionRequest so the agent can track state
+    and the accept callback has something to update.
+    """
+    import json as _json
+    import uuid
+    import httpx
+    from sqlalchemy import select
+    from src.models import User, Agent, Connection, ConnectionRequest, Notification
+    from src import transit_bridge
+    from src.federation import POD_URL
+    from src.federation_auth import sign_federation_request
+    from src.rate_limit import check_connection_rate, record_connection_request
+
+    # Rate limit
+    if not check_connection_rate(ctx.owner_id):
+        return _json.dumps({"success": False, "error": "Too many connection requests. Try again later."})
+
+    # Check already connected or pending
+    existing = await ctx.db.execute(
+        select(Connection).where(
+            ((Connection.from_user_id == ctx.owner_id) & (Connection.to_user_id == ghost.id)) |
+            ((Connection.from_user_id == ghost.id) & (Connection.to_user_id == ctx.owner_id))
+        )
+    )
+    if existing.scalar_one_or_none():
+        return _json.dumps({"success": False, "already_connected": True, "message": f"Already connected with {ghost.display_name}."})
+
+    existing_req = await ctx.db.execute(
+        select(ConnectionRequest).where(
+            ConnectionRequest.from_user_id == ctx.owner_id,
+            ConnectionRequest.to_user_id == ghost.id,
+            ConnectionRequest.status == "pending",
+        )
+    )
+    if existing_req.scalar_one_or_none():
+        return _json.dumps({"success": False, "already_pending": True, "message": "Request already pending."})
+
+    # Get our agent for signing
+    agent_result = await ctx.db.execute(select(Agent).where(Agent.owner_id == ctx.owner_id))
+    our_agent = agent_result.scalar_one_or_none()
+    if not our_agent or not our_agent.did:
+        return _json.dumps({"success": False, "error": "Agent configuration incomplete."})
+
+    if not transit_bridge.has_key(ctx.owner_id) or not our_agent.encrypted_private_key:
+        return _json.dumps({"success": False, "error": "Vault key not available for signing."})
+
+    private_key = transit_bridge.decrypt(ctx.owner_id, our_agent.encrypted_private_key)
+
+    payload = {
+        "from_did": our_agent.did,
+        "from_pod_url": POD_URL,
+        "from_display_name": ctx.owner_name,
+        "to_did": ghost.remote_did,
+        "message": message,
+    }
+    body = _json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    headers.update(sign_federation_request(body, private_key))
+    del private_key
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
+                f"{ghost.remote_pod_url.rstrip('/')}/api/pod/connection-request",
+                content=body,
+                headers=headers,
+            )
+            if r.status_code not in (200, 201):
+                return _json.dumps({"success": False, "error": f"Remote pod responded with {r.status_code}."})
+    except Exception as e:
+        return _json.dumps({"success": False, "error": f"Could not reach remote pod: {e}"})
+
+    # Create local pending record so accept callback can update it
+    local_req = ConnectionRequest(
+        id=str(uuid.uuid4()),
+        from_user_id=ctx.owner_id,
+        to_user_id=ghost.id,
+        message=message,
+        relationship_type=relationship_type or None,
+        status="pending",
+    )
+    ctx.db.add(local_req)
+    await ctx.db.commit()
+    record_connection_request(ctx.owner_id)
+
+    return _json.dumps({
+        "success": True,
+        "message": f"Connection request sent to {ghost.display_name} on their pod.",
+        "recipient": ghost.display_name,
+        "request_id": local_req.id,
+        "cross_pod": True,
+    })
+
+
 async def handle_send_connection_request(ctx: ToolContext, params: dict) -> str:
     """Send a connection request to another user on this pod."""
     from sqlalchemy import select
@@ -2405,13 +2908,51 @@ async def handle_send_connection_request(ctx: ToolContext, params: dict) -> str:
         )
         target = result2.scalar_one_or_none()
     if not target:
-        return json.dumps({"success": False, "error": f"User '{to_username}' not found."})
+        # Not found locally — try remote discovery across peer pods
+        from src.federation import discover_remote_agents, get_or_create_ghost_user
+        remote_agents = await discover_remote_agents(ctx.db)
+        matched = None
+        for ra in remote_agents:
+            name_match = (
+                ra.get("owner_username", "").lower() == to_username.lower()
+                or ra.get("owner_display_name", "").lower() == to_username.lower()
+                or to_username.lower() in ra.get("owner_display_name", "").lower()
+            )
+            if name_match and ra.get("_pod", {}).get("url"):
+                matched = ra
+                break
+        if matched:
+            # Create ghost user and send federated request
+            pod_info = matched["_pod"]
+            ghost = await get_or_create_ghost_user(
+                ctx.db,
+                remote_username=matched.get("owner_username", matched.get("did", "")),
+                remote_display_name=matched.get("owner_display_name", to_username),
+                remote_did=matched.get("did", ""),
+                remote_pod_url=pod_info["url"],
+            )
+            await ctx.db.flush()
+            return await _send_federated_connection_request(
+                ctx=ctx,
+                ghost=ghost,
+                message=message,
+                relationship_type=relationship_type,
+            )
+        return json.dumps({"success": False, "error": f"User '{to_username}' not found locally or in connected pods. Ask them to share an invite link."})
 
     if target.id == ctx.owner_id:
         return json.dumps({"success": False, "error": "Cannot connect with yourself."})
 
     if target.is_remote:
-        return json.dumps({"success": False, "error": "Cross-pod connection requests not yet supported via agent. Use the Connections page."})
+        # Found a ghost user — send cross-pod connection request
+        if not target.remote_did or not target.remote_pod_url:
+            return json.dumps({"success": False, "error": "Remote user is missing DID or pod URL."})
+        return await _send_federated_connection_request(
+            ctx=ctx,
+            ghost=target,
+            message=message,
+            relationship_type=relationship_type,
+        )
 
     # Check if already connected
     existing = await ctx.db.execute(
@@ -2732,6 +3273,10 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
         result = await handle_web_search(ctx, tool_input["query"], tool_input.get("context", ""))
     elif tool_name == "browse_web":
         result = await handle_browse_web(ctx, tool_input)
+    elif tool_name == "research_parallel":
+        result = await handle_research_parallel(ctx, tool_input)
+    elif tool_name == "check_conflicts":
+        result = await handle_check_conflicts(ctx, tool_input)
     elif tool_name == "create_task":
         result = await handle_create_task(ctx, tool_input)
     elif tool_name == "discover_agents":
@@ -2951,6 +3496,9 @@ You have tools:
 15. **check_timeline_state** — Get the heartbeat of the timeline engine (counts, signals, health).
 16. **send_message** — Send an encrypted message to someone you're already connected with or share a pool with.
 17. **send_connection_request** — Send a connection request to someone so you can message them and query their agent. Use when the user asks to connect with, add, or follow someone.
+18. **browse_web** — Browse a single website using TinyFish AI browser. Vault context is automatically applied. Results are Citadel-scanned before returning.
+19. **research_parallel** — Browse multiple websites simultaneously (up to 8) using TinyFish. Each site gets its own AI browser session. Use for comparing agencies, prices, or gathering reviews from multiple sources at once.
+20. **check_conflicts** — Check if something the user said conflicts with their vault data. Call before acting on any date, name, location, or amount the user states.
 
 ## When to use tools — match INTENT, not literal phrases (works in any language):
 - User wants to befriend, add, connect with, or follow someone → **send_connection_request** IMMEDIATELY (do NOT search_vault first)
@@ -3063,6 +3611,26 @@ When federation is involved, always mention:
 - What trust level was used (network = shared pool, public = open only)
 - What shared networks enabled the trust
 
+## PROACTIVE CONFLICT DETECTION
+
+If the user states any fact (date, name, amount, location, person detail) that directly
+contradicts something in their vault or a peer response you just received:
+1. STOP your current response immediately.
+2. Say: "Wait — I need to flag something before we continue."
+3. State the specific conflict: "You mentioned [X], but [source] shows [Y]."
+4. Ask: "Which is correct?"
+Never ignore contradictions. Acting on wrong information is worse than pausing to verify.
+
+Use `check_conflicts` before acting on any date, location, or name the user states.
+
+Examples:
+- User: "Book Monday morning" → vault shows grandma has cardiology Tuesday 9am
+  → "Wait — before I book, I should mention: Grandma's calendar shows a cardiology
+     appointment Tuesday at 9am. Did you mean Tuesday coverage, or also Monday?"
+- User: "Call the Riverside clinic on 5th Street" → vault says clinic moved to Oak Ave in 2025
+  → "Wait — the clinic contact in your vault shows they relocated to Oak Avenue in 2025.
+     The 5th Street number may be disconnected. Want me to use the Oak Avenue address?"
+
 ## Response Style
 - Be conversational and warm — you're talking to your owner
 - After saving, confirm what you saved and how you classified it
@@ -3169,6 +3737,73 @@ def _minimize_capsules_for_public(capsules: list[dict]) -> list[dict]:
     return stripped
 
 
+# ═══════════════════════════════════════════════════════════════
+# Org-aware context injection
+# ═══════════════════════════════════════════════════════════════
+
+_ORG_SUBTYPE_CONTEXT: dict[str, str] = {
+    "healthcare": (
+        "## Healthcare Organization Context\n"
+        "This is a healthcare organization. You operate in a HIPAA-aware environment.\n"
+        "- Never include Protected Health Information (PHI) in external-facing responses\n"
+        "- Clinical or medical details should only be shared via UCAN-gated emergency access\n"
+        "- Acknowledge time-sensitivity for any clinical or emergency queries\n"
+        "- When asked about patient data, route to the emergency access flow\n"
+    ),
+    "emergency": (
+        "## Emergency Services Context\n"
+        "This is an emergency services organization (fire, ambulance, rescue).\n"
+        "- Treat all emergency queries with urgency — acknowledge time-sensitivity explicitly\n"
+        "- This organization can issue UCAN emergency access tokens for priority access\n"
+        "- Prioritize actionable, precise information over brevity\n"
+        "- For life-safety situations, err on the side of completeness\n"
+    ),
+    "government": (
+        "## Government Organization Context\n"
+        "This is a government entity operating under strict data governance rules.\n"
+        "- Classify the sensitivity of information before sharing (public / internal / restricted)\n"
+        "- Do not share information beyond the authorized scope of the requester\n"
+        "- Note data retention constraints — some information has mandatory retention periods\n"
+        "- Decline to share data classified above the requester's trust level\n"
+    ),
+    "education": (
+        "## Education Organization Context\n"
+        "This organization handles student and educational data (FERPA-adjacent constraints).\n"
+        "- Student records and personally identifiable information are protected\n"
+        "- Do not share individual student data without verified authorization\n"
+        "- Public information (curriculum, programs, admissions info) can be shared freely\n"
+    ),
+    "nonprofit": (
+        "## Nonprofit Organization Context\n"
+        "This is a nonprofit organization focused on public benefit.\n"
+        "- Mission and programs are generally public and can be shared freely\n"
+        "- Donor and beneficiary information is private — do not disclose\n"
+    ),
+    "company": "",  # Standard — no extra context needed
+}
+
+
+def _build_org_context(user_type: str, org_subtype: str | None, agent_mode: str) -> str:
+    """Build an org-specific context block to prepend to system prompts.
+
+    Returns empty string for person agents (no change).
+    """
+    if user_type != "organization":
+        return ""
+
+    mode_note = (
+        "You are operating as a **public-facing service agent** — your knowledge is accessible "
+        "to external users who query you. Share only capsules marked as public/open."
+        if agent_mode == "public"
+        else "You are operating as an **internal knowledge agent** — only verified connected staff "
+        "should be querying you. Treat queries from unknown sources with heightened caution."
+    )
+
+    subtype_block = _ORG_SUBTYPE_CONTEXT.get(org_subtype or "", "")
+
+    return f"\n## Organization Agent Mode\n{mode_note}\n\n{subtype_block}".rstrip() + "\n"
+
+
 async def agent_respond(
     agent: Agent,
     question: str,
@@ -3177,6 +3812,9 @@ async def agent_respond(
     capsules: list[dict],
     requester_name: str,
     owner_name: str,
+    entity_type: str = "person",
+    org_subtype: str | None = None,
+    agent_mode: str = "private",
 ) -> str:
     """Cross-query: agent reasons about what to share (read-only, no tools)."""
     trust_context = build_trust_context(trust_level, shared_networks, requester_name, owner_name)
@@ -3187,13 +3825,14 @@ async def agent_respond(
 
     formatted = format_capsules(capsules)
 
+    org_ctx = _build_org_context(entity_type, org_subtype, agent_mode)
     system_prompt = CROSS_QUERY_SYSTEM_PROMPT.format(
         owner_name=owner_name,
         requester_name=requester_name,
         trust_level=trust_level,
         trust_context=trust_context,
         formatted_capsules=formatted,
-    )
+    ) + org_ctx
 
     sensitivity = detect_sensitivity(capsules, question)
     router = get_router()
@@ -3215,20 +3854,24 @@ async def agent_respond_with_tools(
     owner_name: str,
     tool_context: ToolContext,
     personality: str = "",
-) -> tuple[str, list[dict]]:
+    entity_type: str = "person",
+    org_subtype: str | None = None,
+    agent_mode: str = "private",
+) -> tuple[str, list[dict], str]:
     """Self-query: agent responds with tool access (search, save, update).
 
-    Returns (response_text, actions_taken).
+    Returns (response_text, actions_taken, provider_used).
     """
     formatted = format_capsules(capsules)
     networks_list = format_networks(tool_context.networks)
 
+    org_ctx = _build_org_context(entity_type, org_subtype, agent_mode)
     system_prompt = SELF_QUERY_SYSTEM_PROMPT.format(
         owner_name=owner_name,
         formatted_capsules=formatted,
         networks_list=networks_list,
         personality_instruction=_personality_note(personality),
-    )
+    ) + org_ctx
 
     sensitivity = detect_sensitivity(capsules, question)
     router = get_router()
@@ -3247,7 +3890,7 @@ async def agent_respond_with_tools(
 
         # If the response is a final text (no tool use), we're done
         if response.stop_reason == "end_turn":
-            return response.text or "Done.", tool_context.actions
+            return response.text or "Done.", tool_context.actions, response.provider
 
         # Process tool calls
         if response.stop_reason == "tool_use":
@@ -3268,7 +3911,8 @@ async def agent_respond_with_tools(
             tool_results = []
             for tc in response.tool_calls:
                 result_str = await execute_tool(tc.name, tc.input, tool_context)
-                # Citadel scan on tool outputs (web_search, query_peer most important)
+                # Citadel scan on tool outputs (external sources)
+                # browse_web and research_parallel already scan internally — skip double scan
                 if tc.name in ("web_search", "query_peer", "request_quotes"):
                     from src import citadel
                     output_scan = await citadel.scan_output(result_str)
@@ -3306,10 +3950,11 @@ async def agent_respond_with_tools(
             return (
                 response.text or "I'm not sure how to help with that.",
                 tool_context.actions,
+                response.provider,
             )
 
     # Max iterations reached
-    return "I've completed the requested actions.", tool_context.actions
+    return "I've completed the requested actions.", tool_context.actions, "anthropic"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -3325,18 +3970,22 @@ async def agent_respond_streaming(
     requester_name: str,
     owner_name: str,
     conversation_history: list[dict] | None = None,
+    entity_type: str = "person",
+    org_subtype: str | None = None,
+    agent_mode: str = "private",
 ):
     """Cross-query streaming: yields text chunks as they arrive."""
     trust_context = build_trust_context(trust_level, shared_networks, requester_name, owner_name)
     formatted = format_capsules(capsules)
 
+    org_ctx = _build_org_context(entity_type, org_subtype, agent_mode)
     system_prompt = CROSS_QUERY_SYSTEM_PROMPT.format(
         owner_name=owner_name,
         requester_name=requester_name,
         trust_level=trust_level,
         trust_context=trust_context,
         formatted_capsules=formatted,
-    )
+    ) + org_ctx
 
     # Build messages with conversation history for continuity
     messages: list[dict] = []
@@ -3365,6 +4014,9 @@ async def agent_respond_with_tools_streaming(
     tool_context: ToolContext,
     conversation_history: list[dict] | None = None,
     personality: str = "",
+    entity_type: str = "person",
+    org_subtype: str | None = None,
+    agent_mode: str = "private",
 ):
     """Self-query streaming: runs tool loop non-streaming, then streams final response.
 
@@ -3376,12 +4028,13 @@ async def agent_respond_with_tools_streaming(
     formatted = format_capsules(capsules)
     networks_list = format_networks(tool_context.networks)
 
+    org_ctx = _build_org_context(entity_type, org_subtype, agent_mode)
     system_prompt = SELF_QUERY_SYSTEM_PROMPT.format(
         owner_name=owner_name,
         formatted_capsules=formatted,
         networks_list=networks_list,
         personality_instruction=_personality_note(personality),
-    )
+    ) + org_ctx
 
     sensitivity = detect_sensitivity(capsules, question)
     router = get_router()
@@ -3580,12 +4233,70 @@ INTAKE_TOOLS = [
 ]
 
 
+ORG_INTAKE_SYSTEM_PROMPT = """You are {owner_name}'s organizational AI agent, getting to know the organization for the first time.
+
+Your goal: Have a professional, focused conversation and save key facts as encrypted capsules in the org's vault.
+
+## Conversation so far
+{conversation_history}
+
+## Flow — 4 topics (follow this order, keep it natural and professional):
+
+1. **Mission & Services** — What the organization does, who it serves, core services/programs. Save as "skill" capsule (category: "work").
+
+2. **Team & Structure** — Org size, key departments, leadership, how teams operate. Save as "memory" capsule (category: "work").
+
+3. **Public Knowledge** — What information should be shareable externally, services offered to clients/patients/public. Save as "procedure" capsule (category: "work", visibility: "open").
+
+4. **Goals** — What the org wants TrustMesh to help with, key workflows to automate. Save as "preference" capsule (category: "work").
+{compliance_step}
+After all topics: **Wrap up** — Summarize what you learned, confirm their vault is set up, suggest they explore team pools and the service directory.
+
+## Conversation rules:
+- Professional but warm tone — this is an org, not a personal conversation
+- EVERY response MUST end with a question. No exceptions until wrap-up.
+- After each answer, save a capsule IMMEDIATELY then ask the next question.
+- ONE question at a time.
+- If they say "skip" or "done" — wrap up immediately.
+
+## First message:
+Start with: "Welcome! Tell me about {owner_name} — what does your organization do and who do you serve?" Don't repeat their bio back to them.
+
+## Capsule types:
+- "skill" — expertise, core competencies, certifications
+- "procedure" — services, processes, protocols
+- "memory" — org history, events, milestones
+- "contact" — key staff, partners, departments
+- "schedule" — recurring events, operating hours
+
+Default visibility: "internal" for org data, "open" only for explicitly public info.
+Always search_vault first to avoid duplicates.
+{personality_instruction}"""
+
+_ORG_COMPLIANCE_STEPS: dict[str, str] = {
+    "healthcare": """
+5. **Emergency & Compliance** — Emergency protocols, HIPAA data handling, PHI scoping, authorized emergency access roles. Save as "procedure" capsule (category: "work", emergency_accessible: true for emergency protocols).
+""",
+    "emergency": """
+5. **Emergency & Compliance** — Emergency response protocols, escalation chain, UCAN token authorization roles. Save as "procedure" capsule (category: "work", emergency_accessible: true).
+""",
+    "government": """
+5. **Compliance & Classification** — Data classification levels, retention policies, authorized access roles, compliance frameworks. Save as "procedure" capsule (category: "work").
+""",
+    "education": """
+5. **Student Data & Compliance** — FERPA-adjacent student data policies, what data is protected, authorized access roles. Save as "procedure" capsule (category: "work").
+""",
+}
+
+
 async def run_intake_step(
     owner_name: str,
     user_message: str,
     conversation_history: list[dict],
     tool_context: ToolContext,
     personality: str = "",
+    entity_type: str = "person",
+    org_subtype: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Run one step of the intake conversation. Returns (response_text, actions)."""
     # Format conversation history for the system prompt
@@ -3594,11 +4305,20 @@ async def run_intake_step(
         role = "You" if msg["role"] == "assistant" else owner_name
         history_text += f"{role}: {msg['content']}\n"
 
-    system_prompt = INTAKE_SYSTEM_PROMPT.format(
-        owner_name=owner_name,
-        conversation_history=history_text or "(This is the start of the conversation)",
-        personality_instruction=_personality_note(personality),
-    )
+    if entity_type == "organization":
+        compliance_step = _ORG_COMPLIANCE_STEPS.get(org_subtype or "", "")
+        system_prompt = ORG_INTAKE_SYSTEM_PROMPT.format(
+            owner_name=owner_name,
+            conversation_history=history_text or "(This is the start of the conversation)",
+            compliance_step=compliance_step,
+            personality_instruction=_personality_note(personality),
+        )
+    else:
+        system_prompt = INTAKE_SYSTEM_PROMPT.format(
+            owner_name=owner_name,
+            conversation_history=history_text or "(This is the start of the conversation)",
+            personality_instruction=_personality_note(personality),
+        )
 
     router = get_router()
     messages: list[dict] = [{"role": "user", "content": user_message}]

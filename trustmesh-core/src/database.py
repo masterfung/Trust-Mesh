@@ -100,6 +100,20 @@ def _migrate_user_email_avatar(conn):
         conn.execute(text("ALTER TABLE users ADD COLUMN avatar_url TEXT"))
 
 
+def _migrate_user_org_fields(conn):
+    """Add org_subtype and agent_mode columns to users table if missing."""
+    from sqlalchemy import text
+    result = conn.execute(text("PRAGMA table_info(users)"))
+    cols = {row[1] for row in result}
+    if "org_subtype" not in cols:
+        conn.execute(text("ALTER TABLE users ADD COLUMN org_subtype VARCHAR(20)"))
+    if "agent_mode" not in cols:
+        conn.execute(text("ALTER TABLE users ADD COLUMN agent_mode VARCHAR(20) NOT NULL DEFAULT 'private'"))
+        conn.execute(text(
+            "UPDATE users SET agent_mode='internal' WHERE user_type IN ('organization','government')"
+        ))
+
+
 async def init_db():
     """Create all tables and run migrations."""
     from src.models import Base
@@ -109,6 +123,7 @@ async def init_db():
         await conn.run_sync(_migrate_network_expires_at)
         await conn.run_sync(_migrate_capsule_versions)
         await conn.run_sync(_migrate_user_email_avatar)
+        await conn.run_sync(_migrate_user_org_fields)
 
 
 def _drop_zig_tables(conn) -> None:

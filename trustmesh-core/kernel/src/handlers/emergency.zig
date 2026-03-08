@@ -252,7 +252,7 @@ fn insertAuditLogWithId(
 fn handleBeacon(ctx: *http.RequestContext) !void {
     // Only handle /api/users/{id}/emergency/beacon
     if (std.mem.indexOf(u8, ctx.path, "/emergency/beacon") == null) {
-        return ctx.sendError(.not_found, "Not found");
+        return http.proxyFromHandler(ctx);
     }
 
     const database = _db orelse return ctx.sendError(.service_unavailable, "DB not ready");

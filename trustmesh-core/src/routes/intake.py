@@ -65,12 +65,20 @@ async def intake_step(user_id: str, data: IntakeMessage,
 
             # Determine the message to send
             message = data.message
+            is_org = getattr(user, "user_type", "person") == "organization"
             if not message.strip() and not data.conversation_history:
                 # First message — trigger the agent to start the conversation
-                message = (
-                    f"Hi! I just signed up for TrustMesh. My name is {user.display_name}."
-                    + (f" Here's a bit about me: {user.bio}" if user.bio else "")
-                )
+                if is_org:
+                    message = (
+                        f"Hello! I just set up our organization on TrustMesh. "
+                        f"Our org name is {user.display_name}."
+                        + (f" Brief description: {user.bio}" if user.bio else "")
+                    )
+                else:
+                    message = (
+                        f"Hi! I just signed up for TrustMesh. My name is {user.display_name}."
+                        + (f" Here's a bit about me: {user.bio}" if user.bio else "")
+                    )
 
             try:
                 response_text, actions = await run_intake_step(
@@ -79,6 +87,8 @@ async def intake_step(user_id: str, data: IntakeMessage,
                     conversation_history=data.conversation_history,
                     tool_context=tool_context,
                     personality=agent.personality or "",
+                    entity_type=getattr(user, "user_type", "person"),
+                    org_subtype=getattr(user, "org_subtype", None),
                 )
 
                 # Commit capsules saved by the agent tools

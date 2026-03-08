@@ -1,6 +1,6 @@
 """Connection request and management routes."""
 
-from datetime import datetime, timezone
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, or_, and_
@@ -10,11 +10,12 @@ from src.auth import get_current_user_id
 from src.database import get_db
 from src.models import Connection, ConnectionRequest, NetworkMembership, User
 from src.rate_limit import check_connection_rate, record_connection_request
+
+logger = logging.getLogger(__name__)
 from src.schemas import (
     ConnectionLabelUpdate,
     ConnectionRequestCreate,
     ConnectionRequestResponse,
-    ConnectionRequestUpdate,
     ConnectionResponse,
     UserPublic,
 )
@@ -215,49 +216,7 @@ async def list_connection_requests(user_id: str, db: AsyncSession = Depends(get_
         ))
     return response
 
-
-@router.put("/connection-requests/{request_id}", response_model=ConnectionRequestResponse)
-async def update_connection_request(
-    request_id: str, data: ConnectionRequestUpdate, db: AsyncSession = Depends(get_db),
-    auth_user_id: str = Depends(get_current_user_id),
-):
-    """Accept or decline a connection request."""
-    req = await db.get(ConnectionRequest, request_id)
-    if not req:
-        raise HTTPException(404, "Request not found")
-    if req.to_user_id != auth_user_id:
-        raise HTTPException(403, "Access denied")
-    if req.status != "pending":
-        raise HTTPException(400, "Request already processed")
-
-    req.status = data.status
-    req.reviewed_at = datetime.now(timezone.utc)
-
-    if data.status == "accepted":
-        connection = Connection(
-            from_user_id=req.from_user_id,
-            to_user_id=req.to_user_id,
-            status="accepted",
-            relationship_type=req.relationship_type,
-            from_label=req.from_label,
-            to_label=data.to_label,
-            accepted_at=datetime.now(timezone.utc),
-        )
-        db.add(connection)
-
-    await db.commit()
-    await db.refresh(req)
-    return ConnectionRequestResponse(
-        id=req.id,
-        from_user_id=req.from_user_id,
-        to_user_id=req.to_user_id,
-        message=req.message,
-        status=req.status,
-        relationship_type=req.relationship_type,
-        from_label=req.from_label,
-        created_at=req.created_at,
-        reviewed_at=req.reviewed_at,
-    )
+# PUT /api/connection-requests/{id} is handled by the Zig kernel (handlers/connections.zig).
 
 
 @router.delete("/connections/{connection_id}")

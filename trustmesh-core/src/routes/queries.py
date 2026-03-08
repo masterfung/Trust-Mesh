@@ -136,6 +136,9 @@ async def create_query_stream(data: QueryCreate,
                         tool_context=tool_context,
                         conversation_history=history,
                         personality=agent.personality or "",
+                        entity_type=to_user.user_type or "person",
+                        org_subtype=getattr(to_user, "org_subtype", None),
+                        agent_mode=getattr(to_user, "agent_mode", "private"),
                     ):
                         if event_type == "text":
                             full_text += event_data
@@ -155,6 +158,9 @@ async def create_query_stream(data: QueryCreate,
                         requester_name=from_user.display_name,
                         owner_name=to_user.display_name,
                         conversation_history=history,
+                        entity_type=to_user.user_type or "person",
+                        org_subtype=getattr(to_user, "org_subtype", None),
+                        agent_mode=getattr(to_user, "agent_mode", "private"),
                     ):
                         full_text += chunk
                         yield f"data: {json.dumps({'type': 'text', 'data': chunk})}\n\n"

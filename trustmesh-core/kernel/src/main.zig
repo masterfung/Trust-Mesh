@@ -27,6 +27,7 @@ pub const json = @import("json.zig");
 pub const credential = @import("credential.zig");
 pub const credential_audit = @import("credential_audit.zig");
 pub const message = @import("message.zig");
+pub const research = @import("research.zig");
 
 // Page allocator for FFI — simple, no libc dependency
 const ffi_allocator = std.heap.page_allocator;
@@ -1940,4 +1941,59 @@ export fn podos_message_list_rekey_pending(
     ) catch return -2;
     out_len.* = @intCast(written);
     return 0;
+}
+
+// ═══════════════════════════════════════════
+//  RESEARCH CACHE + FRESHNESS
+// ═══════════════════════════════════════════
+
+/// Look up a cached TinyFish result. Returns 0 on hit (writes to out_buf), 1 on miss, -1 on error.
+export fn podos_research_cache_get(
+    url: [*]const u8,
+    url_len: u32,
+    goal: [*]const u8,
+    goal_len: u32,
+    max_age_secs: i64,
+    out_buf: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const result = research.cache_get(
+        url[0..url_len],
+        goal[0..goal_len],
+        max_age_secs,
+    ) orelse return 1; // 1 = cache miss (not an error)
+    if (result.len > out_cap) return -1; // buffer too small
+    @memcpy(out_buf[0..result.len], result);
+    out_len.* = @intCast(result.len);
+    return 0; // 0 = cache hit
+}
+
+/// Store a TinyFish result in the cache. Returns 0 on success, -1 on OOM.
+export fn podos_research_cache_put(
+    url: [*]const u8,
+    url_len: u32,
+    goal: [*]const u8,
+    goal_len: u32,
+    value: [*]const u8,
+    value_len: u32,
+    ttl_secs: i64,
+) callconv(.c) i32 {
+    research.cache_put(
+        url[0..url_len],
+        goal[0..goal_len],
+        value[0..value_len],
+        ttl_secs,
+    ) catch return -1;
+    return 0;
+}
+
+/// Compute composite freshness score [0.0, 1.0].
+/// freshness_type: 0=permanent, 1=temporary, 2=recurring
+export fn podos_freshness_score(
+    freshness_type: u8,
+    days_since_verified: i32,
+    authority_weight: f32,
+) callconv(.c) f32 {
+    return research.freshness_score(freshness_type, days_since_verified, authority_weight);
 }

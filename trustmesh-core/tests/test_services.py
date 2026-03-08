@@ -38,6 +38,7 @@ async def _create_org_user(username="testorg", display_name="Test Org"):
             display_name=display_name,
             bio="A test organization",
             user_type="organization",
+            agent_mode="public",
             is_discoverable=True,
         )
         db.add(user)

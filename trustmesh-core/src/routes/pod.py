@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from src.auth import get_current_user_id
 from src.database import async_session, get_db
@@ -23,7 +23,7 @@ from src.federation import (
     ping_peer,
     send_pool_invite,
 )
-from src.models import Agent, Connection, Network, NetworkMembership, PeerPod, PoolInviteToken, User
+from src.models import Agent, Network, NetworkMembership, PeerPod, PoolInviteToken, User
 from src.rate_limit import check_query_rate, record_query
 from src.federation_auth import verify_federation_request
 
@@ -518,16 +518,21 @@ async def receive_pool_invite(req: PoolInviteRequest):
     network with auto-accepted connections to all local members.
     """
     async with async_session() as db:
-        # Verify invite token exists and is valid
-        token_result = await db.execute(
-            select(PoolInviteToken).where(
+        # SECURITY: Atomic token claim — prevents TOCTOU replay where two concurrent
+        # requests both pass the SELECT check before either commits the UPDATE.
+        # Only one UPDATE wins the race; the other gets no row back.
+        update_result = await db.execute(
+            update(PoolInviteToken)
+            .where(
                 PoolInviteToken.token == req.invite_token,
                 PoolInviteToken.status == "pending",
             )
+            .values(status="consumed")
+            .returning(PoolInviteToken)
         )
-        invite_token = token_result.scalar_one_or_none()
+        invite_token = update_result.scalar_one_or_none()
         if not invite_token:
-            raise HTTPException(403, "Invalid or expired invite token")
+            raise HTTPException(403, "Invalid, expired, or already-used invite token")
 
         # SECURITY: Bind token to the intended sender pod URL (defense in depth if token is leaked)
         if invite_token.target_pod_url and req.from_pod.rstrip("/") != invite_token.target_pod_url.rstrip("/"):
@@ -543,8 +548,6 @@ async def receive_pool_invite(req: PoolInviteRequest):
         if expires.tzinfo is None:
             expires = expires.replace(tzinfo=timezone.utc)
         if expires < now:
-            invite_token.status = "expired"
-            await db.commit()
             raise HTTPException(403, "Invite token has expired")
 
         # Verify the network exists locally
@@ -574,10 +577,13 @@ async def receive_pool_invite(req: PoolInviteRequest):
         if total_ghosts.scalar() >= MAX_GHOSTS_PER_POD:
             raise HTTPException(429, "Pod has reached maximum remote user capacity")
 
-        # Create or get ghost user
-        ghost = await get_or_create_ghost_user(
-            db, req.username, req.display_name, req.did, req.from_pod
-        )
+        # Create or get ghost user (raises ValueError if DID verification fails)
+        try:
+            ghost = await get_or_create_ghost_user(
+                db, req.username, req.display_name, req.did, req.from_pod
+            )
+        except ValueError as exc:
+            raise HTTPException(403, f"Remote DID verification failed: {exc}")
 
         # Add ghost to network if not already a member
         existing_mem = await db.execute(
@@ -597,9 +603,6 @@ async def receive_pool_invite(req: PoolInviteRequest):
 
         # Create auto-accepted connections with all local members
         await _create_ghost_connections(db, ghost.id, network.id)
-
-        # Consume the invite token
-        invite_token.status = "consumed"
 
         await db.commit()
 
@@ -1007,3 +1010,6 @@ async def deliver_message(
     await db.commit()
 
     return {"delivered": True, "message_id": msg_id}
+
+# /api/pod/connection-request and /api/pod/connection-accept are handled by
+# the native Zig kernel (handlers/pod_federation.zig).

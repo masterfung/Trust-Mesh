@@ -24,7 +24,7 @@ pub fn registerRoutes() void {
 fn handleGetAudit(ctx: *http.RequestContext) !void {
     // Only handle /api/users/{id}/audit paths
     if (std.mem.indexOf(u8, ctx.path, "/audit") == null) {
-        return ctx.sendError(.not_found, "Not found");
+        return http.proxyFromHandler(ctx);
     }
 
     // Dispatch to emergency sub-route if requested
