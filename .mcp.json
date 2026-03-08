@@ -3,7 +3,7 @@
     "trustmesh": {
       "type": "stdio",
       "command": "uv",
-      "args": ["--directory", "/Users/jh/Code/mighty/claude-opus-hackathon/trustmesh-core", "run", "python", "-m", "src.mcp_server"]
+      "args": ["--directory", "/Users/jh/Code/mighty/trustmesh/trustmesh-core", "run", "python", "-m", "src.mcp_server"]
     }
   }
 }
