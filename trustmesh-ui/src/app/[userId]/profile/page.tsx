@@ -192,8 +192,25 @@ export default function ProfilePage() {
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">Account type</span>
-              <span className="capitalize">{user.user_type || "person"}</span>
+              <span className="capitalize">
+                {user.user_type === "organization" && user.org_subtype
+                  ? `Organization · ${user.org_subtype.charAt(0).toUpperCase() + user.org_subtype.slice(1)}`
+                  : user.user_type || "person"}
+              </span>
             </div>
+            {user.user_type === "organization" && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Agent mode</span>
+                <span className="flex items-center gap-2">
+                  {user.agent_mode === "public"
+                    ? <><span className="w-2 h-2 rounded-full bg-success animate-pulse inline-block" /> Public</>
+                    : <span className="text-muted-foreground">🔒 Internal</span>}
+                  <a href={`/${userId}/pod`} className="text-accent hover:text-accent-hover text-xs transition-colors">
+                    {user.agent_mode === "public" ? "Make Internal" : "Go Public"} →
+                  </a>
+                </span>
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-muted-foreground">Public handle</span>
               <span>{user.username ? `@${user.username}` : "Not set \u2014 Go Live in Settings"}</span>

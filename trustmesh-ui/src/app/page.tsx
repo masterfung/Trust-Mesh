@@ -5,16 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 export default function Home() {
-  const { user: authUser, isLoading: authLoading, logout } = useAuth();
+  const { user: authUser, logout } = useAuth();
   const router = useRouter();
-
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-muted-foreground animate-pulse">Loading...</div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen flex flex-col">

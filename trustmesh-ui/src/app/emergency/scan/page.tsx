@@ -327,19 +327,25 @@ function ScanView() {
   const [data, setData] = useState<EmergencyAccessResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(0);
 
   // Live clock for countdown
   useEffect(() => {
+    const tInit = setTimeout(() => setNow(Date.now()), 0);
     const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
+    return () => {
+      clearTimeout(tInit);
+      clearInterval(t);
+    };
   }, []);
 
   useEffect(() => {
     if (!token || !patient) {
-      setError("Missing token or patient parameter in QR URL.");
-      setLoading(false);
-      return;
+      const t = setTimeout(() => {
+        setError("Missing token or patient parameter in QR URL.");
+        setLoading(false);
+      }, 0);
+      return () => clearTimeout(t);
     }
     api
       .getEmergencyQrData(token, patient, podUrl)
@@ -395,8 +401,6 @@ function ScanView() {
   const expiresAt = new Date(data.expires_at);
   const msLeft = expiresAt.getTime() - now;
   const expired = msLeft <= 0;
-  const secsLeft = Math.max(0, Math.floor(msLeft / 1000));
-  const minsLeft = Math.floor(secsLeft / 60);
   const TOKEN_DURATION_SECS = 1800; // 30 min
   const progressPct = expired ? 0 : Math.min(100, (msLeft / (TOKEN_DURATION_SECS * 1000)) * 100);
   const progressColor = msLeft < 120_000 ? "bg-red-500" : msLeft < 300_000 ? "bg-amber-500" : "bg-green-500";

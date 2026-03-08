@@ -233,7 +233,14 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
           onClick={handleNavClick}
           className="block hover:opacity-80 transition-opacity"
         >
-          <p className="text-xs font-semibold truncate leading-tight">{user.display_name}</p>
+          <div className="flex items-center gap-1.5">
+            <p className="text-xs font-semibold truncate leading-tight">{user.display_name}</p>
+            {user.user_type === "organization" && (
+              user.agent_mode === "public"
+                ? <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-success/15 text-success border border-success/25 flex items-center gap-0.5"><span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />Live</span>
+                : <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-muted/40 text-muted-foreground border border-border">🔒 Internal</span>
+            )}
+          </div>
           <p className="text-[10px] text-muted-foreground truncate leading-snug mt-0.5">
             {user.username ? `@${user.username}` : "Private"}
           </p>
@@ -266,6 +273,10 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
                   const isActive = item.href === ""
                     ? pathname === base || pathname === `${base}/`
                     : pathname.startsWith(href);
+                  // For org users, rename "Groups" → "Team"
+                  const label = item.href === "/networks" && user.user_type === "organization"
+                    ? "Team"
+                    : item.label;
                   return (
                     <Link
                       key={item.href}
@@ -282,7 +293,7 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
                       }`}
                     >
                       <span className={item.href === "/emergency/beacon" ? "text-red-400/80" : isActive ? "text-accent" : "text-muted-foreground/70"}>{item.icon}</span>
-                      <span className="flex-1">{item.label}</span>
+                      <span className="flex-1">{label}</span>
                       {item.href === "/inbox" && inboxUnreadCount > 0 && (
                         <span className="flex items-center justify-center min-w-[16px] h-[16px] px-1 text-[9px] font-bold text-white bg-danger rounded-full">
                           {inboxUnreadCount > 99 ? "99+" : inboxUnreadCount}

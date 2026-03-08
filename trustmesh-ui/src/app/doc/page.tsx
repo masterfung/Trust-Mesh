@@ -136,8 +136,11 @@ export default function DocPage() {
       }
     };
     window.addEventListener("scroll", onScroll, { passive: true });
-    updateActive(); // set initial state
-    return () => window.removeEventListener("scroll", onScroll);
+    const t = setTimeout(() => updateActive(), 0); // set initial state
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      clearTimeout(t);
+    };
   }, [updateActive]);
 
   return (
@@ -166,31 +169,27 @@ export default function DocPage() {
       <div className="max-w-7xl mx-auto flex">
         {/* Sidebar nav */}
         <nav className="w-52 shrink-0 sticky top-[53px] h-[calc(100vh-53px)] overflow-y-auto border-r border-card-border py-6 px-4 hidden md:block">
-          {(() => {
-            let lastGroup = "";
-            return SECTIONS.map((s) => {
-              const showGroup = s.group !== lastGroup;
-              lastGroup = s.group;
-              return (
-                <div key={s.id}>
-                  {showGroup && (
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-foreground/30 mt-4 mb-1.5 px-3 first:mt-0">
-                      {s.group}
-                    </p>
+          {SECTIONS.map((s, i) => {
+            const showGroup = i === 0 || s.group !== SECTIONS[i - 1].group;
+            return (
+              <div key={s.id}>
+                {showGroup && (
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-foreground/30 mt-4 mb-1.5 px-3 first:mt-0">
+                    {s.group}
+                  </p>
+                )}
+                <a
+                  href={`#${s.id}`}
+                  className={cn(
+                    "block px-3 py-1.5 rounded-lg text-xs font-medium transition-colors mb-0.5",
+                    active === s.id ? "bg-accent/10 text-accent" : "text-foreground/50 hover:text-foreground hover:bg-card-hover"
                   )}
-                  <a
-                    href={`#${s.id}`}
-                    className={cn(
-                      "block px-3 py-1.5 rounded-lg text-xs font-medium transition-colors mb-0.5",
-                      active === s.id ? "bg-accent/10 text-accent" : "text-foreground/50 hover:text-foreground hover:bg-card-hover"
-                    )}
-                  >
-                    {s.label}
-                  </a>
-                </div>
-              );
-            });
-          })()}
+                >
+                  {s.label}
+                </a>
+              </div>
+            );
+          })}
         </nav>
 
         {/* Content */}

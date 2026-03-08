@@ -37,14 +37,12 @@ function isExpiringSoon(expiresAt: string): boolean {
 function MessageRow({
   msg,
   isSent,
-  userId,
   expanded,
   onExpand,
   onDelete,
 }: {
   msg: MessageItem;
   isSent: boolean;
-  userId: string;
   expanded: boolean;
   onExpand: () => void;
   onDelete: () => void;
@@ -255,7 +253,7 @@ export default function InboxPage() {
             </p>
             {tab === "inbox" && (
               <p className="text-xs text-muted-foreground/70 text-center max-w-xs">
-                Ask your agent to send a message: "Message Dr. Lee about my appointment"
+                Ask your agent to send a message: &quot;Message Dr. Lee about my appointment&quot;
               </p>
             )}
           </div>
@@ -265,7 +263,6 @@ export default function InboxPage() {
               key={msg.id}
               msg={msg}
               isSent={isSentTab}
-              userId={userId}
               expanded={expandedId === msg.id}
               onExpand={() => handleExpand(msg, isSentTab)}
               onDelete={() => deleteMutation.mutate(msg.id)}

@@ -27,12 +27,21 @@ interface SavedCapsule {
   category?: string;
 }
 
-const ONBOARD_STEPS = [
+const PERSON_STEPS = [
   { key: "work", label: "Work & Life", icon: "💼", description: "Job, location, daily life" },
   { key: "health", label: "Health & Body", icon: "❤️", description: "Allergies, diet, conditions" },
   { key: "family", label: "Family & Home", icon: "🏠", description: "Household, pets, key people" },
   { key: "goals", label: "Goals & Interests", icon: "⭐", description: "Hobbies, what you want help with" },
 ];
+
+const ORG_STEPS = [
+  { key: "mission",    label: "Mission & Services",  icon: "🏢", description: "What your org does" },
+  { key: "team",       label: "Team & Structure",    icon: "👥", description: "Size, departments, roles" },
+  { key: "knowledge",  label: "Public Knowledge",    icon: "📚", description: "What you share with clients" },
+  { key: "goals",      label: "Goals",               icon: "⭐", description: "How your agent helps" },
+];
+
+const ORG_COMPLIANCE_STEP = { key: "compliance", label: "Emergency & Compliance", icon: "🔑", description: "Emergency access & data rules" };
 
 const QUICK_RESPONSES: Record<string, string[]> = {
   start: [
@@ -145,10 +154,17 @@ export default function OnboardPage() {
   const isCompleteProfile = distinctTypes.size >= 3;
   const isSeededUser = hasExistingData && !isCompleteProfile;
 
+  const isOrg = user?.user_type === "organization";
+  const orgSubtype = user?.org_subtype;
+  const hasComplianceStep = isOrg && (orgSubtype === "healthcare" || orgSubtype === "emergency");
+  const activeSteps = isOrg
+    ? [...ORG_STEPS, ...(hasComplianceStep ? [ORG_COMPLIANCE_STEP] : [])]
+    : PERSON_STEPS;
+
   const goToDashboard = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["capsules", userId] });
     queryClient.invalidateQueries({ queryKey: ["user", userId] });
-    router.push(`/${userId}`);
+    router.push(`/${userId}/discovery-setup`);
   }, [queryClient, router, userId]);
 
   const hasSpeech = typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
@@ -316,11 +332,11 @@ export default function OnboardPage() {
     }
   };
 
-  const phase = inferPhase(messages.length, newCapsules.length);
-  const suggestions = QUICK_RESPONSES[phase] || QUICK_RESPONSES.general;
   const completedStepKeys = new Set(
     newCapsules.map(capsuleToStepKey).filter((k): k is string => k !== null)
   );
+  const phase = inferPhase(messages.length, completedStepKeys.size);
+  const suggestions = QUICK_RESPONSES[phase] || QUICK_RESPONSES.general;
 
   // Group existing capsules by type for the summary display
   const capsulesByType = existingCapsules?.reduce((acc, c) => {
@@ -384,17 +400,21 @@ export default function OnboardPage() {
         {/* ── State: New user ── */}
         {!hasExistingData && (
           <>
-            <h1 className="text-2xl font-bold mb-2 text-center">Let&apos;s get to know you, {firstName}!</h1>
+            <h1 className="text-2xl font-bold mb-2 text-center">
+              {isOrg ? `Set up ${firstName || "your"} agent` : `Let\u2019s get to know you, ${firstName}!`}
+            </h1>
             <p className="text-muted-foreground text-center max-w-md mb-6 text-sm leading-relaxed">
-              Your AI agent needs to learn about you to be helpful. This takes about 2 minutes — just a quick conversation.
+              {isOrg
+                ? "Help your agent understand your organization so it can serve clients and staff effectively."
+                : "Your AI agent needs to learn about you to be helpful. This takes about 2 minutes — just a quick conversation."}
             </p>
 
-            <PersonalitySelector required />
+            {!isOrg && <PersonalitySelector required />}
 
             <div className="w-full max-w-md mb-6">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">What we&apos;ll cover</p>
               <div className="grid grid-cols-2 gap-2">
-                {ONBOARD_STEPS.map((step) => (
+                {activeSteps.map((step) => (
                   <div key={step.key} className="flex items-start gap-2.5 p-3 rounded-xl bg-card border border-card-border">
                     <span className="text-base mt-0.5">{step.icon}</span>
                     <div>
@@ -508,7 +528,7 @@ export default function OnboardPage() {
         <div className="bg-card border border-card-border rounded-2xl p-4">
           <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">This Session</p>
           <div className="space-y-2">
-            {ONBOARD_STEPS.map((step) => {
+            {activeSteps.map((step) => {
               const done = completedStepKeys.has(step.key);
               return (
                 <div key={step.key} className="flex items-center gap-2">

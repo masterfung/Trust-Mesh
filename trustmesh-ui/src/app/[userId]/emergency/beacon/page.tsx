@@ -71,6 +71,7 @@ export default function EmergencyBeaconPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
+  const [skipEmptyCheck, setSkipEmptyCheck] = useState(false);
 
   const fetchBeacon = useCallback(async () => {
     setLoading(true);
@@ -116,6 +117,47 @@ export default function EmergencyBeaconPage() {
           >
             Retry
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  // No medical data — show setup prompt instead of empty QR codes
+  if (beacon && beacon.capsule_count === 0 && !skipEmptyCheck) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center p-4">
+        <div className="max-w-md w-full space-y-6 text-center">
+          <div className="text-6xl">🏥</div>
+          <div className="space-y-2">
+            <h1 className="text-2xl font-bold text-white">No Medical Data Found</h1>
+            <p className="text-muted-foreground text-sm leading-relaxed">
+              Your Emergency Medical ID QR codes are ready, but you haven&apos;t added any health
+              information to your vault yet. First responders who scan your code won&apos;t see anything useful.
+            </p>
+          </div>
+          <div className="bg-yellow-950/40 border border-yellow-700/60 rounded-xl p-4 text-left space-y-2">
+            <p className="text-yellow-400 text-sm font-medium">Recommended health data to add:</p>
+            <ul className="text-yellow-300/80 text-sm space-y-1">
+              <li>• Blood type &amp; allergies</li>
+              <li>• Current medications</li>
+              <li>• Emergency contacts</li>
+              <li>• Medical conditions or DNR status</li>
+            </ul>
+          </div>
+          <div className="flex flex-col gap-3">
+            <a
+              href={`/${userId}/vault`}
+              className="block w-full py-3 bg-accent hover:bg-accent-hover text-accent-fg font-semibold rounded-xl text-sm transition-colors"
+            >
+              Add Health Data to Vault
+            </a>
+            <button
+              onClick={() => setSkipEmptyCheck(true)}
+              className="w-full py-2.5 bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white rounded-xl text-sm border border-white/10 transition-colors"
+            >
+              Show QR Codes Anyway
+            </button>
+          </div>
         </div>
       </div>
     );

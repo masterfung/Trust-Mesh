@@ -98,7 +98,7 @@ function Waveform({ active }: { active: boolean }) {
   );
 }
 
-export function LiveAgent({ userId, onClose }: Props) {
+export function LiveAgent({ onClose }: Props) {
   const [status, setStatus] = useState<LiveStatus>("idle");
   const [transcript, setTranscript] = useState<{ role: "user" | "agent"; text: string }[]>([]);
   const [tools, setTools] = useState<ToolActivity[]>([]);
@@ -127,7 +127,7 @@ export function LiveAgent({ userId, onClose }: Props) {
 
   // ── PCM Playback ─────────────────────────────────────────────────────────
 
-  const playNextChunk = useCallback(() => {
+  const playNextChunk = useCallback(function playNext() {
     if (playQueueRef.current.length === 0) {
       playingRef.current = false;
       setAgentSpeaking(false);
@@ -141,7 +141,7 @@ export function LiveAgent({ userId, onClose }: Props) {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-    src.onended = playNextChunk;
+    src.onended = playNext;
     src.start();
     playingRef.current = true;
   }, []);
@@ -169,6 +169,27 @@ export function LiveAgent({ userId, onClose }: Props) {
   );
 
   // ── Session lifecycle ─────────────────────────────────────────────────────
+
+  const cleanup = useCallback(() => {
+    wsRef.current?.close();
+    wsRef.current = null;
+
+    workletNodeRef.current?.disconnect();
+    workletNodeRef.current = null;
+
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+
+    audioCtxRef.current?.close();
+    audioCtxRef.current = null;
+
+    playbackCtxRef.current?.close();
+    playbackCtxRef.current = null;
+
+    playQueueRef.current = [];
+    playingRef.current = false;
+    setAgentSpeaking(false);
+  }, []);
 
   const startSession = useCallback(async () => {
     setStatus("connecting");
@@ -284,28 +305,7 @@ export function LiveAgent({ userId, onClose }: Props) {
       setStatus("error");
       cleanup();
     }
-  }, [enqueueAudio, status]);
-
-  const cleanup = useCallback(() => {
-    wsRef.current?.close();
-    wsRef.current = null;
-
-    workletNodeRef.current?.disconnect();
-    workletNodeRef.current = null;
-
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-
-    audioCtxRef.current?.close();
-    audioCtxRef.current = null;
-
-    playbackCtxRef.current?.close();
-    playbackCtxRef.current = null;
-
-    playQueueRef.current = [];
-    playingRef.current = false;
-    setAgentSpeaking(false);
-  }, []);
+  }, [cleanup, enqueueAudio, status]);
 
   const stopSession = useCallback(() => {
     cleanup();

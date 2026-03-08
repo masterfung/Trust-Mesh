@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api, type QueryResult, type User } from "@/lib/api";
 import { TrustGraph } from "@/components/TrustGraph";
 import Link from "next/link";
@@ -98,21 +98,6 @@ export default function GraphPage() {
 
   const getUserId = (username: string) =>
     users?.find((u) => u.username === username)?.id;
-
-  const queryMutation = useMutation({
-    mutationFn: ({
-      fromId,
-      toId,
-      question,
-    }: {
-      fromId: string;
-      toId: string;
-      question: string;
-    }) => api.query(fromId, toId, question),
-    onSuccess: (result) => {
-      setRecentQueries((prev) => [result, ...prev].slice(0, 20));
-    },
-  });
 
   const runScenario = async (scenario: (typeof DEMO_SCENARIOS)[number], idx: number) => {
     const fromId = getUserId(scenario.from);

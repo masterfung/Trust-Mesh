@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type User, type QueryResult, type AgentAction, type Connection, type RegistryAgent, getPodUrl } from "@/lib/api";
+import { ResearchFeed } from "@/components/ResearchFeed";
 import { useParams } from "next/navigation";
 import { TrustBadge, DecisionBadge } from "@/components/TrustBadge";
 import { Markdown } from "@/components/Markdown";
@@ -60,6 +61,7 @@ interface StreamingResult {
   response: string;
   decision: string;
   agent_actions?: AgentAction[];
+  routing?: { provider: string; model?: string };
   latency_ms: number;
   created_at: string;
   isStreaming?: boolean;
@@ -96,6 +98,7 @@ export default function ChatPage() {
 
   const [sessionHistory, setSessionHistory] = useState<{ role: string; content: string }[]>([]);
   const [showLive, setShowLive] = useState(false);
+  const [showResearchFeed, setShowResearchFeed] = useState(false);
 
   // Build a set of connected user IDs and a map of user -> shared network names
   const connectedIds = new Set(
@@ -204,6 +207,11 @@ export default function ChatPage() {
                 return updated;
               });
             } else if (event.type === "tool") {
+              // Show research feed when browsing tools are active
+              const toolName = event.data?.name;
+              if (toolName === "browse_web" || toolName === "research_parallel") {
+                setShowResearchFeed(true);
+              }
               setResults((prev) => {
                 const updated = [...prev];
                 if (updated[0]?.isStreaming) {
@@ -369,6 +377,16 @@ export default function ChatPage() {
     }
   }, [isListening, question]);
 
+  // Research feed pod URLs: current pod + demo sibling pods (if in multi-pod mode)
+  const currentPodUrl = typeof window !== "undefined" ? getPodUrl() : "";
+  const demoPodPorts = ["9001", "9002", "9004"];
+  const currentPort = currentPodUrl.match(/:(\d+)/)?.[1] ?? "";
+  const researchPodUrls = demoPodPorts.includes(currentPort)
+    ? demoPodPorts.map((p) => currentPodUrl.replace(/:(\d+)/, `:${p}`))
+    : currentPodUrl
+      ? [currentPodUrl]
+      : [];
+
   return (
     <div className="max-w-3xl mx-auto">
       {/* Live Agent modal */}
@@ -406,6 +424,9 @@ export default function ChatPage() {
           )}
         </div>
       </div>
+
+      {/* Live Research Feed */}
+      <ResearchFeed podUrls={researchPodUrls} visible={showResearchFeed || isStreaming} />
 
       {/* Query Form */}
       <form onSubmit={handleSubmit} className="bg-card border border-card-border rounded-2xl p-5 mb-8">
@@ -630,14 +651,13 @@ function MentionInput({
   const registryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Local user IDs and usernames for deduplication
-  const localIds = useMemo(() => new Set(users.map(u => u.id)), [users]);
   const localUsernames = useMemo(() => new Set(users.map(u => u.username).filter(Boolean)), [users]);
 
   // Debounced registry search
   useEffect(() => {
     if (!showMentions || mentionQuery.length < 2) {
-      setRegistryResults([]);
-      return;
+      const timeoutId = setTimeout(() => setRegistryResults([]), 0);
+      return () => clearTimeout(timeoutId);
     }
     if (registryTimerRef.current) clearTimeout(registryTimerRef.current);
     registryTimerRef.current = setTimeout(async () => {
@@ -961,6 +981,82 @@ function MentionInput({
 // Inline Emergency QR Card
 // ═══════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+// Vault Context Authorization Manifest + Pipeline Card
+// ═══════════════════════════════════════════════════════════════
+
+interface VaultContextItem {
+  title: string;
+  content: string;
+  capsule_type: string;
+  freshness: string;
+  confidence: string;
+  authority_weight: number;
+  capsule_id: string;
+}
+
+function VaultContextCard({ tools }: { tools: { name: string; input: Record<string, unknown> }[] }) {
+  const [open, setOpen] = useState(false);
+
+  // Extract vault_context_used from tool results (stored in input for display)
+  const browseTools = tools.filter(t => t.name === "browse_web" || t.name === "research_parallel");
+  if (browseTools.length === 0) return null;
+
+  // Check if any browse tool ran (we show the pipeline card regardless of context items)
+  const hasParallel = tools.some(t => t.name === "research_parallel");
+  const taskCount = hasParallel
+    ? (tools.find(t => t.name === "research_parallel")?.input?.tasks as unknown[])?.length ?? 1
+    : browseTools.length;
+
+  return (
+    <div className="mb-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 overflow-hidden">
+      <button
+        className="w-full flex items-center gap-2 px-3 py-2 text-left"
+        onClick={() => setOpen(v => !v)}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-cyan-400 shrink-0" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+        <span className="text-[11px] font-semibold text-cyan-400">How this search was protected</span>
+        {hasParallel && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/20 font-medium">
+            {taskCount} sites parallel
+          </span>
+        )}
+        <svg
+          width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          className={`ml-auto text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`}
+          strokeLinecap="round" strokeLinejoin="round"
+        >
+          <path d="M9 18l6-6-6-6"/>
+        </svg>
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3 space-y-1.5">
+          {/* Pipeline visualization */}
+          <div className="text-[10px] font-mono space-y-1 text-muted-foreground border-t border-cyan-500/10 pt-2 mt-1">
+            {[
+              { icon: "🔓", label: "Vault", desc: "Zig-decrypted preferences (keys never leave native memory)" },
+              { icon: "🎯", label: "Goal", desc: "Personalized with your context — nothing raw sent" },
+              { icon: "🌐", label: "Browse", desc: hasParallel ? `TinyFish — ${taskCount} sites simultaneously` : "TinyFish AI browser session" },
+              { icon: "🛡️", label: "Scan", desc: "Citadel ML — injection + leak detection" },
+              { icon: "🔒", label: "Store", desc: "Zig re-encrypts into vault (AES-256-GCM)" },
+              { icon: "🤝", label: "Share", desc: "Trust-scoped to your network" },
+            ].map(({ icon, label, desc }) => (
+              <div key={label} className="flex items-start gap-2">
+                <span className="shrink-0 w-4 text-center">{icon}</span>
+                <span className="text-cyan-400 font-semibold w-12 shrink-0">{label}</span>
+                <span>{desc}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const SCAN_URL_RE = /https?:\/\/\S+\/emergency\/scan\?\S+/g;
 
 function EmergencyQRCards({ response }: { response: string }) {
@@ -1138,6 +1234,11 @@ function QueryResultCard({
           </div>
         )}
 
+        {/* Authorization manifest + pipeline card (shown when browse_web / research_parallel ran) */}
+        {!streaming && tools && tools.some(t => t.name === "browse_web" || t.name === "research_parallel") && (
+          <VaultContextCard tools={tools} />
+        )}
+
         {/* Agent Actions (non-streaming) */}
         {result.agent_actions && result.agent_actions.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-3">
@@ -1206,6 +1307,20 @@ function QueryResultCard({
               </span>
             )}
             {result.latency_ms > 0 && <span>{result.latency_ms}ms</span>}
+            {result.routing?.provider && (
+              <span className={`flex items-center gap-1 ${
+                result.routing.provider === "gemini" ? "text-blue-400" :
+                result.routing.provider === "tee" ? "text-violet-400" :
+                "text-zinc-400"
+              }`}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                </svg>
+                {result.routing.provider === "gemini" ? "Gemini Flash" :
+                 result.routing.provider === "tee" ? "TEE (private)" :
+                 "Claude Sonnet"}
+              </span>
+            )}
             {"citadel_input" in result && result.citadel_input?.decision && (
               <span className={`flex items-center gap-1 ${result.citadel_input.decision === "BLOCK" ? "text-danger" : "text-success"}`}>
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

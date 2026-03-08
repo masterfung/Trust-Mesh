@@ -7,19 +7,27 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Search, Globe, Box, User as UserIcon, Building2, Landmark, ExternalLink, UserPlus, Check } from "lucide-react";
+import { Search, Globe, Box, User as UserIcon, Building2, Landmark, ExternalLink, UserPlus, Check, Heart, GraduationCap, Siren } from "lucide-react";
 
 /* ── Shared ── */
 
 const ENTITY_STYLE: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
-  person:       { icon: <UserIcon size={12} />, color: "text-blue-400 bg-blue-500/15 border-blue-500/25",     label: "Person" },
-  organization: { icon: <Building2 size={12} />, color: "text-amber-400 bg-amber-500/15 border-amber-500/25", label: "Organization" },
-  government:   { icon: <Landmark size={12} />,  color: "text-emerald-400 bg-emerald-500/15 border-emerald-500/25", label: "Government" },
-  service:      { icon: <Building2 size={12} />, color: "text-amber-400 bg-amber-500/15 border-amber-500/25", label: "Service" },
+  person:       { icon: <UserIcon size={12} />,       color: "text-blue-400 bg-blue-500/15 border-blue-500/25",       label: "Person" },
+  organization: { icon: <Building2 size={12} />,      color: "text-amber-400 bg-amber-500/15 border-amber-500/25",    label: "Organization" },
+  government:   { icon: <Landmark size={12} />,       color: "text-emerald-400 bg-emerald-500/15 border-emerald-500/25", label: "Government" },
+  service:      { icon: <Building2 size={12} />,      color: "text-amber-400 bg-amber-500/15 border-amber-500/25",    label: "Service" },
+  // Org subtypes
+  company:      { icon: <Building2 size={12} />,      color: "text-amber-400 bg-amber-500/15 border-amber-500/25",    label: "Company" },
+  nonprofit:    { icon: <Heart size={12} />,           color: "text-pink-400 bg-pink-500/15 border-pink-500/25",       label: "Nonprofit" },
+  healthcare:   { icon: <Heart size={12} />,           color: "text-red-400 bg-red-500/15 border-red-500/25",          label: "Healthcare" },
+  education:    { icon: <GraduationCap size={12} />,   color: "text-blue-400 bg-blue-500/15 border-blue-500/25",       label: "Education" },
+  emergency:    { icon: <Siren size={12} />,           color: "text-orange-400 bg-orange-500/15 border-orange-500/25", label: "Emergency" },
 };
 
-function EntityBadge({ type }: { type: string }) {
-  const s = ENTITY_STYLE[type] || ENTITY_STYLE.person;
+function EntityBadge({ type, orgSubtype }: { type: string; orgSubtype?: string | null }) {
+  // For orgs, prefer the subtype badge if available
+  const key = type === "organization" && orgSubtype ? orgSubtype : type;
+  const s = ENTITY_STYLE[key] || ENTITY_STYLE.organization;
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border ${s.color}`}>
       {s.icon} {s.label}
@@ -63,7 +71,7 @@ function LocalAgentCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold truncate">{agent.display_name}</h3>
-            <EntityBadge type={agent.user_type} />
+            <EntityBadge type={agent.user_type} orgSubtype={agent.org_subtype} />
           </div>
           {agent.username && <p className="text-xs text-muted-foreground truncate">@{agent.username}</p>}
         </div>

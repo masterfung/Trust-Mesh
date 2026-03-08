@@ -69,6 +69,15 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+/**
+ * Create an EventSource for the research feed of a specific pod.
+ * The EventSource streams research events as the pod's agents browse the web.
+ * Caller is responsible for closing the EventSource when done.
+ */
+export function createResearchFeedSource(podBaseUrl: string): EventSource {
+  return new EventSource(`${podBaseUrl}/api/research/feed`, { withCredentials: true });
+}
+
 // ── Types ──
 
 export interface ProfileData {
@@ -89,11 +98,15 @@ export interface User {
   display_name: string;
   bio: string;
   user_type?: string;
+  org_subtype?: string | null;
+  agent_mode?: string;
   profile_data?: ProfileData | null;
   is_discoverable?: boolean;
   is_demo?: boolean;
+  is_remote?: boolean;
   active_context?: ContextMode;
   avatar_url?: string | null;
+  connectivity_mode?: "relay_primary" | "direct_with_fallback" | "invite_only";
   created_at?: string;
 }
 
@@ -240,6 +253,7 @@ export interface QueryResult {
   citadel_input?: CitadelResult;
   citadel_output?: CitadelResult;
   agent_actions?: AgentAction[];
+  routing?: { provider: string; model?: string };
   latency_ms: number;
   created_at: string;
 }
@@ -318,6 +332,7 @@ export interface RegistryAgent {
   display_name: string;
   bio: string;
   user_type: string;
+  org_subtype?: string | null;
   profile_data?: ProfileData | null;
   skills: { name: string; category: string }[];
   pools: string[];
@@ -439,7 +454,7 @@ export const api = {
     apiFetch<{ status: string }>("/api/auth/logout", { method: "POST" }),
   getMe: () => apiFetch<User>("/api/auth/me"),
   // Signup: name + password + optional email/avatar. Username (public handle) is optional.
-  createUser: (data: { display_name: string; bio: string; password: string; email?: string; avatar_url?: string; user_type?: string; username?: string }) =>
+  createUser: (data: { display_name: string; bio: string; password: string; email?: string; avatar_url?: string; user_type?: string; org_subtype?: string; username?: string }) =>
     apiFetch<User>("/api/users", { method: "POST", body: JSON.stringify(data) }),
   // Claim a public handle (Go Live)
   claimHandle: (userId: string, handle: string) =>
@@ -680,6 +695,14 @@ export const api = {
   updateUser: (userId: string, data: { is_discoverable?: boolean; bio?: string; display_name?: string; email?: string; avatar_url?: string }) =>
     apiFetch<User>(`/api/users/${userId}`, { method: "PUT", body: JSON.stringify(data) }),
 
+  // Agent mode toggle (org pods only)
+  patchAgentMode: (userId: string, mode: "public" | "internal") =>
+    apiFetch<User>(`/api/users/${userId}/agent-mode`, { method: "PATCH", body: JSON.stringify({ mode }) }),
+
+  // Connectivity mode — controls how this user's pod is reachable
+  updateConnectivityMode: (userId: string, mode: "relay_primary" | "direct_with_fallback" | "invite_only") =>
+    apiFetch<User>(`/api/users/${userId}/connectivity`, { method: "PATCH", body: JSON.stringify({ connectivity_mode: mode }) }),
+
   // Demo
   demoWarmup: () =>
     apiFetch<{ status: string; keys_loaded: number }>("/api/demo/warmup", { method: "POST" }),
@@ -746,6 +769,7 @@ export interface EmergencyBeaconResponse {
   expires_in: number;  // 1800 seconds
   generated_at: string;
   audit_id: string;
+  capsule_count: number;
 }
 
 export interface EmergencyCapsule {

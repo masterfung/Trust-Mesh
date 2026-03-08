@@ -73,14 +73,20 @@ export default function VaultPage() {
       <div className="flex items-center justify-between mb-5">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-bold">My Memories</h1>
+            <h1 className="text-2xl font-bold">
+              {currentUser?.user_type === "organization" ? "Knowledge Base" : "My Memories"}
+            </h1>
             {capsules && (
               <span className="text-xs bg-card-hover text-muted-foreground px-2 py-0.5 rounded-lg font-medium">
                 {capsules.length}
               </span>
             )}
           </div>
-          <p className="text-muted-foreground text-sm mt-0.5">Your saved memories — encrypted and secure</p>
+          <p className="text-muted-foreground text-sm mt-0.5">
+            {currentUser?.user_type === "organization"
+              ? "Your organization's knowledge — encrypted and access-controlled"
+              : "Your saved memories — encrypted and secure"}
+          </p>
         </div>
         <button
           onClick={() => { setShowForm(!showForm); setEditingCapsule(null); }}
@@ -99,6 +105,7 @@ export default function VaultPage() {
           userId={userId}
           networks={networks ?? []}
           capsule={editingCapsule}
+          isOrg={currentUser?.user_type === "organization"}
           onDone={() => {
             setShowForm(false);
             setEditingCapsule(null);
@@ -344,15 +351,27 @@ const TIER_EXPLANATIONS: Record<string, { label: string; detail: string }> = {
 
 /* ── Capsule Form with AI Assist ── */
 
+// Map org pool selection to tier + network_ids
+type OrgPoolOption = "public" | "all_staff" | "leadership" | "private_org";
+
+const ORG_POOL_OPTIONS: { key: OrgPoolOption; label: string; detail: string; emoji: string }[] = [
+  { key: "public",      label: "Public",     detail: "Any external agent can query this",          emoji: "🌐" },
+  { key: "all_staff",   label: "All Staff",  detail: "All connected staff members can access",     emoji: "👥" },
+  { key: "leadership",  label: "Leadership", detail: "Executive team only",                         emoji: "🔒" },
+  { key: "private_org", label: "Private",    detail: "Org admin only — not shared with anyone",    emoji: "🔐" },
+];
+
 function CapsuleForm({
   userId,
   networks,
   capsule,
+  isOrg = false,
   onDone,
 }: {
   userId: string;
   networks: Network[];
   capsule?: Capsule | null;
+  isOrg?: boolean;
   onDone: () => void;
 }) {
   const isEdit = !!capsule;
@@ -368,6 +387,17 @@ function CapsuleForm({
   const [tier, setTier] = useState(capsule?.tier || "private");
   const [selectedNetworks, setSelectedNetworks] = useState<string[]>(capsule?.network_ids || []);
   const [showVisibilityConfirm, setShowVisibilityConfirm] = useState(false);
+
+  // Org pool selection
+  const [orgPool, setOrgPool] = useState<OrgPoolOption>("private_org");
+  const allStaffNetwork = networks.find((n) => n.pool_type === "org_all_staff");
+  const leadershipNetwork = networks.find((n) => n.pool_type === "org_executives");
+
+  // Derive tier + network_ids from org pool selection
+  const orgTier = orgPool === "public" ? "public" : orgPool === "private_org" ? "private" : "network";
+  const orgNetworkIds =
+    orgPool === "all_staff" ? (allStaffNetwork ? [allStaffNetwork.id] : []) :
+    orgPool === "leadership" ? (leadershipNetwork ? [leadershipNetwork.id] : []) : [];
 
   const tierOrder = { private: 0, network: 1, public: 2 } as Record<string, number>;
   const isWidening = (tierOrder[tier] ?? 0) > (tierOrder[originalTier] ?? 0);
@@ -447,16 +477,23 @@ function CapsuleForm({
     doSave();
   };
 
+  const effectiveTier = isOrg ? orgTier : tier;
+  const effectiveNetworkIds = isOrg
+    ? orgNetworkIds
+    : (tier === "network" ? selectedNetworks : []);
+
   const mutation = useMutation({
     mutationFn: () =>
       isEdit
         ? api.updateCapsule(capsule!.id, {
-            capsule_type: type, title, content, tier,
-            network_ids: tier === "network" ? selectedNetworks : [],
+            capsule_type: type, title, content,
+            tier: effectiveTier,
+            network_ids: effectiveNetworkIds,
           })
         : api.createCapsule(userId, {
-            capsule_type: type, title, content, tier,
-            network_ids: tier === "network" ? selectedNetworks : [],
+            capsule_type: type, title, content,
+            tier: effectiveTier,
+            network_ids: effectiveNetworkIds,
           }),
     onSuccess: onDone,
   });
@@ -545,32 +582,62 @@ function CapsuleForm({
             </div>
           </div>
 
-          {/* Sharing Level */}
-          <div className="mb-4">
-            <label className="block text-xs font-medium text-muted-foreground mb-2">Who can see this?</label>
-            <div className="grid grid-cols-3 gap-1.5">
-              {TIERS.map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => { setTier(t); setShowVisibilityConfirm(false); }}
-                  className={`p-2.5 rounded-xl text-center transition-all ${
-                    tier === t
-                      ? "bg-accent/10 border-2 border-accent"
-                      : "bg-card-hover border-2 border-transparent hover:border-card-border"
-                  }`}
-                >
-                  <TrustBadge tier={t} />
-                  <span className="text-[10px] text-muted-foreground block mt-1.5 font-medium">
-                    {TIER_EXPLANATIONS[t]?.label}
-                  </span>
-                </button>
-              ))}
+          {/* Sharing Level — org pool selector or person tier selector */}
+          {isOrg ? (
+            <div className="mb-4">
+              <label className="block text-xs font-medium text-muted-foreground mb-2">Visibility / Access</label>
+              <div className="grid grid-cols-2 gap-1.5">
+                {ORG_POOL_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setOrgPool(opt.key)}
+                    className={`p-2.5 rounded-xl text-left transition-all ${
+                      orgPool === opt.key
+                        ? "bg-accent/10 border-2 border-accent"
+                        : "bg-card-hover border-2 border-transparent hover:border-card-border"
+                    }`}
+                  >
+                    <span className="text-base block mb-0.5">{opt.emoji}</span>
+                    <span className="text-xs font-medium block">{opt.label}</span>
+                    <span className="text-[9px] text-muted-foreground leading-tight block">{opt.detail}</span>
+                  </button>
+                ))}
+              </div>
+              {orgPool === "all_staff" && !allStaffNetwork && (
+                <p className="text-[11px] text-amber-400 mt-2">No All Staff pool found — will save as private.</p>
+              )}
+              {orgPool === "leadership" && !leadershipNetwork && (
+                <p className="text-[11px] text-amber-400 mt-2">No Leadership pool found — will save as private.</p>
+              )}
             </div>
-            <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">
-              {TIER_EXPLANATIONS[tier]?.detail}
-            </p>
-          </div>
+          ) : (
+            <div className="mb-4">
+              <label className="block text-xs font-medium text-muted-foreground mb-2">Who can see this?</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {TIERS.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => { setTier(t); setShowVisibilityConfirm(false); }}
+                    className={`p-2.5 rounded-xl text-center transition-all ${
+                      tier === t
+                        ? "bg-accent/10 border-2 border-accent"
+                        : "bg-card-hover border-2 border-transparent hover:border-card-border"
+                    }`}
+                  >
+                    <TrustBadge tier={t} />
+                    <span className="text-[10px] text-muted-foreground block mt-1.5 font-medium">
+                      {TIER_EXPLANATIONS[t]?.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">
+                {TIER_EXPLANATIONS[tier]?.detail}
+              </p>
+            </div>
+          )}
 
           {/* Title */}
           <div className="mb-3">
@@ -596,8 +663,8 @@ function CapsuleForm({
             />
           </div>
 
-          {/* Network Selection */}
-          {tier === "network" && (
+          {/* Network Selection (person only — org uses pool selector above) */}
+          {!isOrg && tier === "network" && (
             <div className="mb-4">
               <label className="block text-xs font-medium text-muted-foreground mb-2">Share with groups</label>
               {networks.length === 0 ? (
@@ -668,7 +735,7 @@ function CapsuleForm({
                   <Spinner />
                   Saving...
                 </span>
-              ) : isEdit ? "Save Changes" : "Save Memory"}
+              ) : isEdit ? "Save Changes" : isOrg ? "Save to Knowledge Base" : "Save Memory"}
             </button>
           )}
 
