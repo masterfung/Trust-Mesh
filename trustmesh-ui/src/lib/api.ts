@@ -104,6 +104,7 @@ export interface User {
   is_discoverable?: boolean;
   is_demo?: boolean;
   is_remote?: boolean;
+  pod_url?: string;
   active_context?: ContextMode;
   avatar_url?: string | null;
   connectivity_mode?: "relay_primary" | "direct_with_fallback" | "invite_only";
@@ -744,17 +745,34 @@ export const api = {
     // Always route through the Next.js server-side proxy so cross-origin pod calls
     // work even when the browser is on a public tunnel (phone scanning the QR).
     // The proxy fetches the pod API server-side, avoiding CORS and localhost issues.
+    // IMPORTANT: use plain fetch() with a relative URL — NOT apiFetch() — because
+    // apiFetch() prepends the pod URL (e.g. http://localhost:9004) and this route
+    // only exists on the Next.js server (localhost:3050).
     const proxyPath =
       `/api/emergency-proxy` +
       `?t=${encodeURIComponent(token)}` +
       `&p=${encodeURIComponent(patientUsername)}` +
       (podUrl ? `&pod=${encodeURIComponent(podUrl)}` : "");
-    return apiFetch<EmergencyAccessResponse>(proxyPath);
+    return fetch(proxyPath, { credentials: "include" }).then(async (res) => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { detail?: string }).detail ?? res.statusText);
+      }
+      return res.json() as Promise<EmergencyAccessResponse>;
+    });
   },
   sendEmergencyAlert: (token: string, patient: string, message: string, podUrl?: string) =>
-    apiFetch<EmergencyAlertResponse>("/api/emergency-proxy", {
+    fetch("/api/emergency-proxy", {
       method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ t: token, p: patient, message, pod: podUrl }),
+    }).then(async (res) => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { detail?: string }).detail ?? res.statusText);
+      }
+      return res.json() as Promise<EmergencyAlertResponse>;
     }),
 };
 

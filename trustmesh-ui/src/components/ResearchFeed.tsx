@@ -34,10 +34,11 @@ function getPodPort(podUrl: string): string {
   return podUrl.match(/:(\d+)/)?.[1] ?? "9000";
 }
 
-function EventRow({ event }: { event: ResearchEvent }) {
+function EventRow({ event, isLabelActive }: { event: ResearchEvent; isLabelActive: boolean }) {
   const port = getPodPort(event.podUrl);
   const colorClass = POD_COLORS[port] ?? "text-muted-foreground";
-  const isInProgress = event.type === "research_started" || event.type === "research_step";
+  // Show spinner only when this label hasn't received a done event yet
+  const isInProgress = isLabelActive && (event.type === "research_started" || event.type === "research_step");
   const isDone = event.type === "research_done";
 
   let icon = "↗";
@@ -85,9 +86,11 @@ interface ResearchFeedProps {
   podUrls: string[];
   /** Whether the feed should be shown */
   visible: boolean;
+  /** Callback to send a message to the agent (for "Create Task" CTA) */
+  onSend?: (msg: string) => void;
 }
 
-export function ResearchFeed({ podUrls, visible }: ResearchFeedProps) {
+export function ResearchFeed({ podUrls, visible, onSend }: ResearchFeedProps) {
   const [events, setEvents] = useState<ResearchEvent[]>([]);
   const [hasActivity, setHasActivity] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
@@ -141,9 +144,15 @@ export function ResearchFeed({ podUrls, visible }: ResearchFeedProps) {
 
   if (!visible || (!hasActivity && events.length === 0)) return null;
 
-  const activeCount = events.filter(
-    (e) => e.type === "research_started" || e.type === "research_step"
-  ).length;
+  // Count labels that have started but not yet received a research_done event
+  const activeLabels = new Set<string>();
+  // Events are newest-first — iterate in reverse (oldest first) to build state
+  for (const e of [...events].reverse()) {
+    const key = `${e.podUrl}:${e.label ?? e.url ?? ""}`;
+    if (e.type === "research_started") activeLabels.add(key);
+    if (e.type === "research_done") activeLabels.delete(key);
+  }
+  const activeCount = activeLabels.size;
 
   return (
     <div className="mb-6 rounded-xl border border-card-border bg-card overflow-hidden">
@@ -155,11 +164,21 @@ export function ResearchFeed({ podUrls, visible }: ResearchFeedProps) {
           )}
           <span className="text-xs font-semibold text-foreground">Research Feed</span>
         </div>
-        {activeCount > 0 && (
+        {activeCount > 0 ? (
           <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-400 border border-cyan-500/20 font-medium">
             {activeCount} active
           </span>
-        )}
+        ) : events.length > 0 && onSend ? (
+          <button
+            onClick={() => {
+              const topic = events.find(e => e.label)?.label ?? "this research";
+              onSend(`Create a task to track and continue: "${topic}". Link it to the saved capsule and set a reminder to retry in 2 hours.`);
+            }}
+            className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/25 hover:bg-amber-500/25 transition-colors font-medium"
+          >
+            Follow up later
+          </button>
+        ) : null}
         <div className="ml-auto flex items-center gap-1">
           {podUrls.map((url) => {
             const port = getPodPort(url);
@@ -192,7 +211,13 @@ export function ResearchFeed({ podUrls, visible }: ResearchFeedProps) {
         {events.length === 0 ? (
           <p className="text-[11px] text-muted-foreground">Waiting for research activity...</p>
         ) : (
-          events.map((event, i) => <EventRow key={i} event={event} />)
+          events.map((event, i) => (
+            <EventRow
+              key={i}
+              event={event}
+              isLabelActive={activeLabels.has(`${event.podUrl}:${event.label ?? event.url ?? ""}`)}
+            />
+          ))
         )}
       </div>
     </div>

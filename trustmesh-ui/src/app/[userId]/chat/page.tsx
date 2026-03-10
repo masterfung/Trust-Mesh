@@ -4,7 +4,8 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type User, type QueryResult, type AgentAction, type Connection, type RegistryAgent, getPodUrl } from "@/lib/api";
 import { ResearchFeed } from "@/components/ResearchFeed";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import { TrustBadge, DecisionBadge } from "@/components/TrustBadge";
 import { Markdown } from "@/components/Markdown";
 import { LiveAgent } from "@/components/LiveAgent";
@@ -70,14 +71,22 @@ interface StreamingResult {
 
 export default function ChatPage() {
   const { userId } = useParams<{ userId: string }>();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const [question, setQuestion] = useState("");
   const [results, setResults] = useState<StreamingResult[]>([]);
   const [isListening, setIsListening] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [streamElapsed, setStreamElapsed] = useState(0);
   const [voiceError, setVoiceError] = useState("");
+  const [formVisible, setFormVisible] = useState(true);
+  // Pod users from sibling pods (for cross-pod @mentions)
+  const [podUsers, setPodUsers] = useState<User[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
 
   const { data: users } = useQuery({
     queryKey: ["users"],
@@ -95,6 +104,18 @@ export default function ChatPage() {
     queryKey: ["networks", userId],
     queryFn: () => api.listNetworks(userId),
   });
+
+  const { data: capsules, isSuccess: capsulesLoaded } = useQuery({
+    queryKey: ["capsules", userId],
+    queryFn: () => api.listCapsules(userId),
+  });
+
+  // Redirect new users to onboarding — agent can't help without any vault context
+  useEffect(() => {
+    if (capsulesLoaded && capsules?.length === 0) {
+      router.replace(`/${userId}/onboard`);
+    }
+  }, [capsulesLoaded, capsules, userId, router]);
 
   const [sessionHistory, setSessionHistory] = useState<{ role: string; content: string }[]>([]);
   const [showLive, setShowLive] = useState(false);
@@ -117,27 +138,61 @@ export default function ChatPage() {
     }
   }
 
-  const handleStreamQuery = useCallback(async () => {
-    const q = question.trim();
+  // Merge local users + connection peers + sibling pod owners for @mention
+  const allMentionableUsers = useMemo(() => {
+    const local = users ?? [];
+    const localIds = new Set(local.map((u) => u.id));
+    const remotePeers: User[] = (connections ?? [])
+      .map((c: Connection) => c.peer)
+      .filter((p): p is User => !!p && !localIds.has(p.id));
+    // Dedup pod owners against local + peers by username (ghost IDs differ from home-pod IDs)
+    const knownUsernames = new Set([
+      ...local.map(u => u.username),
+      ...remotePeers.map(u => u.username?.replace(/^remote:/, "")),
+    ]);
+    const podOwners = podUsers.filter(
+      p => !localIds.has(p.id) && !knownUsernames.has(p.username)
+    );
+    return [...local, ...remotePeers, ...podOwners];
+  }, [users, connections, podUsers]);
+
+  const handleStreamQuery = useCallback(async (overrideQ?: string) => {
+    const q = (overrideQ ?? question).trim();
     if (!q) return;
 
-    // Parse @username to route to another user's agent
+    // Parse @username or @"Full Name" to route to another user's agent
     let toUserId = userId;
     let questionText = q;
-    const mentionMatch = q.match(/^@(\S+)(?:\s+([\s\S]*))?$/);
+    // Support @handle, @"Full Name", @Full_Name (underscores as spaces)
+    const mentionMatch = q.match(/^@(?:"([^"]+)"|(\S+))(?:\s+([\s\S]*))?$/);
     if (mentionMatch) {
-      const handle = mentionMatch[1].toLowerCase();
-      const rest = mentionMatch[2]?.trim() ?? "";
-      const target = (users ?? []).find(
-        (u) => u.username?.toLowerCase() === handle
+      const handle = (mentionMatch[1] ?? mentionMatch[2] ?? "").toLowerCase().replace(/_/g, " ");
+      const rest = mentionMatch[3]?.trim() ?? "";
+      const target = allMentionableUsers.find(
+        (u) =>
+          u.username?.toLowerCase() === handle ||
+          u.display_name?.toLowerCase() === handle ||
+          u.display_name?.toLowerCase().startsWith(handle)
       );
       if (target && target.id !== userId) {
-        toUserId = target.id;
-        questionText = rest || q;
+        const podUrl = target.pod_url;
+        if (podUrl) {
+          // Cross-pod user: register peer in background, then route through own agent
+          // The agent will use query_peer tool to reach them
+          api.addPeer(podUrl).catch(() => {});
+          toUserId = userId; // stay on own agent
+          questionText = q;  // keep full message including @mention
+        } else {
+          // Same-pod user: route directly
+          toUserId = target.id;
+          questionText = rest || q;
+        }
       }
     }
     const isOwnAgent = toUserId === userId;
 
+    const abortCtrl = new AbortController();
+    streamAbortRef.current = abortCtrl;
     setIsStreaming(true);
     const placeholderResult: StreamingResult = {
       from_user_id: userId,
@@ -174,7 +229,11 @@ export default function ChatPage() {
       const decoder = new TextDecoder();
       let buffer = "";
 
+      // Cancel reader when abort is triggered
+      abortCtrl.signal.addEventListener("abort", () => { reader.cancel().catch(() => {}); });
+
       while (true) {
+        if (abortCtrl.signal.aborted) break;
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -280,13 +339,38 @@ export default function ChatPage() {
       setIsStreaming(false);
       queryClient.invalidateQueries({ queryKey: ["queries", userId] });
     }
-  }, [userId, question, queryClient, sessionHistory, users]);
+  }, [userId, question, queryClient, sessionHistory, allMentionableUsers]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!question.trim()) return;
     handleStreamQuery();
   };
+
+  const sendMessage = useCallback((msg: string) => {
+    setQuestion(msg);
+    handleStreamQuery(msg);
+  }, [handleStreamQuery]);
+
+  const stopStream = useCallback(() => {
+    streamAbortRef.current?.abort();
+    setIsStreaming(false);
+    setResults((prev) => {
+      const updated = [...prev];
+      if (updated[0]?.isStreaming) {
+        updated[0] = { ...updated[0], isStreaming: false, response: (updated[0].response || "") + "\n\n*(Stopped)*" };
+      }
+      return updated;
+    });
+  }, []);
+
+  // Elapsed timer while streaming
+  useEffect(() => {
+    if (!isStreaming) { setStreamElapsed(0); return; }
+    setStreamElapsed(0);
+    const t = setInterval(() => setStreamElapsed(s => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [isStreaming]);
 
   const [hasSpeechRecognition, setHasSpeechRecognition] = useState(false);
   useEffect(() => {
@@ -301,6 +385,30 @@ export default function ChatPage() {
     const t = setTimeout(() => setVoiceError(""), 5000);
     return () => clearTimeout(t);
   }, [voiceError]);
+
+  // Auto-scroll input into view and focus it after streaming completes
+  useEffect(() => {
+    if (!isStreaming && results.length > 0 && results[0] && !results[0].isStreaming) {
+      // Small delay so DOM has settled
+      const t = setTimeout(() => {
+        formRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        inputRef.current?.focus();
+      }, 300);
+      return () => clearTimeout(t);
+    }
+  }, [isStreaming, results]);
+
+  // Track whether the form is in the viewport to show sticky reply bar
+  useEffect(() => {
+    const el = formRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setFormVisible(entry.isIntersecting),
+      { threshold: 0.2 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const toggleVoice = useCallback(() => {
     if (isListening) {
@@ -379,13 +487,42 @@ export default function ChatPage() {
 
   // Research feed pod URLs: current pod + demo sibling pods (if in multi-pod mode)
   const currentPodUrl = typeof window !== "undefined" ? getPodUrl() : "";
-  const demoPodPorts = ["9001", "9002", "9004"];
+  const demoPodPorts = ["9001", "9002", "9003", "9004", "9005", "9006", "9007", "9008"];
   const currentPort = currentPodUrl.match(/:(\d+)/)?.[1] ?? "";
   const researchPodUrls = demoPodPorts.includes(currentPort)
     ? demoPodPorts.map((p) => currentPodUrl.replace(/:(\d+)/, `:${p}`))
     : currentPodUrl
       ? [currentPodUrl]
       : [];
+
+  // Fetch owners of sibling pods for cross-pod @mention
+  useEffect(() => {
+    if (!currentPodUrl) return;
+    const sibling = demoPodPorts
+      .map(p => currentPodUrl.replace(/:(\d+)/, `:${p}`))
+      .filter(u => u !== currentPodUrl);
+    Promise.all(sibling.map(async podUrl => {
+      try {
+        const r = await fetch(`${podUrl}/api/pod`, { signal: AbortSignal.timeout(3000) });
+        if (!r.ok) return null;
+        const d = await r.json();
+        // agents[0] is the primary user; fallback to pod_name
+        const agent = d.agents?.[0];
+        if (!agent?.owner_id) return null;
+        return {
+          id: agent.owner_id,
+          username: agent.owner_username,
+          display_name: agent.owner_display_name ?? d.pod_name,
+          user_type: "person",
+          bio: d.pod_name ?? "",
+          is_discoverable: true,
+          is_remote: true,
+          pod_url: podUrl,
+        } as User;
+      } catch { return null; }
+    })).then(res => setPodUsers(res.filter(Boolean) as User[]));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPodUrl]);
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -426,10 +563,40 @@ export default function ChatPage() {
       </div>
 
       {/* Live Research Feed */}
-      <ResearchFeed podUrls={researchPodUrls} visible={showResearchFeed || isStreaming} />
+      <ResearchFeed podUrls={researchPodUrls} visible={showResearchFeed || isStreaming} onSend={sendMessage} />
+
+      {/* Sticky reply bar — shown when form is scrolled out of view and agent has asked a question */}
+      {!formVisible && !isStreaming && results.length > 0 && (() => {
+        const lastResponse = results.find(r => r.response && !r.isStreaming)?.response ?? "";
+        // Extract last sentence ending in ? as a hint
+        const lastQ = lastResponse.match(/[^.!?]*\?(?:\s|$)/g)?.at(-1)?.trim();
+        return (
+          <div className="fixed bottom-0 left-0 right-0 z-40 bg-background/95 backdrop-blur border-t border-card-border px-4 py-3 flex items-center gap-3 max-w-3xl mx-auto shadow-2xl">
+            {lastQ && (
+              <p className="text-xs text-muted-foreground truncate flex-1 hidden sm:block">
+                <span className="text-accent font-medium">Agent asked:</span> {lastQ}
+              </p>
+            )}
+            <input
+              type="text"
+              value={question}
+              onChange={e => setQuestion(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(question); } }}
+              placeholder="Reply to agent…"
+              className="flex-1 sm:max-w-xs px-3 py-2 text-sm bg-card border border-card-border rounded-xl focus:outline-none focus:border-accent"
+            />
+            <button
+              onClick={() => { if (question.trim()) sendMessage(question); else formRef.current?.scrollIntoView({ behavior: "smooth" }); }}
+              className="px-4 py-2 text-xs font-semibold rounded-xl bg-accent hover:bg-accent-hover text-accent-fg transition-all"
+            >
+              {question.trim() ? "Send" : "Scroll to input ↓"}
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Query Form */}
-      <form onSubmit={handleSubmit} className="bg-card border border-card-border rounded-2xl p-5 mb-8">
+      <form ref={formRef} onSubmit={handleSubmit} className="bg-card border border-card-border rounded-2xl p-5 mb-8">
         {/* Info banner */}
         <div className="mb-4 p-3 bg-accent/5 border border-accent/15 rounded-xl">
           <p className="text-xs text-muted-foreground">
@@ -438,8 +605,8 @@ export default function ChatPage() {
         </div>
 
         {/* Question Input with @-mention */}
-        <div className="mb-4">
-          <div className="flex items-end gap-2 bg-background border border-card-border rounded-xl px-3 py-2 focus-within:ring-2 focus-within:ring-accent/50 focus-within:border-accent/50 transition-all">
+        <div className="mb-4 relative overflow-visible">
+          <div className="flex items-end gap-2 bg-background border border-card-border rounded-xl px-3 py-2 focus-within:border-accent/60 transition-colors">
             <MentionInput
               value={question}
               onChange={setQuestion}
@@ -447,7 +614,7 @@ export default function ChatPage() {
                 if (!question.trim()) return;
                 handleStreamQuery();
               }}
-              users={users ?? []}
+              users={allMentionableUsers}
               connectedIds={connectedIds}
               userNetworkMap={userNetworkMap}
               currentUserId={userId}
@@ -557,7 +724,7 @@ export default function ChatPage() {
           <h2 className="text-sm font-semibold text-muted-foreground mb-3">This Session</h2>
           <div className="space-y-3">
             {results.map((r, idx) => (
-              <QueryResultCard key={r.id || `streaming-${idx}`} result={r} users={users ?? []} currentUserId={userId} />
+              <QueryResultCard key={r.id || `streaming-${idx}`} result={r} users={users ?? []} currentUserId={userId} onSend={sendMessage} onStop={r.isStreaming ? stopStream : undefined} streamElapsed={r.isStreaming ? streamElapsed : undefined} />
             ))}
           </div>
         </div>
@@ -681,21 +848,25 @@ function MentionInput({
     return () => { if (registryTimerRef.current) clearTimeout(registryTimerRef.current); };
   }, [showMentions, mentionQuery, localUsernames, currentUserId]);
 
-  const filteredUsers: MentionItem[] = users
+  const filteredUsers: User[] = users
     .filter((u) => {
       if (u.id === currentUserId) return false;
-      if (u.username?.startsWith("remote:")) return false; // Exclude ghost users
       if (!mentionQuery) return true;
       const q = mentionQuery.toLowerCase();
+      // For remote users, only match on display_name (their username is a DID hash)
+      if (u.username?.startsWith("remote:")) {
+        return u.display_name.toLowerCase().includes(q);
+      }
       return (
         (u.username && u.username.toLowerCase().includes(q)) ||
         u.display_name.toLowerCase().includes(q)
       );
     })
     .sort((a, b) => {
-      const aConnected = connectedIds.has(a.id) ? 0 : 1;
-      const bConnected = connectedIds.has(b.id) ? 0 : 1;
-      if (aConnected !== bConnected) return aConnected - bConnected;
+      // Connected first (0), then local non-connected (1), then remote pod users (2), then orgs
+      const aScore = connectedIds.has(a.id) ? 0 : a.is_remote ? 2 : 1;
+      const bScore = connectedIds.has(b.id) ? 0 : b.is_remote ? 2 : 1;
+      if (aScore !== bScore) return aScore - bScore;
       const aIsOrg = a.user_type !== "person" ? 1 : 0;
       const bIsOrg = b.user_type !== "person" ? 1 : 0;
       if (aIsOrg !== bIsOrg) return aIsOrg - bIsOrg;
@@ -762,10 +933,14 @@ function MentionInput({
       const afterCursor = value.slice(
         mentionStart + 1 + mentionQuery.length
       );
-      // Public users get @handle, private users get @Full Name
-      const mention = item.username && !item.username.startsWith("remote:")
-        ? `@${item.username}`
-        : `@${item.display_name}`;
+      // Local users get @handle, remote/ghost users get @"Full Name" (quoted if has spaces)
+      let mention: string;
+      if (item.username && !item.username.startsWith("remote:")) {
+        mention = `@${item.username}`;
+      } else {
+        const name = item.display_name;
+        mention = name.includes(" ") ? `@"${name}"` : `@${name}`;
+      }
       const newVal = `${before}${mention} ${afterCursor}`;
       onChange(newVal);
       setShowMentions(false);
@@ -826,7 +1001,7 @@ function MentionInput({
   }, []);
 
   return (
-    <div className="relative flex-1 min-w-0">
+    <div className="relative flex-1 min-w-0 overflow-visible">
       <textarea
         ref={inputRef}
         value={value}
@@ -839,11 +1014,18 @@ function MentionInput({
         disabled={disabled}
       />
 
+      {/* @-mention empty state */}
+      {showMentions && allMentionItems.length === 0 && mentionQuery.length > 0 && (
+        <div className="absolute left-0 right-0 top-full mt-1 bg-card border border-card-border rounded-xl shadow-2xl z-[100] px-3 py-2 text-xs text-muted-foreground">
+          {mentionQuery.length < 2 ? "Type 2+ chars to search…" : `No agents found for "${mentionQuery}"`}
+        </div>
+      )}
+
       {/* @-mention autocomplete dropdown */}
       {showMentions && allMentionItems.length > 0 && (
         <div
           ref={dropdownRef}
-          className="absolute left-0 right-0 bottom-full mb-1 bg-card border border-card-border rounded-xl shadow-lg overflow-hidden z-50 max-h-80 overflow-y-auto"
+          className="absolute left-0 right-0 top-full mt-1 bg-card border border-card-border rounded-xl shadow-2xl overflow-hidden z-[100] max-h-72 overflow-y-auto"
         >
           {/* Local results */}
           {filteredUsers.length > 0 && (
@@ -868,7 +1050,7 @@ function MentionInput({
                     <div className="relative">
                       <div
                         className={`w-6 h-6 rounded-md flex items-center justify-center text-white font-bold text-[10px] ${
-                          isConnected ? "bg-accent" : "bg-muted-foreground/60"
+                          isConnected ? "bg-accent" : u.is_remote ? "bg-muted-foreground/40" : "bg-muted-foreground/25"
                         }`}
                       >
                         {u.display_name[0]}
@@ -879,7 +1061,7 @@ function MentionInput({
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <span className={`text-sm font-medium ${!isConnected ? "text-muted-foreground" : ""}`}>
+                        <span className={`text-sm font-medium ${!isConnected && !u.is_remote ? "text-muted-foreground" : ""}`}>
                           {u.username && !u.username.startsWith("remote:")
                             ? <><span className="text-accent">@{u.username}</span> <span className="text-muted-foreground text-xs">({u.display_name})</span></>
                             : u.display_name
@@ -903,9 +1085,13 @@ function MentionInput({
                           ) : (
                             <span className="text-[10px] text-green-400">Connected</span>
                           )
-                        ) : (
+                        ) : u.is_remote && u.pod_url ? (
+                          <span className="text-[10px] font-mono text-muted-foreground/50">
+                            :{u.pod_url.match(/:(\d+)/)?.[1]}
+                          </span>
+                        ) : !u.is_remote ? (
                           <span className="text-[10px] text-muted-foreground/60">Not connected</span>
-                        )}
+                        ) : null}
                       </div>
                     </div>
                   </button>
@@ -1105,14 +1291,64 @@ function EmergencyQRCards({ response }: { response: string }) {
   );
 }
 
+// ── Inline reply ─────────────────────────────────────────────────────────────
+
+function InlineReply({ question, onSend }: { question: string; onSend: (msg: string) => void }) {
+  const [text, setText] = useState("");
+  const [sent, setSent] = useState(false);
+
+  if (sent) return null;
+
+  return (
+    <div className="mt-3 rounded-xl bg-accent/5 border border-accent/15 p-3">
+      <p className="text-[11px] text-accent font-medium mb-2 flex items-center gap-1.5">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/>
+        </svg>
+        Reply
+      </p>
+      <div className="flex gap-2">
+        <input
+          autoFocus
+          type="text"
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Enter" && !e.shiftKey && text.trim()) {
+              e.preventDefault();
+              onSend(text.trim());
+              setSent(true);
+            }
+          }}
+          placeholder={`Answer: "${question.length > 60 ? question.slice(0, 60) + "…" : question}"`}
+          className="flex-1 px-3 py-2 text-sm bg-background border border-card-border rounded-xl focus:outline-none focus:border-accent"
+        />
+        <button
+          onClick={() => { if (text.trim()) { onSend(text.trim()); setSent(true); } }}
+          disabled={!text.trim()}
+          className="px-4 py-2 text-xs font-semibold rounded-xl bg-accent hover:bg-accent-hover text-accent-fg transition-all disabled:opacity-40"
+        >
+          Send
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function QueryResultCard({
   result,
   users,
   currentUserId,
+  onSend,
+  onStop,
+  streamElapsed,
 }: {
   result: StreamingResult | QueryResult;
   users: User[];
   currentUserId: string;
+  onSend?: (msg: string) => void;
+  onStop?: () => void;
+  streamElapsed?: number;
 }) {
   const fromUser = users.find((u) => u.id === result.from_user_id);
   const toUser = users.find((u) => u.id === result.to_user_id);
@@ -1181,13 +1417,25 @@ function QueryResultCard({
                 : "your agent"}
           </span>
           {streaming && (
-            <span className="flex items-center gap-1.5 text-accent">
+            <span className="flex items-center gap-2 text-accent">
               <span className="flex gap-0.5">
                 <span className="w-1 h-1 bg-accent rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
                 <span className="w-1 h-1 bg-accent rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
                 <span className="w-1 h-1 bg-accent rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
               </span>
-              <span className="text-[10px] font-medium">Thinking...</span>
+              <span className="text-[10px] font-medium">Thinking…</span>
+              {streamElapsed !== undefined && streamElapsed > 0 && (
+                <span className="text-[10px] text-muted-foreground tabular-nums">{streamElapsed}s</span>
+              )}
+              {onStop && (
+                <button
+                  onClick={onStop}
+                  className="ml-1 text-[10px] px-2 py-0.5 rounded bg-destructive/15 text-destructive border border-destructive/30 hover:bg-destructive/25 transition-colors font-medium"
+                  title="Stop generating"
+                >
+                  Stop
+                </button>
+              )}
             </span>
           )}
         </div>
@@ -1243,7 +1491,7 @@ function QueryResultCard({
         {result.agent_actions && result.agent_actions.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-3">
             {result.agent_actions.map((action: AgentAction, i: number) => (
-              <AgentActionCard key={i} action={action} />
+              <AgentActionCard key={i} action={action} onSend={onSend} userId={currentUserId} />
             ))}
           </div>
         )}
@@ -1263,7 +1511,11 @@ function QueryResultCard({
             {result.response ? (
               <Markdown>{result.response}</Markdown>
             ) : (
-              <span className="text-muted-foreground animate-pulse">Agent is processing...</span>
+              <span className="text-muted-foreground animate-pulse text-xs">
+                {tools && tools.length > 0
+                  ? `Running ${tools[tools.length - 1].name.replace(/_/g, " ")}…`
+                  : "Agent is thinking…"}
+              </span>
             )}
             {streaming && result.response && (
               <span className="inline-block w-0.5 h-4 bg-accent ml-0.5 animate-pulse" />
@@ -1272,6 +1524,38 @@ function QueryResultCard({
         )}
         {/* Inline QR cards for emergency scan URLs */}
         {result.response && <EmergencyQRCards response={result.response} />}
+
+        {/* Follow-up chips: parse "Want me to:" numbered options from agent response */}
+        {!streaming && result.response && onSend && (() => {
+          const match = result.response.match(/want me to[:\s*]*([\s\S]*?)(?:\n\n|$)/i);
+          if (!match) return null;
+          const options = [...match[1].matchAll(/\d+\.\s+\*?\*?([^*\n]+)\*?\*?/g)].map(m => m[1].trim()).filter(Boolean);
+          if (options.length < 2) return null;
+          return (
+            <div className="flex flex-wrap gap-1.5 mt-3">
+              {options.map((opt, i) => (
+                <button
+                  key={i}
+                  onClick={() => onSend(opt)}
+                  className="text-xs px-3 py-1.5 rounded-full bg-accent/10 border border-accent/25 text-accent hover:bg-accent/20 transition-all"
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          );
+        })()}
+
+        {/* Inline reply — shown when agent ended with a question */}
+        {!streaming && result.response && onSend && (() => {
+          // Find last question in the response
+          const questions = result.response.match(/[^.!?\n]{10,}[?]/g);
+          const lastQ = questions?.at(-1)?.trim();
+          if (!lastQ) return null;
+          return (
+            <InlineReply question={lastQ} onSend={onSend} />
+          );
+        })()}
 
         {/* Metadata */}
         {!streaming && (
@@ -1307,6 +1591,18 @@ function QueryResultCard({
               </span>
             )}
             {result.latency_ms > 0 && <span>{result.latency_ms}ms</span>}
+            {onSend && !streaming && result.question && (
+              <button
+                onClick={() => onSend(result.question)}
+                className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-accent transition-colors"
+                title="Retry this question"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.51"/>
+                </svg>
+                Retry
+              </button>
+            )}
             {result.routing?.provider && (
               <span className={`flex items-center gap-1 ${
                 result.routing.provider === "gemini" ? "text-blue-400" :
@@ -1317,7 +1613,7 @@ function QueryResultCard({
                   <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
                 </svg>
                 {result.routing.provider === "gemini" ? "Gemini Flash" :
-                 result.routing.provider === "tee" ? "TEE (private)" :
+                 result.routing.provider === "tee" ? "TEE Enclave (private)" :
                  "Claude Sonnet"}
               </span>
             )}
@@ -1340,7 +1636,7 @@ function QueryResultCard({
 // Agent Action Inline Cards
 // ═══════════════════════════════════════════════════════════════
 
-function AgentActionCard({ action }: { action: AgentAction }) {
+function AgentActionCard({ action, onSend, userId }: { action: AgentAction; onSend?: (msg: string) => void; userId: string }) {
   if (action.type === "capsule_created" || action.type === "capsule_updated") {
     return (
       <div
@@ -1364,14 +1660,22 @@ function AgentActionCard({ action }: { action: AgentAction }) {
             &rarr; {action.networks.join(", ")}
           </span>
         )}
+        {onSend && (
+          <button
+            onClick={() => onSend(`Create a task to track and continue working on: "${action.title}"`)}
+            className="ml-1 text-[10px] opacity-50 hover:opacity-100 hover:text-accent border border-current/20 rounded px-1.5 py-0.5 transition-all"
+            title="Follow up on this"
+          >
+            Follow up
+          </button>
+        )}
       </div>
     );
   }
 
   if (action.type === "task_created") {
     return (
-      <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium bg-amber-500/10 border border-amber-500/20 text-amber-400">
-        {/* Clipboard icon */}
+      <Link href={`/${userId}/timeline`} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium bg-amber-500/10 border border-amber-500/20 text-amber-400 hover:bg-amber-500/15 transition-colors">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
           <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
           <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
@@ -1382,10 +1686,8 @@ function AgentActionCard({ action }: { action: AgentAction }) {
             {action.category}
           </span>
         )}
-        <span className="text-amber-300/60 text-[10px] hover:text-amber-300 cursor-pointer transition-colors">
-          View in Dashboard
-        </span>
-      </div>
+        <span className="text-amber-300/60 text-[10px]">View →</span>
+      </Link>
     );
   }
 
