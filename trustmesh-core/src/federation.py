@@ -170,6 +170,11 @@ async def connect_to_peer(db: AsyncSession, peer_url: str) -> PeerPod | None:
 async def _validate_agent_card(peer_url: str) -> bool:
     """Fetch and validate a peer's agent card — verify the pod_url matches what we fetched from."""
     try:
+        _validate_peer_url(peer_url)
+    except ValueError as exc:
+        logger.warning("federation: SSRF check rejected agent card URL %r — %s", peer_url, exc)
+        return False
+    try:
         async with httpx.AsyncClient(timeout=FEDERATION_TIMEOUT) as client:
             r = await client.get(f"{peer_url.rstrip('/')}/.well-known/agent-card.json")
             if r.status_code == 200:
@@ -192,6 +197,11 @@ async def _validate_agent_card(peer_url: str) -> bool:
 
 async def _verify_did_on_pod(did: str, pod_url: str) -> bool:
     """Verify a DID is listed in a pod's agent card (ghost DID ownership check)."""
+    try:
+        _validate_peer_url(pod_url)
+    except ValueError as exc:
+        logger.warning("federation: SSRF check rejected DID verify URL %r — %s", pod_url, exc)
+        return False
     try:
         async with httpx.AsyncClient(timeout=FEDERATION_TIMEOUT) as client:
             r = await client.get(f"{pod_url.rstrip('/')}/.well-known/agent-card.json")
@@ -227,6 +237,50 @@ async def _register_with_peer(peer_url: str):
             )
     except (httpx.RequestError, httpx.HTTPStatusError):
         pass  # Best-effort — peer may already know us
+
+
+async def scan_demo_pods_for_user(username: str, display_name: str = "") -> dict | None:
+    """Probe sibling demo pods (same host, ports 9001-9016) for a matching user.
+
+    Returns a dict with keys: owner_id, owner_username, owner_display_name, pod_url
+    if found, otherwise None. Used as fallback when peer registry is empty.
+    """
+    import re
+    own_port = int(re.search(r":(\d+)", POD_URL).group(1)) if re.search(r":(\d+)", POD_URL) else 9000
+    base = re.sub(r":\d+", "", POD_URL.rstrip("/"))  # strip port
+    # Keep scheme+host, try known multi-pod range
+    demo_ports = list(range(9001, 9017))
+    query = username.lower().strip()
+    dn_query = display_name.lower().strip()
+
+    async def probe(port: int) -> dict | None:
+        if port == own_port:
+            return None
+        url = f"{base}:{port}"
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                r = await client.get(f"{url}/api/pod")
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            for agent in data.get("agents", []):
+                u = agent.get("owner_username", "").lower()
+                d = agent.get("owner_display_name", "").lower()
+                if u == query or (dn_query and (dn_query in d or d.startswith(dn_query))) or (query and query in d):
+                    return {
+                        "owner_id": agent.get("owner_id", ""),
+                        "owner_username": agent.get("owner_username", ""),
+                        "owner_display_name": agent.get("owner_display_name", ""),
+                        "did": agent.get("did", ""),
+                        "pod_url": url,
+                        "_pod": {"name": data.get("pod_name", f"Pod :{port}"), "url": url},
+                    }
+        except Exception:
+            pass
+        return None
+
+    results = await asyncio.gather(*[probe(p) for p in demo_ports])
+    return next((r for r in results if r is not None), None)
 
 
 async def discover_remote_agents(db: AsyncSession) -> list[dict]:

@@ -89,6 +89,7 @@ docs/                 Architecture and design documents
 ### Prerequisites
 - Python 3.12+, `uv` (Python package manager)
 - Node.js 20+, `bun`
+- Bash 4.0+ (macOS ships 3.2 — `brew install bash`)
 - **GOOGLE_API_KEY** (required — get one at [aistudio.google.com](https://aistudio.google.com/app/apikey))
 
 ```bash
@@ -98,34 +99,43 @@ cd trustmesh
 cp .env.example .env
 # Edit .env — add your GOOGLE_API_KEY
 
-# 2. Start single-pod demo
-./dev.sh start      # Seed DB + backend (:9000) + frontend (:3050)
-./dev.sh stop       # Stop everything
-./dev.sh status     # Check what's running
+# 2. Start the full multi-pod demo (19 pods + registry + frontend)
+/opt/homebrew/bin/bash multi-pod.sh demo    # seed + start all pods + orchestrate
+./multi-pod.sh stop                         # stop everything
+./multi-pod.sh status                       # health check all pods
 ```
 
 Open [http://localhost:3050](http://localhost:3050) and log in as any demo user.
 
 **Demo credentials:** `molly` / `TrustMesh-demo-2026` (or any name from the persona list)
 
+### Manual Start
+
+```bash
+# Backend (single pod)
+cd trustmesh-core
+uv sync                                              # install deps
+uv run python -m src.seed                            # seed demo data
+uv run uvicorn src.main:app --reload --port 9000
+
+# Frontend
+cd trustmesh-ui
+bun install
+bun dev --port 3050
+```
+
 ### With Citadel ML Security (optional)
 
-```bash
-# First time: download HuggingFace model (~685MB) + build Go sidecar
-./dev.sh citadel
-
-# Start normally — Citadel auto-detected on :3001
-./dev.sh start
-```
-
-### Multi-Pod Federation (16 pods, local)
+First-time setup downloads the HuggingFace model (~685MB) and builds the Go sidecar:
 
 ```bash
-# Requires: Bash 4.0+ (macOS: brew install bash)
-./multi-pod.sh demo     # Seed + start 16 pods + registry + orchestrate
-./multi-pod.sh status   # Health check all pods
-./multi-pod.sh stop     # Stop everything
+cd citadel-ref
+./scripts/setup-ml.sh     # download model + ONNX Runtime
+make build-ml             # build with ML detection
+./citadel serve 3001      # start on port 3001
 ```
+
+When Citadel is running on `:3001`, the backend auto-detects it via `CITADEL_URL`.
 
 ### Docker Compose (3-pod demo, local)
 
@@ -281,8 +291,9 @@ See `.env.example` for the full list.
 
 ```bash
 cd trustmesh-core
-uv run pytest tests/ -v                    # 900+ unit tests
-uv run pytest tests/test_multi_pod.py -v   # Multi-pod integration (requires running pods)
+uv run pytest tests/ -v                    # all tests
+uv run pytest tests/test_ucan.py -v        # specific file
+uv run pytest tests/test_multi_pod.py -v   # multi-pod integration (requires running pods)
 ```
 
 ---

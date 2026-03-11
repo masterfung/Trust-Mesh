@@ -1,29 +1,29 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useAuth } from "@/lib/auth";
 import Link from "next/link";
-import { Loader2 } from "lucide-react";
+import { Loader2, ChevronDown, Check } from "lucide-react";
 import { setPodUrl, getPodUrl } from "@/lib/api";
 
 const DEMO_PODS = [
-  { label: "Your Pod (default) :9000", url: "http://localhost:9000" },
-  { label: "Molly Johnson :9001", url: "http://localhost:9001" },
-  { label: "Peter Johnson :9002", url: "http://localhost:9002" },
-  { label: "Jane Johnson :9003", url: "http://localhost:9003" },
-  { label: "Grandma Rose :9004", url: "http://localhost:9004" },
-  { label: "Dr. Sarah Lee :9005", url: "http://localhost:9005" },
-  { label: "Kyle Rivera :9006", url: "http://localhost:9006" },
-  { label: "Amy Torres :9007", url: "http://localhost:9007" },
-  { label: "Dorothy Park :9008", url: "http://localhost:9008" },
-  { label: "Nurse Davis :9009", url: "http://localhost:9009" },
-  { label: "EMT Mike :9010", url: "http://localhost:9010" },
-  { label: "SparkleClean :9011", url: "http://localhost:9011" },
-  { label: "Riverside Hospital :9012", url: "http://localhost:9012" },
-  { label: "AceTutor :9013", url: "http://localhost:9013" },
-  { label: "City of Riverside :9014", url: "http://localhost:9014" },
-  { label: "HandyPro :9015", url: "http://localhost:9015" },
-  { label: "Dance Studio :9016", url: "http://localhost:9016" },
+  { label: "Molly Johnson", sublabel: ":9001", url: "http://localhost:9001" },
+  { label: "Peter Johnson", sublabel: ":9002", url: "http://localhost:9002" },
+  { label: "Jane Johnson", sublabel: ":9003", url: "http://localhost:9003" },
+  { label: "Grandma Rose", sublabel: ":9004", url: "http://localhost:9004" },
+  { label: "Dr. Sarah Lee", sublabel: ":9005", url: "http://localhost:9005" },
+  { label: "Kyle Rivera", sublabel: ":9006", url: "http://localhost:9006" },
+  { label: "Amy Torres", sublabel: ":9007", url: "http://localhost:9007" },
+  { label: "Dorothy Park", sublabel: ":9008", url: "http://localhost:9008" },
+  { label: "Nurse Davis", sublabel: ":9009", url: "http://localhost:9009" },
+  { label: "EMT Mike", sublabel: ":9010", url: "http://localhost:9010" },
+  { label: "SparkleClean", sublabel: ":9011", url: "http://localhost:9011" },
+  { label: "Riverside Hospital", sublabel: ":9012", url: "http://localhost:9012" },
+  { label: "AceTutor", sublabel: ":9013", url: "http://localhost:9013" },
+  { label: "City of Riverside", sublabel: ":9014", url: "http://localhost:9014" },
+  { label: "HandyPro", sublabel: ":9015", url: "http://localhost:9015" },
+  { label: "Dance Studio", sublabel: ":9016", url: "http://localhost:9016" },
+  { label: "Your Pod (default)", sublabel: ":9000", url: "http://localhost:9000" },
 ];
 
 export default function LoginPage() {
@@ -32,9 +32,27 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isPending, setIsPending] = useState(false);
-  const [selectedPod, setSelectedPod] = useState(() =>
-    typeof window !== "undefined" ? getPodUrl() : "http://localhost:9000"
-  );
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [selectedPod, setSelectedPod] = useState(() => {
+    const stored = typeof window !== "undefined" ? getPodUrl() : "";
+    // Default to :9001 (first multi-pod) if stored is :9000 or empty
+    if (!stored || stored === "http://localhost:9000") return "http://localhost:9001";
+    return stored;
+  });
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const selectedPodInfo = DEMO_PODS.find(p => p.url === selectedPod) ?? DEMO_PODS[0];
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
 
   const handleSubmit = async () => {
     setError("");
@@ -79,20 +97,47 @@ export default function LoginPage() {
             )}
 
             <div className="space-y-4 mb-6">
+              {/* Custom pod dropdown */}
               <div>
                 <label className="block text-sm text-muted-foreground mb-1.5 font-medium">
                   Pod
                 </label>
-                <select
-                  value={selectedPod}
-                  onChange={(e) => setSelectedPod(e.target.value)}
-                  className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
-                >
-                  {DEMO_PODS.map((p) => (
-                    <option key={p.url} value={p.url}>{p.label}</option>
-                  ))}
-                </select>
+                <div ref={dropdownRef} className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setDropdownOpen(o => !o)}
+                    className="w-full flex items-center justify-between bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm text-foreground focus:outline-none focus:border-accent/50 transition-colors hover:border-accent/30"
+                  >
+                    <span className="flex items-center gap-2">
+                      <span>{selectedPodInfo.label}</span>
+                      <span className="text-muted-foreground font-mono text-xs">{selectedPodInfo.sublabel}</span>
+                    </span>
+                    <ChevronDown size={14} className={`text-muted-foreground transition-transform ${dropdownOpen ? "rotate-180" : ""}`} />
+                  </button>
+
+                  {dropdownOpen && (
+                    <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-card border border-card-border rounded-xl shadow-2xl overflow-hidden max-h-64 overflow-y-auto">
+                      {DEMO_PODS.map(p => (
+                        <button
+                          key={p.url}
+                          type="button"
+                          onClick={() => { setSelectedPod(p.url); setDropdownOpen(false); }}
+                          className="w-full flex items-center justify-between px-4 py-2.5 text-sm text-left hover:bg-card-hover transition-colors"
+                        >
+                          <span className="flex items-center gap-2">
+                            <span className={selectedPod === p.url ? "text-accent font-medium" : "text-foreground"}>
+                              {p.label}
+                            </span>
+                            <span className="text-muted-foreground font-mono text-xs">{p.sublabel}</span>
+                          </span>
+                          {selectedPod === p.url && <Check size={13} className="text-accent shrink-0" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
+
               <div>
                 <label className="block text-sm text-muted-foreground mb-1.5 font-medium">
                   Name, email, or @handle
@@ -101,10 +146,11 @@ export default function LoginPage() {
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g., grandmarose"
-                  className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+                  placeholder="e.g., molly"
+                  className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-accent/50 transition-colors autofill-fix"
                   onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
                   autoFocus
+                  autoComplete="username"
                 />
               </div>
               <div>
@@ -116,8 +162,9 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Your password"
-                  className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50"
+                  className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-accent/50 transition-colors autofill-fix"
                   onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+                  autoComplete="current-password"
                 />
               </div>
             </div>

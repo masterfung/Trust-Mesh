@@ -1150,7 +1150,7 @@ async def _call_tinyfish_single(
                 endpoint,
                 headers=headers,
                 json={"url": url, "goal": goal},
-                timeout=aiohttp.ClientTimeout(total=180),
+                timeout=aiohttp.ClientTimeout(total=45),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
@@ -1358,7 +1358,7 @@ async def handle_research_parallel(ctx: ToolContext, params: dict) -> str:
         "count": len(tasks),
     })
 
-    # Dispatch all TinyFish sessions in parallel
+    # Dispatch all TinyFish sessions in parallel with a hard 60s total budget
     coros = [
         _call_tinyfish_single(
             t["url"],
@@ -1368,7 +1368,21 @@ async def handle_research_parallel(ctx: ToolContext, params: dict) -> str:
         )
         for t in tasks
     ]
-    results = await asyncio.gather(*coros, return_exceptions=True)
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*coros, return_exceptions=True),
+            timeout=60,
+        )
+    except asyncio.TimeoutError:
+        # Emit done for any labels that didn't finish
+        for label in labels:
+            await research_bus.publish(ctx.owner_id, {
+                "type": "research_done",
+                "label": label,
+                "success": False,
+                "error": "Timed out",
+            })
+        results = [Exception("Total budget exceeded")] * len(coros)
 
     per_url = []
     for i, r in enumerate(results):
@@ -1490,10 +1504,19 @@ async def handle_discover_agents(ctx: ToolContext, params: dict) -> str:
     capability = params.get("capability", "").lower()
     user_type_filter = params.get("user_type")
 
-    # Build query for discoverable users (exclude self)
+    from sqlalchemy import or_
+
+    # Build query for discoverable users (exclude self).
+    # When searching by name/query, also include federated ghost users (is_remote=True)
+    # so users on other pods are findable even if they haven't set is_discoverable.
+    discoverability_clause = (
+        or_(User.is_discoverable == True, User.is_remote == True)  # noqa: E712
+        if query_text
+        else (User.is_discoverable == True)  # noqa: E712
+    )
     stmt = (
         select(User)
-        .where(User.is_discoverable == True)  # noqa: E712
+        .where(discoverability_clause)
         .where(User.id != ctx.owner_id)
         .order_by(User.display_name)
     )
@@ -1552,6 +1575,7 @@ async def handle_discover_agents(ctx: ToolContext, params: dict) -> str:
             "pools": pools,
             "skills": [{"name": s.get("name", ""), "category": s.get("category", "")} for s in skills[:5]],
             "recommended": trust_level == "network",
+            **({"pod_url": user.remote_pod_url} if user.is_remote and user.remote_pod_url else {}),
         })
 
     # Sort: recommended (pool-sharing) agents first, then alphabetically
@@ -1572,6 +1596,140 @@ async def handle_discover_agents(ctx: ToolContext, params: dict) -> str:
 
 
 MAX_QUERY_DEPTH = 2  # Prevent infinite agent-to-agent recursion
+
+# Phrases that indicate the peer had no matching data
+_EMPTY_RESPONSE_PHRASES = (
+    "i don't have", "i do not have", "no information", "not found",
+    "nothing in", "no data", "unable to find", "couldn't find",
+    "cannot find", "no records", "not available", "not stored",
+    "hasn't shared", "has not shared", "no relevant",
+)
+
+
+def _is_empty_peer_response(response: str) -> bool:
+    """Return True if the peer agent's response indicates no data was found."""
+    if not response:
+        return True
+    lower = response.lower()
+    return any(phrase in lower for phrase in _EMPTY_RESPONSE_PHRASES)
+
+
+async def _send_data_request_to_peer(
+    ctx: "ToolContext",
+    target_user: "User",
+    question: str,
+    requester_display: str,
+) -> None:
+    """Send a cross-pod inbox message to `target_user` asking them to add missing data.
+
+    Also creates a follow-up timeline entry on the requester's pod so the agent
+    resumes automatically when the peer adds the data.
+    """
+    from src.models import Notification
+    import time as _time
+
+    # ── 1. Create a "data_request" notification on the target user's local pod ──
+    #    For remote (ghost) users we send a federation message instead (see below).
+    subject = f"Data request from {requester_display}"
+    body = (
+        f"{requester_display}'s agent asked: \"{question}\"\n\n"
+        "Reply to this message and your agent will save it to your vault automatically. "
+        "Once saved, the requester will be notified and their agent will continue."
+    )
+
+    if not target_user.is_remote:
+        # Local user — write notification directly
+        ctx.db.add(Notification(
+            user_id=target_user.id,
+            notification_type="data_request",
+            title=subject,
+            body=body,
+            related_id=ctx.owner_id,  # requester's user_id for callback
+        ))
+        await ctx.db.flush()
+    else:
+        # Remote user — send via federation message
+        try:
+            import httpx
+            from src.models import Agent
+            from src import federation_auth, transit_bridge
+
+            agent_res = await ctx.db.execute(select(Agent).where(Agent.owner_id == ctx.owner_id))
+            our_agent = agent_res.scalar_one_or_none()
+            our_did = our_agent.did if our_agent else "unknown"
+            signing_key = None
+            if our_agent and our_agent.encrypted_private_key:
+                try:
+                    signing_key = transit_bridge.decrypt(ctx.owner_id, our_agent.encrypted_private_key)
+                except Exception:
+                    pass
+
+            real_username = target_user.username
+            if real_username.startswith("remote:"):
+                real_username = real_username[7:].split("@")[0]
+
+            payload: dict = {
+                "from_did": our_did,
+                "to_username": real_username,
+                "subject": subject,
+                "body": body,
+                "notification_type": "data_request",
+                "requester_pod_url": ctx.pod_url,
+                "requester_user_id": ctx.owner_id,
+                "requester_display": requester_display,
+                "original_question": question,
+            }
+            if signing_key:
+                payload["signature"] = federation_auth.sign_payload(payload, signing_key)
+
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"{target_user.remote_pod_url}/api/federation/data_request",
+                    json=payload,
+                )
+        except Exception as e:
+            log.warning("data_request federation delivery failed: %s", e)
+
+    # ── 2. Create a follow-up timeline entry on requester's pod ──
+    try:
+        from src.routes.timeline import _get_engine, persist_entry_spec
+        from src.timeline_bridge import EntryState, EntryType, ActivationTrigger, Visibility
+        import uuid as _uuid
+
+        engine = _get_engine()
+        entry_id = _uuid.uuid4()
+        target_display = target_user.display_name or real_username if target_user.is_remote else (target_user.display_name or target_user.username)
+        label = f"Waiting for {target_display}'s data — resume when ready"
+        event_key = f"peer_data_ready:{target_user.id}"
+
+        engine.add_entry(
+            entry_id=entry_id,
+            label=label,
+            category="general",
+            salience=0.7,
+            visibility=Visibility.PRIVATE,
+            activation_trigger=ActivationTrigger(kind="event", event_type=event_key),
+        )
+        persist_entry_spec(
+            owner_id=ctx.owner_id,
+            entry_id=entry_id,
+            state=int(EntryState.DORMANT),
+            spec={
+                "owner_id": ctx.owner_id,
+                "label": label,
+                "category": "general",
+                "entry_type": int(EntryType.EVENT),
+                "activation_trigger": {"kind": "event", "event_type": event_key},
+                "hooks": [{"action": 3, "phase": 0, "prompt": f"Resume planning: {question}"}],
+                "peer_data_request": {
+                    "target_user_id": target_user.id,
+                    "target_username": target_user.username,
+                    "original_question": question,
+                },
+            },
+        )
+    except Exception as e:
+        log.warning("Could not create follow-up timeline entry: %s", e)
 
 
 async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
@@ -1638,6 +1796,26 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
             "public": "Limited access — only public/open information visible. Connect with them or join a shared pool for more access.",
         }.get(trust_level, "Unknown trust level")
 
+        peer_response = query_result.get("response", "No response")
+
+        # If the peer has no data, send them a data request and create a follow-up task
+        if _is_empty_peer_response(peer_response):
+            requester_result = await ctx.db.execute(select(User).where(User.id == ctx.owner_id))
+            requester = requester_result.scalar_one_or_none()
+            requester_display = requester.display_name if requester else "Someone"
+            await _send_data_request_to_peer(ctx, target_user, question, requester_display)
+            return json.dumps({
+                "success": True,
+                "target": target_username,
+                "target_display_name": target_user.display_name,
+                "data_requested": True,
+                "message": (
+                    f"{target_user.display_name} doesn't have this data yet. "
+                    "I've sent them an inbox request. A follow-up task has been created — "
+                    "I'll automatically continue when they add the information."
+                ),
+            })
+
         return json.dumps({
             "success": True,
             "target": target_username,
@@ -1646,7 +1824,7 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
             "trust_level": trust_level,
             "trust_explanation": trust_explanation,
             "shared_networks": query_result.get("shared_networks", []),
-            "response": query_result.get("response", "No response"),
+            "response": peer_response,
             "decision": query_result.get("decision", "unknown"),
         })
 
@@ -1692,6 +1870,26 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
 
         if remote_result:
             remote_pod_name = remote_result.get("pod_name", "")
+            peer_response = remote_result.get("response", "No response")
+
+            if _is_empty_peer_response(peer_response):
+                requester_result = await ctx.db.execute(select(User).where(User.id == ctx.owner_id))
+                requester = requester_result.scalar_one_or_none()
+                requester_display = requester.display_name if requester else "Someone"
+                await _send_data_request_to_peer(ctx, target_user, question, requester_display)
+                return json.dumps({
+                    "success": True,
+                    "target": target_username,
+                    "target_display_name": target_user.display_name,
+                    "data_requested": True,
+                    "federated": True,
+                    "message": (
+                        f"{target_user.display_name} doesn't have this data yet. "
+                        "I've sent them an inbox request on their pod. "
+                        "A follow-up task has been created — I'll continue automatically when they add the information."
+                    ),
+                })
+
             return json.dumps({
                 "success": True,
                 "target": target_username,
@@ -1700,7 +1898,7 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
                 "trust_level": remote_result.get("trust_level", "public"),
                 "trust_explanation": f"Federated query to {remote_pod_name or target_user.remote_pod_url}",
                 "shared_networks": remote_result.get("shared_networks", []),
-                "response": remote_result.get("response", "No response"),
+                "response": peer_response,
                 "decision": remote_result.get("decision", "unknown"),
                 "federated": True,
                 "remote_pod": target_user.remote_pod_url,
@@ -2938,6 +3136,25 @@ async def handle_send_connection_request(ctx: ToolContext, params: dict) -> str:
                 message=message,
                 relationship_type=relationship_type,
             )
+        # Last resort: scan sibling demo pods directly (when peer registry is empty)
+        from src.federation import scan_demo_pods_for_user
+        matched = await scan_demo_pods_for_user(username=to_username)
+        if matched:
+            pod_info = matched["_pod"]
+            ghost = await get_or_create_ghost_user(
+                ctx.db,
+                remote_username=matched.get("owner_username", to_username),
+                remote_display_name=matched.get("owner_display_name", to_username),
+                remote_did=matched.get("did", ""),
+                remote_pod_url=pod_info["url"],
+            )
+            await ctx.db.flush()
+            return await _send_federated_connection_request(
+                ctx=ctx,
+                ghost=ghost,
+                message=message,
+                relationship_type=relationship_type,
+            )
         return json.dumps({"success": False, "error": f"User '{to_username}' not found locally or in connected pods. Ask them to share an invite link."})
 
     if target.id == ctx.owner_id:
@@ -3533,6 +3750,14 @@ When you can anticipate what the user needs, DO IT:
 - If they ask to remember something, also check if it affects schedules or other capsules
 - Always try to give a COMPLETE answer, not just a partial one
 
+## Vault Context for Searches (CRITICAL)
+Before doing ANY research, browsing, or apartment/service search, ALWAYS call search_vault first to find relevant personal context.
+Then compare what the user asked for vs. what your vault says about them, and proactively surface gaps:
+- Example: User asks "find 1BR apartments in SF under $4k". Vault has "I have a cat named Luna" and "I need parking for my car". → Tell the user: "I see from your vault you have a cat and a car — I'll also filter for pet-friendly units and parking. Want me to also check for in-unit laundry since you mentioned that matters to you?" Then include those criteria in the search.
+- Example: User asks "book a restaurant". Vault has "vegetarian, no shellfish allergy". → Automatically filter for vegetarian options and mention you're excluding shellfish, don't make them re-state it.
+- Always tell the user what vault context you applied so they know you're personalizing.
+- If vault context reveals a CONFLICT with what they asked (e.g., they said "no restrictions" but vault says "severe nut allergy"), flag it immediately.
+
 ## Smart Memory Rules
 
 ### Before Saving: ALWAYS Search First
@@ -3689,12 +3914,18 @@ SENSITIVE_KEYWORDS = {
 }
 
 
-def detect_sensitivity(capsules: list[dict], question: str = "") -> str:
+def detect_sensitivity(capsules: list[dict], question: str = "", hint: str = "standard") -> str:
     """Detect if a query involves sensitive data.
 
     Returns "sensitive" if medical/financial/legal capsules are involved
     or the question mentions sensitive topics. Otherwise "standard".
+
+    `hint` is a floor from upstream pre-flight checks (e.g., Zig channel boundary).
+    If hint == "sensitive", returns "sensitive" immediately — cannot be downgraded.
     """
+    if hint == "sensitive":
+        return "sensitive"
+
     # Check capsule categories
     for c in capsules:
         cat = (c.get("category") or "").lower()
@@ -3707,6 +3938,35 @@ def detect_sensitivity(capsules: list[dict], question: str = "") -> str:
     if any(kw in q_lower for kw in SENSITIVE_KEYWORDS):
         return "sensitive"
 
+    return "standard"
+
+
+def pre_flight_sensitivity(text: str, relationship_type: str | None = None) -> str:
+    """Pre-flight sensitivity check at channel boundary. Calls Zig for speed.
+
+    Falls back to pure Python if the Zig kernel is not compiled.
+    """
+    try:
+        from src.research_bridge import _get_lib  # reuse existing ctypes loader
+        lib = _get_lib()
+        if lib is not None and hasattr(lib, "podos_preflight_sensitivity"):
+            text_bytes = text.encode()
+            rel_bytes = (relationship_type or "").encode()
+            result = lib.podos_preflight_sensitivity(
+                text_bytes, len(text_bytes),
+                rel_bytes if rel_bytes else None, len(rel_bytes),
+            )
+            return "sensitive" if result == 1 else "standard"
+    except Exception:
+        pass
+
+    # Python fallback
+    _SENSITIVE_REL_TYPES = {"healthcare", "legal", "financial"}
+    if relationship_type and relationship_type.lower() in _SENSITIVE_REL_TYPES:
+        return "sensitive"
+    text_lower = text.lower()
+    if any(kw in text_lower for kw in SENSITIVE_KEYWORDS):
+        return "sensitive"
     return "standard"
 
 
@@ -3815,6 +4075,7 @@ async def agent_respond(
     entity_type: str = "person",
     org_subtype: str | None = None,
     agent_mode: str = "private",
+    sensitivity_hint: str = "standard",
 ) -> str:
     """Cross-query: agent reasons about what to share (read-only, no tools)."""
     trust_context = build_trust_context(trust_level, shared_networks, requester_name, owner_name)
@@ -3834,7 +4095,7 @@ async def agent_respond(
         formatted_capsules=formatted,
     ) + org_ctx
 
-    sensitivity = detect_sensitivity(capsules, question)
+    sensitivity = detect_sensitivity(capsules, question, hint=sensitivity_hint)
     router = get_router()
     response = await router.complete(
         messages=[{"role": "user", "content": question}],
@@ -3857,6 +4118,7 @@ async def agent_respond_with_tools(
     entity_type: str = "person",
     org_subtype: str | None = None,
     agent_mode: str = "private",
+    sensitivity_hint: str = "standard",
 ) -> tuple[str, list[dict], str]:
     """Self-query: agent responds with tool access (search, save, update).
 
@@ -3873,7 +4135,7 @@ async def agent_respond_with_tools(
         personality_instruction=_personality_note(personality),
     ) + org_ctx
 
-    sensitivity = detect_sensitivity(capsules, question)
+    sensitivity = detect_sensitivity(capsules, question, hint=sensitivity_hint)
     router = get_router()
     messages: list[dict] = [{"role": "user", "content": question}]
 
@@ -4173,7 +4435,7 @@ Your goal: Have a warm, natural conversation and save key facts as encrypted cap
 ## Conversation so far
 {conversation_history}
 
-## Flow — 4 topics (follow this order, but keep it natural):
+## 4 topics to cover (in any order — adapt to what the user shares):
 
 1. **Work & Life** — Job title, company/school, location, commute, daily life. Save as "skill" capsule (category: "work").
 
@@ -4188,14 +4450,14 @@ After all 4 topics: **Wrap up** — Summarize what you learned, tell them their 
 ## Conversation driver rules (CRITICAL — follow these exactly):
 - You are the DRIVER of this conversation. Don't be passive.
 - EVERY response you give MUST end with a question to the user. No exceptions until the final wrap-up.
-- After the user answers, ALWAYS: (1) acknowledge briefly in 1 sentence, then (2) ask the NEXT specific question.
+- **ALWAYS save what the user tells you, even if it's about a different topic than what you asked.** If you asked about work and they tell you about their hobbies, IMMEDIATELY save the hobbies as a capsule, acknowledge it in one sentence, then ask your next question. NEVER ignore volunteered information.
+- After the user answers, ALWAYS: (1) save any facts they shared as capsules, (2) acknowledge briefly in 1 sentence, then (3) ask the NEXT question about an uncovered topic.
 - FORBIDDEN responses: "Done.", "Perfect!", "Great!", "Got it.", or ANY response without a follow-up question. These are conversation-killers.
-- Follow a clear progression: Work & Life → Health & Body → Family & Home → Goals & Interests.
-- Example good response: "Got it, software engineer in SF! Do you have any food allergies or dietary restrictions I should know about?"
-- Example bad response: "Done." (NEVER do this — always include a follow-up question)
+- Track which of the 4 topics have produced capsules. Prioritize asking about uncovered topics.
+- If the user says "let's talk about [topic]" or asks to jump to a specific topic, do it immediately.
+- Example: User said "I live with my partner and enjoy cooking and hiking" when asked about work → save a "contact" capsule for partner + a "preference" capsule for hobbies, acknowledge both, then ask "Got it! And what do you do for work — what's your job or field?"
 - If the user gives a very short answer, probe deeper: "Tell me more — what kind of [topic]?"
-- Track which topics you've covered. When all 4 are done, wrap up with a summary.
-- After saving a capsule, immediately transition to the next topic with a natural bridge question.
+- After saving a capsule, immediately transition to the next uncovered topic with a natural bridge question.
 - Get the user to share more if possible. Ask follow-up questions to draw out details.
 
 ## Input quality rules:

@@ -21,6 +21,7 @@ const USER_COLORS: Record<string, string> = {
 
 const SERVICE_COLOR = "#f59e0b"; // Amber for service providers
 const PERSON_COLOR_FALLBACK = "#06b6d4"; // Cyan fallback for persons
+const POD_NEIGHBOR_COLOR = "#52525b"; // Muted zinc for cross-pod (unconfirmed) neighbors
 
 const DECISION_COLORS: Record<string, string> = {
   allowed: "#22c55e",
@@ -60,6 +61,7 @@ interface TooltipState {
 /** Returns the fill color for a node, accounting for user_type and username overrides. */
 function getNodeColor(d: SimNode): string {
   if (d.user_type === "service") return SERVICE_COLOR;
+  if (d.user_type === "pod_neighbor") return POD_NEIGHBOR_COLOR;
   return USER_COLORS[d.username] || PERSON_COLOR_FALLBACK;
 }
 
@@ -403,8 +405,9 @@ export function TrustGraph({
         d3
           .forceLink<SimNode, SimLink>(links)
           .id((d) => d.id)
-          .distance(120)
-          .strength(0.8)
+          // Cross-pod edges are longer so neighbors orbit the outside of the main cluster
+          .distance((l) => (l as SimLink).type === "cross_pod" ? 200 : 120)
+          .strength((l) => (l as SimLink).type === "cross_pod" ? 0.3 : 0.8)
       )
       .force("charge", d3.forceManyBody().strength(-600))
       .force("center", d3.forceCenter(graphCx, graphCy))
@@ -492,9 +495,10 @@ export function TrustGraph({
       .data(links)
       .join("line")
       .attr("class", "edge")
-      .attr("stroke", "#71717a")
-      .attr("stroke-width", 1.5)
-      .attr("stroke-opacity", 0.6);
+      .attr("stroke", (d) => d.type === "cross_pod" ? POD_NEIGHBOR_COLOR : "#71717a")
+      .attr("stroke-width", (d) => d.type === "cross_pod" ? 1 : 1.5)
+      .attr("stroke-opacity", (d) => d.type === "cross_pod" ? 0.4 : 0.6)
+      .attr("stroke-dasharray", (d) => d.type === "cross_pod" ? "5,4" : "none");
 
     // Node groups
     const node = g
@@ -576,9 +580,9 @@ export function TrustGraph({
       .style("filter", "url(#serviceGlow)");
 
     // --- Person nodes: circle shape ---
-    // Outer glow ring for person nodes
+    // Outer glow ring for regular person nodes (not pod_neighbor)
     node
-      .filter((d) => d.user_type !== "service")
+      .filter((d) => d.user_type !== "service" && d.user_type !== "pod_neighbor")
       .append("circle")
       .attr("r", 32)
       .attr("fill", "none")
@@ -586,9 +590,9 @@ export function TrustGraph({
       .attr("stroke-width", 1)
       .attr("stroke-opacity", 0.2);
 
-    // Circle for person nodes
+    // Circle for regular person nodes
     node
-      .filter((d) => d.user_type !== "service")
+      .filter((d) => d.user_type !== "service" && d.user_type !== "pod_neighbor")
       .append("circle")
       .attr("r", 26)
       .attr("fill", (d) => getNodeColor(d))
@@ -596,16 +600,39 @@ export function TrustGraph({
       .attr("stroke-width", 3)
       .style("filter", "url(#glow)");
 
+    // --- Pod neighbor nodes: smaller muted dashed-border circle ---
+    // Dashed outer ring to signal "unconfirmed / cross-pod" status
+    node
+      .filter((d) => d.user_type === "pod_neighbor")
+      .append("circle")
+      .attr("r", 24)
+      .attr("fill", "none")
+      .attr("stroke", POD_NEIGHBOR_COLOR)
+      .attr("stroke-width", 1.5)
+      .attr("stroke-opacity", 0.5)
+      .attr("stroke-dasharray", "4,3");
+
+    // Filled circle (smaller, muted)
+    node
+      .filter((d) => d.user_type === "pod_neighbor")
+      .append("circle")
+      .attr("r", 20)
+      .attr("fill", POD_NEIGHBOR_COLOR)
+      .attr("fill-opacity", 0.55)
+      .attr("stroke", "#09090b")
+      .attr("stroke-width", 2);
+
     // Node labels (initials) -- for all nodes
     node
       .append("text")
       .attr("text-anchor", "middle")
       .attr("dy", "0.35em")
       .attr("fill", (d) => (d.user_type === "service" ? "#09090b" : "white"))
-      .attr("font-size", "12px")
+      .attr("font-size", (d) => d.user_type === "pod_neighbor" ? "10px" : "12px")
       .attr("font-weight", "bold")
       .attr("font-family", "system-ui, sans-serif")
       .attr("pointer-events", "none")
+      .attr("opacity", (d) => d.user_type === "pod_neighbor" ? 0.7 : 1)
       .text((d) =>
         d.display_name
           .split(" ")
@@ -617,8 +644,8 @@ export function TrustGraph({
     node
       .append("text")
       .attr("text-anchor", "middle")
-      .attr("dy", "44px")
-      .attr("fill", "#a1a1aa")
+      .attr("dy", (d) => d.user_type === "pod_neighbor" ? "36px" : "44px")
+      .attr("fill", (d) => d.user_type === "pod_neighbor" ? "#71717a" : "#a1a1aa")
       .attr("font-size", "11px")
       .attr("font-family", "system-ui, sans-serif")
       .attr("font-weight", "500")
@@ -638,6 +665,24 @@ export function TrustGraph({
       .attr("pointer-events", "none")
       .attr("opacity", 0.7)
       .text("SERVICE");
+
+    // Port sublabel beneath the name for pod_neighbor nodes
+    node
+      .filter((d) => d.user_type === "pod_neighbor")
+      .append("text")
+      .attr("text-anchor", "middle")
+      .attr("dy", "49px")
+      .attr("fill", POD_NEIGHBOR_COLOR)
+      .attr("font-size", "9px")
+      .attr("font-family", "system-ui, sans-serif")
+      .attr("font-weight", "600")
+      .attr("pointer-events", "none")
+      .attr("opacity", 0.65)
+      .text((d) => {
+        // bio contains "Pod name — :port", extract the port part
+        const match = d.bio.match(/:(\d+)$/);
+        return match ? `POD :${match[1]}` : "POD";
+      });
 
     // Tick
     simulation.on("tick", () => {
@@ -800,6 +845,13 @@ export function TrustGraph({
               Service Provider
             </span>
           </div>
+          <div className="flex items-center gap-2.5 mb-1.5">
+            <svg width="14" height="14" viewBox="0 0 14 14">
+              <circle cx="7" cy="7" r="6" fill="#52525b" fillOpacity="0.55" stroke="none" />
+              <circle cx="7" cy="7" r="6" fill="none" stroke="#52525b" strokeWidth="1.5" strokeDasharray="3,2" />
+            </svg>
+            <span className="text-xs text-muted-foreground">Pod Neighbor</span>
+          </div>
         </div>
         <div className="border-t border-card-border mt-3 pt-3">
           <p className="text-xs font-semibold text-muted-foreground mb-2">
@@ -905,6 +957,7 @@ function NodeTooltip({
   networks: GraphData["networks"];
 }) {
   const isService = node.user_type === "service";
+  const isPodNeighbor = node.user_type === "pod_neighbor";
   const pd = node.profile_data;
 
   const nodeNetworks = networks.filter((n) => n.members.includes(node.id));
@@ -958,11 +1011,17 @@ function NodeTooltip({
             style={{
               backgroundColor: isService
                 ? `${SERVICE_COLOR}20`
-                : `${PERSON_COLOR_FALLBACK}20`,
-              color: isService ? SERVICE_COLOR : PERSON_COLOR_FALLBACK,
+                : isPodNeighbor
+                  ? `${POD_NEIGHBOR_COLOR}30`
+                  : `${PERSON_COLOR_FALLBACK}20`,
+              color: isService
+                ? SERVICE_COLOR
+                : isPodNeighbor
+                  ? "#a1a1aa"
+                  : PERSON_COLOR_FALLBACK,
             }}
           >
-            {isService ? "Service" : "Person"}
+            {isService ? "Service" : isPodNeighbor ? "Pod" : "Person"}
           </span>
         </div>
       </div>

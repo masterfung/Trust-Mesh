@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, type QueryResult, type User } from "@/lib/api";
+import { api, getPodUrl, getCsrfToken, type QueryResult, type User, type GraphData } from "@/lib/api";
 import { TrustGraph } from "@/components/TrustGraph";
 import Link from "next/link";
 
@@ -65,16 +65,50 @@ const DEMO_SCENARIOS = [
 
 type GraphView = "my" | "all";
 
+/** Local fetch using a specific pod URL (bypasses localStorage). */
+async function podApiFetch<T>(podUrl: string, path: string): Promise<T> {
+  const res = await fetch(`${podUrl}${path}`, {
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json() as Promise<T>;
+}
+
+const KNOWN_PODS = [
+  { label: "Pod :9000 (demo)", url: "http://localhost:9000" },
+  { label: "Pod :9001 (Molly)", url: "http://localhost:9001" },
+  { label: "Pod :9002", url: "http://localhost:9002" },
+  { label: "Pod :9003", url: "http://localhost:9003" },
+  { label: "Pod :9004 (Rose)", url: "http://localhost:9004" },
+];
+
+// Pod neighbor info collected from sibling pod /api/pod probes
+interface PodNeighborInfo {
+  owner_id: string;
+  owner_username: string;
+  owner_display_name: string;
+  pod_name: string;
+  pod_url: string;
+  port: string;
+}
+
+const SIBLING_PORTS = ["9001", "9002", "9003", "9004", "9005", "9006", "9007", "9008"];
+
 export default function GraphPage() {
   const [recentQueries, setRecentQueries] = useState<QueryResult[]>([]);
   const [isRunningAll, setIsRunningAll] = useState(false);
   const [runningScenarioIdx, setRunningScenarioIdx] = useState<number | null>(null);
   const [graphView, setGraphView] = useState<GraphView>("all");
   const [selectedUserId, setSelectedUserId] = useState<string>("");
+  const [podOverride, setPodOverride] = useState<string>(() =>
+    typeof window !== "undefined" ? getPodUrl() : "http://localhost:9000"
+  );
+  const [siblingPods, setSiblingPods] = useState<PodNeighborInfo[]>([]);
 
   const { data: users } = useQuery({
-    queryKey: ["users"],
-    queryFn: api.listUsers,
+    queryKey: ["users", podOverride],
+    queryFn: () => podApiFetch<User[]>(podOverride, "/api/users"),
   });
 
   // Auto-select first person user when users load
@@ -82,31 +116,124 @@ export default function GraphPage() {
   const effectiveUserId = selectedUserId || personUsers[0]?.id || "";
 
   const { data: fullGraph, isLoading: fullLoading } = useQuery({
-    queryKey: ["graph"],
-    queryFn: api.getGraph,
+    queryKey: ["graph", podOverride],
+    queryFn: () => podApiFetch<GraphData>(podOverride, "/api/graph"),
     enabled: graphView === "all",
   });
 
   const { data: userGraph, isLoading: userLoading } = useQuery({
-    queryKey: ["graph", effectiveUserId],
-    queryFn: () => api.getUserGraph(effectiveUserId),
+    queryKey: ["graph", podOverride, effectiveUserId],
+    queryFn: () => podApiFetch<GraphData>(podOverride, `/api/graph/${effectiveUserId}`),
     enabled: graphView === "my" && !!effectiveUserId,
   });
 
-  const graph = graphView === "my" ? userGraph : fullGraph;
+  // Probe sibling pods (9001-9008) and collect their primary owner info.
+  // Skip the current pod's own port so we don't double-render.
+  useEffect(() => {
+    const currentPort = podOverride.match(/:(\d+)/)?.[1] ?? "";
+    const baseUrl = podOverride.replace(/:(\d+)/, ""); // strip port
+
+    Promise.all(
+      SIBLING_PORTS
+        .filter((p) => p !== currentPort)
+        .map(async (port) => {
+          const podUrl = `${baseUrl}:${port}`;
+          try {
+            const r = await fetch(`${podUrl}/api/pod`, {
+              signal: AbortSignal.timeout(3000),
+            });
+            if (!r.ok) return null;
+            const d = await r.json();
+            const agent = d.agents?.[0];
+            if (!agent?.owner_id) return null;
+            return {
+              owner_id: agent.owner_id as string,
+              owner_username: (agent.owner_username as string) ?? "",
+              owner_display_name: (agent.owner_display_name as string) ?? d.pod_name ?? `Pod :${port}`,
+              pod_name: (d.pod_name as string) ?? `Pod :${port}`,
+              pod_url: podUrl,
+              port,
+            } satisfies PodNeighborInfo;
+          } catch {
+            return null;
+          }
+        })
+    ).then((results) => {
+      setSiblingPods(results.filter(Boolean) as PodNeighborInfo[]);
+    });
+  }, [podOverride]);
+
+  const rawGraph = graphView === "my" ? userGraph : fullGraph;
   const isLoading = graphView === "my" ? userLoading : fullLoading;
+
+  // Merge sibling pod nodes + dashed cross-pod edges into the graph data.
+  // We use the center node (current user in "my" view, or first person node in "all" view)
+  // as the anchor for the cross-pod edges.
+  const graph: GraphData | undefined = (() => {
+    if (!rawGraph) return undefined;
+
+    if (siblingPods.length === 0) return rawGraph;
+
+    // Determine the anchor node id: for "my" view it's effectiveUserId,
+    // for "all" view use the first person node or fall back to the first node.
+    const anchorId =
+      graphView === "my"
+        ? effectiveUserId
+        : (rawGraph.nodes.find((n) => n.user_type === "person")?.id ?? rawGraph.nodes[0]?.id ?? "");
+
+    if (!anchorId) return rawGraph;
+
+    // Filter out siblings whose owner_id is already in the graph (e.g. formally connected)
+    const existingIds = new Set(rawGraph.nodes.map((n) => n.id));
+    const newNeighbors = siblingPods.filter((p) => !existingIds.has(p.owner_id));
+
+    if (newNeighbors.length === 0) return rawGraph;
+
+    const extraNodes: GraphData["nodes"] = newNeighbors.map((p) => ({
+      id: p.owner_id,
+      username: p.owner_username,
+      display_name: p.owner_display_name,
+      bio: `${p.pod_name} — :${p.port}`,
+      user_type: "pod_neighbor",
+    }));
+
+    const extraEdges: GraphData["edges"] = newNeighbors.map((p) => ({
+      source: anchorId,
+      target: p.owner_id,
+      type: "cross_pod",
+    }));
+
+    return {
+      ...rawGraph,
+      nodes: [...rawGraph.nodes, ...extraNodes],
+      edges: [...rawGraph.edges, ...extraEdges],
+    };
+  })();
 
   const getUserId = (username: string) =>
     users?.find((u) => u.username === username)?.id;
+
+  const podQuery = useCallback(async (fromId: string, toId: string, question: string): Promise<QueryResult> => {
+    const csrfCookie = getCsrfToken();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (csrfCookie) headers["x-csrf-token"] = csrfCookie;
+    const res = await fetch(`${podOverride}/api/query`, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: JSON.stringify({ from_user_id: fromId, to_user_id: toId, question }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json() as Promise<QueryResult>;
+  }, [podOverride]);
 
   const runScenario = async (scenario: (typeof DEMO_SCENARIOS)[number], idx: number) => {
     const fromId = getUserId(scenario.from);
     const toId = getUserId(scenario.to);
     if (!fromId || !toId) return;
     setRunningScenarioIdx(idx);
-    try { await api.demoWarmup(); } catch { /* non-fatal */ }
     try {
-      const result = await api.query(fromId, toId, scenario.question);
+      const result = await podQuery(fromId, toId, scenario.question);
       setRecentQueries((prev) => [result, ...prev].slice(0, 20));
     } finally {
       setRunningScenarioIdx(null);
@@ -115,13 +242,12 @@ export default function GraphPage() {
 
   const runAllScenarios = async () => {
     setIsRunningAll(true);
-    try { await api.demoWarmup(); } catch { /* non-fatal */ }
     for (const scenario of DEMO_SCENARIOS) {
       const fromId = getUserId(scenario.from);
       const toId = getUserId(scenario.to);
       if (!fromId || !toId) continue;
       try {
-        const result = await api.query(fromId, toId, scenario.question);
+        const result = await podQuery(fromId, toId, scenario.question);
         setRecentQueries((prev) => [result, ...prev].slice(0, 20));
       } catch {
         // continue with next scenario
@@ -151,6 +277,16 @@ export default function GraphPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* Pod selector */}
+          <select
+            value={podOverride}
+            onChange={(e) => { setPodOverride(e.target.value); setSelectedUserId(""); setRecentQueries([]); }}
+            className="bg-card border border-card-border rounded-xl px-3 py-1.5 text-xs text-foreground"
+          >
+            {KNOWN_PODS.map((p) => (
+              <option key={p.url} value={p.url}>{p.label}</option>
+            ))}
+          </select>
           {/* Graph view toggle */}
           <div className="flex rounded-xl overflow-hidden border border-card-border">
             <button
