@@ -63,6 +63,7 @@ test.describe("03 — Access control", () => {
   });
 
   test.describe("API-level trust enforcement", () => {
+    test.setTimeout(120_000); // /api/pod/query triggers an LLM call — can be slow
     /**
      * Helper that runs a public query and verifies:
      * - Private keywords are NOT in the response (even if rate-limited, the error

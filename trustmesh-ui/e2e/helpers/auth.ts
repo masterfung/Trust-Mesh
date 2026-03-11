@@ -23,9 +23,17 @@ export async function loginAs(
 
   // Reload so the page picks up the new localStorage value.
   await page.reload();
+  await page.waitForLoadState("load");
 
-  // Select the pod in the dropdown.
-  await page.locator("select").selectOption(podUrl);
+  // The login page uses a custom styled dropdown (not a native <select>).
+  // Open the dropdown trigger and select the matching pod by port sublabel.
+  const port = podUrl.match(/:(\d+)$/)?.[1] ?? "";
+  const sublabel = `:${port}`;
+
+  // Click the dropdown trigger (first button[type="button"] on the page).
+  await page.locator('button[type="button"]').first().click();
+  // Click the option in the opened list that matches the port sublabel.
+  await page.locator('div.absolute button').filter({ hasText: sublabel }).click();
 
   // Fill credentials.
   await page.locator('input[type="text"]').fill(username);

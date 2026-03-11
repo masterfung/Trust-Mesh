@@ -156,6 +156,7 @@ export interface ConnectionRequest {
   to_user_id: string;
   message: string;
   status: string;
+  context?: string;
   relationship_type?: string;
   from_label?: string;
   mutual_connections?: number;
@@ -487,7 +488,7 @@ export const api = {
     apiFetch<Connection[]>(`/api/users/${userId}/connections`),
   listConnectionRequests: (userId: string) =>
     apiFetch<ConnectionRequest[]>(`/api/users/${userId}/connection-requests`),
-  sendConnectionRequest: (fromUserId: string, toUserId: string, message: string, relationshipType?: string, fromLabel?: string) =>
+  sendConnectionRequest: (fromUserId: string, toUserId: string, message: string, relationshipType?: string, fromLabel?: string, context?: string) =>
     apiFetch<ConnectionRequest>("/api/connections/request", {
       method: "POST",
       body: JSON.stringify({
@@ -496,6 +497,7 @@ export const api = {
         message,
         relationship_type: relationshipType || undefined,
         from_label: fromLabel || undefined,
+        context: context || "personal",
       }),
     }),
   updateConnectionRequest: (requestId: string, status: "accepted" | "declined", toLabel?: string) =>
@@ -505,12 +507,13 @@ export const api = {
     }),
   deleteConnection: (connectionId: string) =>
     apiFetch<{ status: string }>(`/api/connections/${connectionId}`, { method: "DELETE" }),
-  updateConnectionLabel: (connectionId: string, myLabel?: string, relationshipType?: string) =>
+  updateConnectionLabel: (connectionId: string, myLabel?: string, relationshipType?: string, context?: string) =>
     apiFetch<Connection>(`/api/connections/${connectionId}/label`, {
       method: "PATCH",
       body: JSON.stringify({
         my_label: myLabel ?? undefined,
         relationship_type: relationshipType ?? undefined,
+        context: context ?? undefined,
       }),
     }),
 

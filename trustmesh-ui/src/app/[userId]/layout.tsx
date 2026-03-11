@@ -276,7 +276,7 @@ function NotificationBell({ userId }: { userId: string }) {
         break;
       case "query_received":
       case "query_response":
-        router.push(`${base}/chat`);
+        router.push(`${base}/inbox?tab=queries`);
         break;
       case "join_request":
       case "network_invite":

@@ -14,7 +14,7 @@ const ROLES: { key: RoleKey; label: string; emoji: string; color: string; bgColo
     emoji: "🚑",
     color: "text-red-400",
     bgColor: "border-red-700 bg-red-950/60",
-    sees: ["Blood type", "Allergies", "DNR status", "Emergency contact"],
+    sees: ["Blood type", "Allergies", "DNR (Do Not Resuscitate) status", "Emergency contact"],
   },
   {
     key: "er_nurse",
@@ -22,7 +22,7 @@ const ROLES: { key: RoleKey; label: string; emoji: string; color: string; bgColo
     emoji: "🏥",
     color: "text-blue-400",
     bgColor: "border-blue-700 bg-blue-950/60",
-    sees: ["Blood type", "Weight / Height", "Allergies", "Emergency contact", "DNR status"],
+    sees: ["Blood type", "Weight / Height", "Allergies", "Emergency contact", "DNR (Do Not Resuscitate) status"],
   },
   {
     key: "attending_physician",
@@ -30,7 +30,7 @@ const ROLES: { key: RoleKey; label: string; emoji: string; color: string; bgColo
     emoji: "👨‍⚕️",
     color: "text-emerald-400",
     bgColor: "border-emerald-700 bg-emerald-950/60",
-    sees: ["Full medication list", "Conditions & diagnoses", "Allergies", "Surgery history", "Insurance", "DNR status"],
+    sees: ["Full medication list", "Conditions & diagnoses", "Allergies", "Surgery history", "Insurance", "DNR (Do Not Resuscitate) status"],
   },
 ];
 
@@ -141,7 +141,7 @@ export default function EmergencyBeaconPage() {
               <li>• Blood type &amp; allergies</li>
               <li>• Current medications</li>
               <li>• Emergency contacts</li>
-              <li>• Medical conditions or DNR status</li>
+              <li>• Medical conditions or DNR (Do Not Resuscitate) status</li>
             </ul>
           </div>
           <div className="flex flex-col gap-3">

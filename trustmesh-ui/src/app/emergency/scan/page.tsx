@@ -404,6 +404,7 @@ function ScanView() {
   const TOKEN_DURATION_SECS = 1800; // 30 min
   const progressPct = expired ? 0 : Math.min(100, (msLeft / (TOKEN_DURATION_SECS * 1000)) * 100);
   const progressColor = msLeft < 120_000 ? "bg-red-500" : msLeft < 300_000 ? "bg-amber-500" : "bg-green-500";
+  const secsLeft = Math.ceil(msLeft / 1000);
 
   const expiryLabel = expiresAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -495,12 +496,12 @@ function ScanView() {
             {hasDNR === true ? (
               <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600/25 border border-red-500/50 rounded-lg">
                 <span className="text-base">⛔</span>
-                <span className="font-bold text-red-300 text-sm">DNR on file</span>
+                <span className="font-bold text-red-300 text-sm">DNR on file — Do Not Resuscitate</span>
               </div>
             ) : (
               <div className="flex items-center gap-1.5 px-3 py-1.5 bg-green-950/40 border border-green-700/30 rounded-lg">
                 <span className="text-green-400 text-sm">✓</span>
-                <span className="text-green-300 text-xs">No DNR</span>
+                <span className="text-green-300 text-xs">No DNR (Resuscitate)</span>
               </div>
             )}
           </div>

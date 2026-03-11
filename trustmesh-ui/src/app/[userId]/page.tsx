@@ -253,7 +253,7 @@ export default function Dashboard() {
         <div className="flex flex-wrap items-center gap-3 mb-6 px-1">
           {[
             { label: "Gemini", ok: health.providers.gemini ?? health.providers.anthropic, detail: "Gemini 3.1 Pro" },
-            { label: "TEE", ok: health.providers.tee.enabled, detail: health.providers.tee.provider ? `via ${health.providers.tee.provider}` : "not configured" },
+            { label: "TEE (Secure Enclave)", ok: health.providers.tee.enabled, detail: health.providers.tee.provider ? `Trusted Execution Environment via ${health.providers.tee.provider}` : "Trusted Execution Environment — not configured" },
             { label: "Web Search", ok: health.providers.tavily, detail: "Tavily" },
             { label: "Citadel", ok: (health.providers.citadel as Record<string, unknown>).active ?? health.providers.citadel.reachable, detail: health.providers.citadel.reachable ? "sidecar active" : (health.providers.citadel as Record<string, unknown>).heuristic_active ? "heuristic active" : health.providers.citadel.configured ? "configured, offline" : "not configured" },
           ].map((p) => (

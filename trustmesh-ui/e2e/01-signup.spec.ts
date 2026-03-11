@@ -22,7 +22,7 @@ const ALPHA_SUFFIX = Math.random()
   .replace(/\d/g, (c) => "abcdefghij"[parseInt(c)]);
 const TEST_NAME = `Elise ${ALPHA_SUFFIX} Test`; // always alpha-only
 const TEST_PASSWORD = "E2eTestPass#2026!"; // 16+ chars, upper, lower, digit, special
-const POD_URL = "http://localhost:9000";
+const POD_URL = "http://localhost:9001"; // :9000 is seeded with Johnny demo
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 

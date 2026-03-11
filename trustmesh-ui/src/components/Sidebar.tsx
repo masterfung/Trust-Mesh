@@ -38,6 +38,7 @@ const NAV_SECTIONS: NavSection[] = [
       {
         href: "/chat",
         label: "Ask My Agent",
+        requiresSetup: true,
         icon: (
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
@@ -256,6 +257,37 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
 
       {/* Navigation */}
       <nav className="flex-1 p-2 overflow-y-auto space-y-3">
+        {/* New-user onboarding CTA — shown instead of locked nav items */}
+        {isNewUser && (
+          <div className="px-1 pt-1 pb-2">
+            <Link
+              href={`/${user.id}/onboard`}
+              onClick={handleNavClick}
+              className={`flex flex-col gap-1.5 w-full px-3 py-3 rounded-xl border transition-all ${
+                pathname.startsWith(`${base}/onboard`)
+                  ? "bg-accent/15 border-accent/40 text-accent"
+                  : "bg-accent/8 border-accent/25 text-accent hover:bg-accent/15 hover:border-accent/40"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <span className="relative flex items-center justify-center w-5 h-5 shrink-0">
+                  <span className="absolute inline-flex w-full h-full rounded-full bg-accent/40 animate-ping opacity-75" />
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="relative">
+                    <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.27A7 7 0 0 1 14 22h-4a7 7 0 0 1-6.73-3H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/>
+                    <circle cx="10" cy="16" r="1"/><circle cx="14" cy="16" r="1"/>
+                  </svg>
+                </span>
+                <span className="text-xs font-semibold">Train Your Agent</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="ml-auto shrink-0 opacity-70">
+                  <polyline points="9 18 15 12 9 6"/>
+                </svg>
+              </div>
+              <p className="text-[10px] leading-snug opacity-75 pl-7">
+                Tell your agent who you are so it can help you.
+              </p>
+            </Link>
+          </div>
+        )}
         {NAV_SECTIONS.map((section) => {
           // Hide setup-dependent sections for new users
           const visibleItems = section.items.filter((item) => !item.requiresSetup || !isNewUser);
@@ -310,21 +342,23 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
 
       {/* Bottom */}
       <div className="p-2 border-t border-card-border space-y-0.5">
-        <Link
-          href={`/${user.id}/onboard`}
-          onClick={handleNavClick}
-          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition-all ${
-            pathname.startsWith(`${base}/onboard`)
-              ? "bg-accent/10 text-accent font-medium"
-              : "text-muted-foreground hover:text-foreground hover:bg-card-hover"
-          }`}
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/70">
-            <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.27A7 7 0 0 1 14 22h-4a7 7 0 0 1-6.73-3H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/>
-            <circle cx="10" cy="16" r="1"/><circle cx="14" cy="16" r="1"/>
-          </svg>
-          <span className="flex-1">Train Agent</span>
-        </Link>
+        {!isNewUser && (
+          <Link
+            href={`/${user.id}/onboard`}
+            onClick={handleNavClick}
+            className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition-all ${
+              pathname.startsWith(`${base}/onboard`)
+                ? "bg-accent/10 text-accent font-medium"
+                : "text-muted-foreground hover:text-foreground hover:bg-card-hover"
+            }`}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/70">
+              <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.27A7 7 0 0 1 14 22h-4a7 7 0 0 1-6.73-3H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/>
+              <circle cx="10" cy="16" r="1"/><circle cx="14" cy="16" r="1"/>
+            </svg>
+            <span className="flex-1">Train Agent</span>
+          </Link>
+        )}
         {!isNewUser && (
           <Link
             href="/graph"

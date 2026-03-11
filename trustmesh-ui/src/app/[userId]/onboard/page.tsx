@@ -332,9 +332,11 @@ export default function OnboardPage() {
     }
   };
 
-  const completedStepKeys = new Set(
-    newCapsules.map(capsuleToStepKey).filter((k): k is string => k !== null)
-  );
+  // Combine existing vault capsules + newly saved capsules to determine completed steps
+  const completedStepKeys = new Set([
+    ...(existingCapsules ?? []).map(capsuleToStepKey),
+    ...newCapsules.map(capsuleToStepKey),
+  ].filter((k): k is string => k !== null));
   const phase = inferPhase(messages.length, completedStepKeys.size);
   const suggestions = QUICK_RESPONSES[phase] || QUICK_RESPONSES.general;
 
@@ -524,22 +526,36 @@ export default function OnboardPage() {
     <div className="max-w-4xl mx-auto flex gap-5 h-[calc(100vh-6rem)]">
       {/* Sidebar */}
       <div className="w-52 shrink-0 hidden lg:flex flex-col gap-3">
-        {/* Progress steps */}
+        {/* Progress steps — clickable to jump to a topic */}
         <div className="bg-card border border-card-border rounded-2xl p-4">
           <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">This Session</p>
-          <div className="space-y-2">
+          <div className="space-y-1">
             {activeSteps.map((step) => {
               const done = completedStepKeys.has(step.key);
               return (
-                <div key={step.key} className="flex items-center gap-2">
-                  <span className={`text-sm ${done ? "" : "opacity-30"}`}>{step.icon}</span>
-                  <span className={`text-xs ${done ? "text-green-400" : "text-muted-foreground/50"}`}>
-                    {step.label}
-                  </span>
-                  {done && (
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="text-green-400 ml-auto shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
-                  )}
-                </div>
+                <button
+                  key={step.key}
+                  disabled={isStreaming}
+                  onClick={() => {
+                    const msg = done
+                      ? `Can you tell me more about my ${step.label.toLowerCase()}?`
+                      : `Let's talk about ${step.label} now.`;
+                    sendMessage(msg);
+                  }}
+                  className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-all ${
+                    done
+                      ? "text-green-400 hover:bg-green-500/8"
+                      : "text-muted-foreground/50 hover:text-muted-foreground hover:bg-card-hover"
+                  } disabled:cursor-default disabled:opacity-60`}
+                  title={done ? `Add more about ${step.label}` : `Jump to ${step.label}`}
+                >
+                  <span className={`text-sm shrink-0 ${done ? "" : "opacity-30"}`}>{step.icon}</span>
+                  <span className="text-xs flex-1">{step.label}</span>
+                  {done
+                    ? <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
+                    : <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="shrink-0 opacity-0 group-hover:opacity-100"><polyline points="9 18 15 12 9 6"/></svg>
+                  }
+                </button>
               );
             })}
           </div>

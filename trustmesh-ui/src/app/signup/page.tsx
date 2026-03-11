@@ -80,8 +80,8 @@ export default function SignupPage() {
   };
 
   const mutation = useMutation({
-    mutationFn: () =>
-      signup({
+    mutationFn: () => {
+      return signup({
         display_name: displayName.trim(),
         bio,
         password,
@@ -89,7 +89,8 @@ export default function SignupPage() {
         avatar_url: avatarPreview || undefined,
         user_type: isOrg ? "organization" : "person",
         org_subtype: isOrg && orgSubtype ? orgSubtype : undefined,
-      }),
+      });
+    },
     onSuccess: (newUser) => {
       queryClient.invalidateQueries({ queryKey: ["users"] });
       window.location.href = `/${newUser.id}/onboard`;

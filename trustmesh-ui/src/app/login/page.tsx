@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import { useAuth } from "@/lib/auth";
 import Link from "next/link";
-import { Loader2, ChevronDown, Check } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { setPodUrl, getPodUrl } from "@/lib/api";
-import { DEMO_PODS } from "@/lib/pods";
+import { PodDropdown } from "@/components/ui/pod-dropdown";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -13,27 +13,10 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isPending, setIsPending] = useState(false);
-  const [dropdownOpen, setDropdownOpen] = useState(false);
   const [selectedPod, setSelectedPod] = useState(() => {
     const stored = typeof window !== "undefined" ? getPodUrl() : "";
-    // Default to :9001 (first multi-pod) if stored is :9000 or empty
-    if (!stored || stored === "http://localhost:9000") return "http://localhost:9001";
-    return stored;
+    return stored || "http://localhost:9001";
   });
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  const selectedPodInfo = DEMO_PODS.find(p => p.url === selectedPod) ?? DEMO_PODS[0];
-
-  // Close dropdown on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
 
   const handleSubmit = async () => {
     setError("");
@@ -78,46 +61,13 @@ export default function LoginPage() {
             )}
 
             <div className="space-y-4 mb-6">
-              {/* Custom pod dropdown */}
-              <div>
-                <label className="block text-sm text-muted-foreground mb-1.5 font-medium">
-                  Pod
-                </label>
-                <div ref={dropdownRef} className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setDropdownOpen(o => !o)}
-                    className="w-full flex items-center justify-between bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm text-foreground focus:outline-none focus:border-accent/50 transition-colors hover:border-accent/30"
-                  >
-                    <span className="flex items-center gap-2">
-                      <span>{selectedPodInfo.label}</span>
-                      <span className="text-muted-foreground font-mono text-xs">{selectedPodInfo.sublabel}</span>
-                    </span>
-                    <ChevronDown size={14} className={`text-muted-foreground transition-transform ${dropdownOpen ? "rotate-180" : ""}`} />
-                  </button>
-
-                  {dropdownOpen && (
-                    <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-card border border-card-border rounded-xl shadow-2xl overflow-hidden max-h-64 overflow-y-auto">
-                      {DEMO_PODS.map(p => (
-                        <button
-                          key={p.url}
-                          type="button"
-                          onClick={() => { setSelectedPod(p.url); setDropdownOpen(false); }}
-                          className="w-full flex items-center justify-between px-4 py-2.5 text-sm text-left hover:bg-card-hover transition-colors"
-                        >
-                          <span className="flex items-center gap-2">
-                            <span className={selectedPod === p.url ? "text-accent font-medium" : "text-foreground"}>
-                              {p.label}
-                            </span>
-                            <span className="text-muted-foreground font-mono text-xs">{p.sublabel}</span>
-                          </span>
-                          {selectedPod === p.url && <Check size={13} className="text-accent shrink-0" />}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+              {/* Pod selector — only shown in multi-pod dev mode */}
+              {process.env.NEXT_PUBLIC_MULTI_POD === "true" && (
+                <div>
+                  <label className="block text-sm text-muted-foreground mb-1.5 font-medium">Pod</label>
+                  <PodDropdown value={selectedPod} onChange={setSelectedPod} />
                 </div>
-              </div>
+              )}
 
               <div>
                 <label className="block text-sm text-muted-foreground mb-1.5 font-medium">

@@ -2,6 +2,31 @@ import { NextRequest, NextResponse } from "next/server";
 
 const DEFAULT_POD_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:9000";
 
+/** Block SSRF: reject non-http(s) schemes, cloud metadata IPs, and private ranges.
+ *  Localhost is allowed — in dev the Next.js server proxies to pods on the same machine. */
+function validatePodUrl(raw: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  const h = parsed.hostname;
+  // Cloud metadata endpoints
+  if (
+    h === "169.254.169.254" ||
+    h === "metadata.google.internal" ||
+    h === "100.100.100.200"
+  )
+    return null;
+  // Private IP ranges (non-localhost) — localhost is intentionally allowed for dev
+  if (/^10\./.test(h)) return null;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return null;
+  if (/^192\.168\./.test(h)) return null;
+  return parsed.origin;
+}
+
 /**
  * Server-side proxy for emergency QR scans and responder alerts.
  *
@@ -23,13 +48,17 @@ export async function POST(req: NextRequest) {
   const token = body.t;
   const patient = body.p;
   const message = body.message;
-  const podUrl = (body.pod || DEFAULT_POD_URL).replace(/\/$/, "");
 
   if (!token || !patient || !message) {
     return NextResponse.json({ detail: "Missing t, p, or message" }, { status: 400 });
   }
   if (token.length > 4096 || patient.length > 50 || message.length > 500) {
     return NextResponse.json({ detail: "Invalid parameters" }, { status: 400 });
+  }
+
+  const podUrl = validatePodUrl(body.pod || DEFAULT_POD_URL);
+  if (!podUrl) {
+    return NextResponse.json({ detail: "Invalid pod URL" }, { status: 400 });
   }
 
   const target = `${podUrl}/api/emergency/qr/alert`;
@@ -51,7 +80,6 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const token = searchParams.get("t");
   const patient = searchParams.get("p");
-  const podUrl = (searchParams.get("pod") || DEFAULT_POD_URL).replace(/\/$/, "");
 
   if (!token || !patient) {
     return NextResponse.json({ detail: "Missing t or p parameter" }, { status: 400 });
@@ -59,6 +87,11 @@ export async function GET(req: NextRequest) {
 
   if (token.length > 4096 || patient.length > 50) {
     return NextResponse.json({ detail: "Invalid parameters" }, { status: 400 });
+  }
+
+  const podUrl = validatePodUrl(searchParams.get("pod") || DEFAULT_POD_URL);
+  if (!podUrl) {
+    return NextResponse.json({ detail: "Invalid pod URL" }, { status: 400 });
   }
 
   const target = `${podUrl}/api/emergency/qr?t=${encodeURIComponent(token)}&p=${encodeURIComponent(patient)}`;

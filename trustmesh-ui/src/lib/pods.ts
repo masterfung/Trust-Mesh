@@ -27,7 +27,7 @@ export const DEMO_PODS: DemoPod[] = [
   { label: "City of Riverside",  sublabel: ":9014", url: "http://localhost:9014" },
   { label: "HandyPro",           sublabel: ":9015", url: "http://localhost:9015" },
   { label: "Dance Studio",       sublabel: ":9016", url: "http://localhost:9016" },
-  { label: "Your Pod (default)", sublabel: ":9000", url: "http://localhost:9000" },
+  { label: "Johnny Hung",        sublabel: ":9000", url: "http://localhost:9000" },
 ];
 
 /** Ports used for live sibling-pod probing (smaller set for speed). */

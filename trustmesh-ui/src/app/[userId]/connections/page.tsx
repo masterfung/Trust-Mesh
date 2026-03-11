@@ -11,6 +11,13 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { TrustGraph } from "@/components/TrustGraph";
 import { RELATIONSHIP_TYPES } from "@/lib/constants";
 
+const CONTEXT_CYCLE: Record<string, string> = { work: "personal", personal: "both", both: "work" };
+const CONTEXT_STYLE: Record<string, string> = {
+  work: "bg-blue-500/15 text-blue-400 border-blue-500/25",
+  personal: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
+  both: "bg-amber-500/15 text-amber-400 border-amber-500/25",
+};
+
 type ViewMode = "list" | "graph";
 
 export default function ConnectionsPage() {
@@ -96,6 +103,25 @@ export default function ConnectionsPage() {
       queryClient.invalidateQueries({ queryKey: ["connections", userId] });
       queryClient.invalidateQueries({ queryKey: ["networks", userId] });
       queryClient.invalidateQueries({ queryKey: ["user-graph", userId] });
+    },
+  });
+
+  const updateContextMutation = useMutation({
+    mutationFn: ({ connectionId, context }: { connectionId: string; context: string }) =>
+      api.updateConnectionLabel(connectionId, undefined, undefined, context),
+    onMutate: async ({ connectionId, context }) => {
+      await queryClient.cancelQueries({ queryKey: ["connections", userId] });
+      const prev = queryClient.getQueryData<Connection[]>(["connections", userId]);
+      queryClient.setQueryData<Connection[]>(["connections", userId], (old) =>
+        old?.map((c) => c.id === connectionId ? { ...c, context } : c) ?? []
+      );
+      return { prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(["connections", userId], ctx.prev);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["connections", userId] });
     },
   });
 
@@ -193,6 +219,7 @@ export default function ConnectionsPage() {
           networks={networks}
           isLoading={usersLoading || connectionsLoading}
           onDone={handleConnectDone}
+          activeContext={activeContext}
         />
       )}
 
@@ -266,6 +293,19 @@ export default function ConnectionsPage() {
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-semibold uppercase tracking-wide">Gov</span>
                       )}
                       {c.relationship_type && <RelationshipBadge type={c.relationship_type} />}
+                      {c.context && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const next = CONTEXT_CYCLE[c.context ?? "personal"] ?? "work";
+                            updateContextMutation.mutate({ connectionId: c.id, context: next });
+                          }}
+                          title="Click to change context"
+                          className={`text-[9px] px-1.5 py-0.5 rounded border font-semibold uppercase tracking-wide transition-colors hover:opacity-80 ${CONTEXT_STYLE[c.context ?? "personal"] ?? CONTEXT_STYLE.personal}`}
+                        >
+                          {c.context}
+                        </button>
+                      )}
                     </div>
                     <p className="text-xs text-muted-foreground truncate mt-0.5">
                       {c.peer?.profile_data?.occupation?.title
@@ -499,13 +539,14 @@ const LABEL_SUGGESTIONS: Record<string, string[]> = {
 };
 
 function SendConnectionForm({
-  userId, unconnected, networks, isLoading, onDone,
+  userId, unconnected, networks, isLoading, onDone, activeContext,
 }: {
   userId: string;
   unconnected: User[];
   networks?: Network[];
   isLoading?: boolean;
   onDone: () => void;
+  activeContext?: ContextMode;
 }) {
   const [targetId, setTargetId] = useState("");
   const [message, setMessage] = useState("");
@@ -513,8 +554,11 @@ function SendConnectionForm({
   const [fromLabel, setFromLabel] = useState("");
   const selectedUser = unconnected.find((u) => u.id === targetId);
 
+  // Derive connection context from current nav mode
+  const connContext = activeContext === "all" ? "both" : (activeContext ?? "personal");
+
   const mutation = useMutation({
-    mutationFn: () => api.sendConnectionRequest(userId, targetId, message, relType || undefined, fromLabel || undefined),
+    mutationFn: () => api.sendConnectionRequest(userId, targetId, message, relType || undefined, fromLabel || undefined, connContext),
     onSuccess: onDone,
   });
 
@@ -541,7 +585,12 @@ function SendConnectionForm({
       ) : (
         <>
           <div className="mb-4">
-            <label className="block text-xs font-medium text-muted-foreground mb-1.5">Who do you want to connect with?</label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Who do you want to connect with?</label>
+              <span className={`text-[9px] px-2 py-0.5 rounded border font-semibold uppercase tracking-wide ${CONTEXT_STYLE[connContext] ?? CONTEXT_STYLE.personal}`}>
+                Adding as: {connContext}
+              </span>
+            </div>
             <select
               value={targetId}
               onChange={(e) => setTargetId(e.target.value)}

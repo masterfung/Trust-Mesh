@@ -1,18 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import {
   getInbox,
   getSent,
   getUnreadCount,
   markMessageRead,
   deleteMessage,
+  api,
   type MessageItem,
+  type Notification,
 } from "@/lib/api";
 import { TrustBadge } from "@/components/TrustBadge";
 import { formatRelativeTime } from "@/lib/utils";
+import { timeAgo } from "@/lib/utils";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -130,15 +133,162 @@ function MessageRow({
   );
 }
 
+// ── Data Request card — inline vault reply ────────────────────────────────────
+
+function DataRequestCard({
+  notif,
+  userId,
+  onDone,
+}: {
+  notif: Notification;
+  userId: string;
+  onDone: () => void;
+}) {
+  const [reply, setReply] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const handleSave = async () => {
+    if (!reply.trim()) return;
+    setSaving(true);
+    try {
+      // Save the reply as a capsule to the user's vault
+      await api.createCapsule(userId, {
+        title: `Data shared with ${notif.title.replace("is asking for your help", "").trim()}`,
+        content: reply,
+        capsule_type: "note",
+        tier: "internal",
+        category: "general",
+      });
+      setDone(true);
+      onDone();
+    } catch (e) {
+      console.error("Failed to save reply:", e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="border border-amber-500/20 rounded-2xl overflow-hidden bg-amber-500/5 mb-4">
+      <div className="flex items-start gap-3 p-4">
+        <span className="text-xl shrink-0">📬</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-foreground">{notif.title}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">They asked:</p>
+          <p className="text-sm text-amber-300 mt-1 font-medium italic">"{notif.body}"</p>
+        </div>
+      </div>
+
+      {done ? (
+        <div className="px-4 pb-4 flex items-center gap-2 text-sm text-emerald-400">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          Saved to your vault — the requester will be notified automatically.
+        </div>
+      ) : (
+        <div className="px-4 pb-4 space-y-2">
+          <p className="text-xs text-muted-foreground">
+            Reply below and your agent will save it to your vault and notify them automatically:
+          </p>
+          <textarea
+            value={reply}
+            onChange={(e) => setReply(e.target.value)}
+            placeholder="Type your answer here…"
+            rows={3}
+            className="w-full px-3 py-2 text-sm bg-background border border-card-border rounded-xl focus:outline-none focus:border-accent resize-none"
+          />
+          <button
+            onClick={handleSave}
+            disabled={!reply.trim() || saving}
+            className="px-4 py-2 text-xs font-semibold rounded-xl bg-accent hover:bg-accent-hover text-accent-fg transition-all disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save to Vault & Notify"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Query notification row ─────────────────────────────────────────────────────
+
+function QueryRow({
+  notif,
+  expanded,
+  onExpand,
+  onMarkRead,
+}: {
+  notif: Notification;
+  expanded: boolean;
+  onExpand: () => void;
+  onMarkRead: () => void;
+}) {
+  const typeLabel: Record<string, string> = {
+    query_received: "Query received",
+    query_response: "Query response",
+    connection_request: "Connection request",
+    connection_accepted: "Connection accepted",
+    network_invite: "Network invite",
+    network_joined: "Network joined",
+    task_complete: "Task complete",
+    emergency_access: "Emergency access",
+  };
+
+  const handleClick = () => {
+    if (!notif.is_read) onMarkRead();
+    onExpand();
+  };
+
+  return (
+    <div className={`border-b border-card-border/50 transition-colors ${!notif.is_read ? "bg-accent-glow/20" : "hover:bg-card-hover/50"}`}>
+      <button className="w-full text-left px-4 py-3 flex items-start gap-3" onClick={handleClick}>
+        {/* Unread dot */}
+        <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${!notif.is_read ? "bg-accent" : "bg-transparent"}`} />
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <span className={`text-sm ${!notif.is_read ? "font-semibold text-foreground" : "text-muted-foreground"}`}>
+              {notif.title}
+            </span>
+            <span className="text-[11px] text-muted-foreground shrink-0">{timeAgo(notif.created_at)}</span>
+          </div>
+          <p className={`text-sm mt-0.5 ${expanded ? "" : "line-clamp-2"} leading-relaxed ${!notif.is_read ? "text-foreground/80" : "text-muted-foreground"}`}>
+            {notif.body}
+          </p>
+          <span className="inline-block mt-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium border bg-violet-500/10 text-violet-400 border-violet-500/20">
+            {typeLabel[notif.notification_type] ?? notif.notification_type}
+          </span>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="px-9 pb-3">
+          <div className="bg-card rounded-xl p-3 border border-card-border/50">
+            <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">{notif.body}</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-type Tab = "inbox" | "unread" | "sent";
+type Tab = "inbox" | "unread" | "queries" | "sent";
 
 export default function InboxPage() {
   const { userId } = useParams<{ userId: string }>();
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState<Tab>("inbox");
+
+  const initialTab = (searchParams.get("tab") as Tab | null) ?? "inbox";
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // Reset expanded item when switching tabs
+  useEffect(() => { setExpandedId(null); }, [tab]);
 
   const { data: inbox = [], isLoading: inboxLoading } = useQuery({
     queryKey: ["inbox", userId],
@@ -158,6 +308,23 @@ export default function InboxPage() {
     refetchInterval: 10_000,
   });
 
+  const { data: allNotifications = [], isLoading: notifLoading } = useQuery({
+    queryKey: ["notifications", userId],
+    queryFn: () => api.listNotifications(userId),
+    // Always fetch — data requests need to show on inbox tab too
+    refetchInterval: 30_000,
+  });
+
+  // Data requests bubble up to the top of the inbox tab
+  const dataRequests = allNotifications.filter((n) => n.notification_type === "data_request" && !n.is_read);
+
+  // All non-message notification types worth showing in the queries tab
+  const queryNotifications = allNotifications.filter((n) =>
+    ["query_received", "query_response", "connection_request", "connection_accepted",
+     "network_invite", "network_joined", "task_complete", "emergency_access"].includes(n.notification_type)
+  );
+  const unreadQueryCount = allNotifications.filter((n) => !n.is_read).length;
+
   const markReadMutation = useMutation({
     mutationFn: (messageId: string) => markMessageRead(messageId),
     onSuccess: (_data, messageId) => {
@@ -166,6 +333,15 @@ export default function InboxPage() {
       );
       queryClient.setQueryData(["inboxUnreadCount", userId], (old: number | undefined) =>
         Math.max(0, (old ?? 1) - 1)
+      );
+    },
+  });
+
+  const markNotifReadMutation = useMutation({
+    mutationFn: (notifId: string) => api.markNotificationRead(notifId),
+    onSuccess: (_data, notifId) => {
+      queryClient.setQueryData(["notifications", userId], (old: Notification[] | undefined) =>
+        old?.map((n) => (n.id === notifId ? { ...n, is_read: true } : n)) ?? []
       );
     },
   });
@@ -191,7 +367,7 @@ export default function InboxPage() {
   const unread = inbox.filter((m) => !m.is_read);
   const messages = tab === "inbox" ? inbox : tab === "unread" ? unread : sent;
   const isSentTab = tab === "sent";
-  const loading = tab === "sent" ? sentLoading : inboxLoading;
+  const loading = tab === "sent" ? sentLoading : tab === "queries" ? notifLoading : inboxLoading;
 
   return (
     <div className="max-w-3xl mx-auto space-y-4">
@@ -201,7 +377,7 @@ export default function InboxPage() {
           <h1 className="text-xl font-bold text-foreground">Inbox</h1>
           <p className="text-sm text-muted-foreground mt-0.5">Encrypted messages from your network</p>
         </div>
-        {unreadCount > 0 && (
+        {unreadCount > 0 && tab !== "queries" && (
           <span className="flex items-center justify-center min-w-[28px] h-[28px] px-2 text-sm font-bold text-white bg-danger rounded-full">
             {unreadCount > 99 ? "99+" : unreadCount}
           </span>
@@ -210,7 +386,7 @@ export default function InboxPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 bg-card rounded-xl border border-card-border p-1 w-fit">
-        {(["inbox", "unread", "sent"] as Tab[]).map((t) => (
+        {(["inbox", "unread", "queries", "sent"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -220,56 +396,111 @@ export default function InboxPage() {
                 : "text-muted-foreground hover:text-foreground hover:bg-card-hover"
             }`}
           >
-            {t === "unread" ? `Unread${unreadCount > 0 ? ` (${unreadCount})` : ""}` : t.charAt(0).toUpperCase() + t.slice(1)}
+            {t === "unread"
+              ? `Unread${unreadCount > 0 ? ` (${unreadCount})` : ""}`
+              : t === "queries"
+              ? `Queries${unreadQueryCount > 0 ? ` (${unreadQueryCount})` : ""}`
+              : t.charAt(0).toUpperCase() + t.slice(1)}
           </button>
         ))}
       </div>
 
-      {/* Compose nudge */}
-      <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-accent/5 border border-accent/15">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent shrink-0">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-        </svg>
-        <p className="text-xs text-muted-foreground">
-          Ask your agent to send a message:{" "}
-          <span className="font-medium text-accent/80">&quot;Send a message to [name] about...&quot;</span>
-        </p>
-      </div>
+      {/* Compose nudge — only for messages tabs */}
+      {tab !== "queries" && (
+        <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-accent/5 border border-accent/15">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent shrink-0">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+          <p className="text-xs text-muted-foreground">
+            Ask your agent to send a message:{" "}
+            <span className="font-medium text-accent/80">&quot;Send a message to [name] about...&quot;</span>
+          </p>
+        </div>
+      )}
 
-      {/* Message list */}
-      <div className="bg-card rounded-2xl border border-card-border overflow-hidden">
-        {loading ? (
-          <div className="flex items-center justify-center py-16 text-muted-foreground text-sm animate-pulse">
-            Loading messages...
-          </div>
-        ) : messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 px-4 gap-3">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground">
-              <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>
-              <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
-            </svg>
-            <p className="text-sm text-muted-foreground">
-              {tab === "unread" ? "No unread messages" : tab === "sent" ? "No sent messages" : "Your inbox is empty"}
-            </p>
-            {tab === "inbox" && (
-              <p className="text-xs text-muted-foreground/70 text-center max-w-xs">
-                Ask your agent to send a message: &quot;Message Dr. Lee about my appointment&quot;
-              </p>
-            )}
-          </div>
-        ) : (
-          messages.map((msg) => (
-            <MessageRow
-              key={msg.id}
-              msg={msg}
-              isSent={isSentTab}
-              expanded={expandedId === msg.id}
-              onExpand={() => handleExpand(msg, isSentTab)}
-              onDelete={() => deleteMutation.mutate(msg.id)}
+      {/* Data requests — shown at top of inbox tab */}
+      {(tab === "inbox" || tab === "unread") && dataRequests.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+            Data requests from connected agents
+          </p>
+          {dataRequests.map((notif) => (
+            <DataRequestCard
+              key={notif.id}
+              notif={notif}
+              userId={userId}
+              onDone={() => queryClient.invalidateQueries({ queryKey: ["notifications", userId] })}
             />
-          ))
-        )}
-      </div>
+          ))}
+        </div>
+      )}
+
+      {/* Queries tab — shows agent query notifications */}
+      {tab === "queries" ? (
+        <div className="bg-card rounded-2xl border border-card-border overflow-hidden">
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-muted-foreground text-sm animate-pulse">
+              Loading queries...
+            </div>
+          ) : queryNotifications.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 px-4 gap-3">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <p className="text-sm text-muted-foreground">No agent queries yet</p>
+              <p className="text-xs text-muted-foreground/70 text-center max-w-xs">
+                When other agents query your agent for information, they&apos;ll appear here.
+              </p>
+            </div>
+          ) : (
+            queryNotifications.map((notif) => (
+              <QueryRow
+                key={notif.id}
+                notif={notif}
+                expanded={expandedId === notif.id}
+                onExpand={() => setExpandedId(expandedId === notif.id ? null : notif.id)}
+                onMarkRead={() => markNotifReadMutation.mutate(notif.id)}
+              />
+            ))
+          )}
+        </div>
+      ) : (
+        /* Message list */
+        <div className="bg-card rounded-2xl border border-card-border overflow-hidden">
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-muted-foreground text-sm animate-pulse">
+              Loading messages...
+            </div>
+          ) : messages.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 px-4 gap-3">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground">
+                <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>
+                <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+              </svg>
+              <p className="text-sm text-muted-foreground">
+                {tab === "unread" ? "No unread messages" : tab === "sent" ? "No sent messages" : "Your inbox is empty"}
+              </p>
+              {tab === "inbox" && (
+                <p className="text-xs text-muted-foreground/70 text-center max-w-xs">
+                  Ask your agent to send a message: &quot;Message Dr. Lee about my appointment&quot;
+                </p>
+              )}
+            </div>
+          ) : (
+            messages.map((msg) => (
+              <MessageRow
+                key={msg.id}
+                msg={msg}
+                isSent={isSentTab}
+                expanded={expandedId === msg.id}
+                onExpand={() => handleExpand(msg, isSentTab)}
+                onDelete={() => deleteMutation.mutate(msg.id)}
+              />
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }
