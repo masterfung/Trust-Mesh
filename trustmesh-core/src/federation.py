@@ -47,15 +47,22 @@ _BLOCKED_HOSTNAMES = frozenset([
 
 
 def _validate_peer_url(url: str) -> None:
-    """Raise ValueError if url targets a private/metadata/loopback address."""
+    """Raise ValueError if url targets a private/metadata/loopback address.
+
+    In dev mode (TRUSTMESH_DEV_MODE=1), localhost/private addresses are allowed
+    for multi-pod local development and testing.
+    """
     parsed = urlparse(url)
     host = parsed.hostname
     if not host:
         raise ValueError(f"Invalid peer URL (no hostname): {url!r}")
-    if host.lower() in _BLOCKED_HOSTNAMES:
-        raise ValueError(f"Peer URL targets blocked host: {host!r}")
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"Peer URL has disallowed scheme: {parsed.scheme!r}")
+    # Skip private/loopback checks in dev mode (multi-pod local setup uses localhost)
+    if os.getenv("TRUSTMESH_DEV_MODE"):
+        return
+    if host.lower() in _BLOCKED_HOSTNAMES:
+        raise ValueError(f"Peer URL targets blocked host: {host!r}")
     try:
         addr = ipaddress.ip_address(host)
         if any(addr in net for net in _PRIVATE_NETS):
@@ -385,14 +392,16 @@ async def get_or_create_ghost_user(
     if ghost:
         return ghost
 
-    # Verify the DID is actually listed in the remote pod's agent card
-    verified_did = await _verify_did_on_pod(remote_did, remote_pod_url)
-    if not verified_did:
-        logger.warning(
-            "Ghost DID %s... rejected — not found on %s agent card",
-            remote_did[:20], remote_pod_url,
-        )
-        raise ValueError(f"DID {remote_did[:20]}... not verified on {remote_pod_url}")
+    # Verify the DID is actually listed in the remote pod's agent card.
+    # Skip in dev/test mode (TRUSTMESH_DEV_MODE=1) where remote pods are unavailable.
+    if not os.getenv("TRUSTMESH_DEV_MODE"):
+        verified_did = await _verify_did_on_pod(remote_did, remote_pod_url)
+        if not verified_did:
+            logger.warning(
+                "Ghost DID %s... rejected — not found on %s agent card",
+                remote_did[:20], remote_pod_url,
+            )
+            raise ValueError(f"DID {remote_did[:20]}... not verified on {remote_pod_url}")
 
     # Extract hostname from pod URL for username
     hostname = urlparse(remote_pod_url).hostname or "unknown"

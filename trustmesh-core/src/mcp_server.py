@@ -44,7 +44,17 @@ SESSION_FILE = Path.home() / ".trustmesh" / "session"
 
 
 def _load_session() -> dict | None:
-    """Load CLI session from ~/.trustmesh/session."""
+    """Load session from env var (channel token) or ~/.trustmesh/session (CLI)."""
+    # TRUSTMESH_TOKEN: Bearer channel token for ZeroClaw/NullClaw integration
+    token = os.getenv("TRUSTMESH_TOKEN")
+    if token:
+        return {
+            "pod_url": os.getenv("TRUSTMESH_API_URL", "http://localhost:9000"),
+            "token": token,
+            "auth_type": "bearer",
+        }
+
+    # Fall back to session file (created by `trustmesh login`)
     if not SESSION_FILE.exists():
         return None
     try:
@@ -57,8 +67,15 @@ def _load_session() -> dict | None:
 
 
 def _make_client(session: dict | None) -> httpx.Client:
-    """Create httpx client, with session cookie if available."""
+    """Create httpx client, with Bearer token or session cookie if available."""
     if session:
+        auth_type = session.get("auth_type", "cookie")
+        if auth_type == "bearer":
+            return httpx.Client(
+                base_url=session["pod_url"],
+                headers={"Authorization": f"Bearer {session['token']}"},
+                timeout=60.0,
+            )
         return httpx.Client(
             base_url=session["pod_url"],
             cookies={"trustmesh_session": session["token"]},

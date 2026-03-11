@@ -7,15 +7,20 @@ FastAPI request handling stays in Python.
 import ctypes
 import hashlib
 import logging
+import os
 import time
 from collections import defaultdict
 
 from fastapi import HTTPException, Request
 
+# Imported here (not from src.middleware) to avoid a module-level circular dep
+# at import time — middleware.py reads the same env var.
+_PROXY_SECRET = os.getenv("PODOS_PROXY_SECRET", "")
+
 log = logging.getLogger(__name__)
 
 SESSION_TTL = 86400  # 24 hours
-MAX_LOGIN_ATTEMPTS = 100
+MAX_LOGIN_ATTEMPTS = 10
 LOGIN_WINDOW = 300  # 5 minutes
 COOKIE_NAME = "trustmesh_session"
 
@@ -228,10 +233,13 @@ async def get_current_user_id(request: Request) -> str:
     is only reachable from localhost (Zig proxy). This eliminates the need for
     Python to maintain its own session store copy.
     """
-    # Trust Zig-verified session (proxy path: :9000 → :9500)
-    verified_uid = request.headers.get("x-verified-user-id")
-    if verified_uid:
-        return verified_uid
+    # Trust Zig-verified session only when the proxy secret is active.
+    # Without PODOS_PROXY_SECRET, Python is publicly reachable and this header
+    # can be spoofed by any caller — do not trust it.
+    if _PROXY_SECRET:
+        verified_uid = request.headers.get("x-verified-user-id")
+        if verified_uid:
+            return verified_uid
 
     # Direct Python access (tests, non-proxy mode)
     token = get_session_token(request)
@@ -246,10 +254,11 @@ async def get_current_user_id(request: Request) -> str:
 
 async def get_optional_user_id(request: Request) -> str | None:
     """FastAPI dependency: optionally extract user_id from cookie."""
-    # Trust Zig-verified session (proxy path)
-    verified_uid = request.headers.get("x-verified-user-id")
-    if verified_uid:
-        return verified_uid
+    # Same guard as get_current_user_id — only trust when proxy secret is active.
+    if _PROXY_SECRET:
+        verified_uid = request.headers.get("x-verified-user-id")
+        if verified_uid:
+            return verified_uid
 
     token = get_session_token(request)
     if not token:
@@ -260,4 +269,7 @@ async def get_optional_user_id(request: Request) -> str | None:
 
 def record_failed_login(ip: str, username: str) -> None:
     """Audit trail for failed login attempts."""
-    log.warning(f"Failed login attempt for '{username}' from {ip}")
+    # Sanitize: strip newlines to prevent log injection attacks
+    safe = username.replace("\n", "").replace("\r", "")[:50]
+    safe_ip = ip.replace("\n", "").replace("\r", "")[:45]
+    log.warning("Failed login attempt for %r from %s", safe, safe_ip)

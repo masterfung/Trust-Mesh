@@ -23,7 +23,7 @@ from src.federation import (
     ping_peer,
     send_pool_invite,
 )
-from src.models import Agent, Network, NetworkMembership, PeerPod, PoolInviteToken, User
+from src.models import Agent, DataRequest, Network, NetworkMembership, PeerPod, PoolInviteToken, User
 from src.rate_limit import check_query_rate, record_query
 from src.federation_auth import verify_federation_request
 
@@ -647,10 +647,13 @@ async def send_pool_invite_endpoint(
         db.add(invite_token)
 
         # Create ghost user locally for the remote user
-        ghost = await get_or_create_ghost_user(
-            db, req.target_username, req.target_display_name,
-            req.target_did, req.target_pod_url,
-        )
+        try:
+            ghost = await get_or_create_ghost_user(
+                db, req.target_username, req.target_display_name,
+                req.target_did, req.target_pod_url,
+            )
+        except ValueError as exc:
+            raise HTTPException(403, f"Remote DID verification failed: {exc}")
 
         # Add ghost to network if not already a member
         existing_mem = await db.execute(
@@ -844,10 +847,17 @@ async def pool_sync(req: PoolSyncRequest, request: Request):
             if member.pod_url.rstrip("/") == POD_URL.rstrip("/"):
                 continue
 
-            ghost = await get_or_create_ghost_user(
-                db, member.username, member.display_name,
-                member.did, member.pod_url,
-            )
+            try:
+                ghost = await get_or_create_ghost_user(
+                    db, member.username, member.display_name,
+                    member.did, member.pod_url,
+                )
+            except ValueError:
+                logger.warning(
+                    "pool_sync: skipping member %s — DID not verified on %s",
+                    member.username, member.pod_url,
+                )
+                continue
 
             # Add ghost to network if not already a member
             existing_ghost_mem = await db.execute(
@@ -1010,6 +1020,100 @@ async def deliver_message(
     await db.commit()
 
     return {"delivered": True, "message_id": msg_id}
+
+
+# ─── Cross-pod data request delivery ─────────────────────────────────────────
+
+class DataRequestPayload(BaseModel):
+    from_did: str
+    to_username: str
+    subject: str
+    body: str
+    notification_type: str = "data_request"
+    requester_pod_url: str
+    requester_user_id: str
+    requester_display: str
+    original_question: str
+    signature: str | None = None
+
+
+@router.post("/data_request")
+async def receive_data_request(
+    req: DataRequestPayload,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Receive a cross-pod data request from a peer agent.
+
+    Creates an inbox notification for the local user asking them to add
+    the requested data to their vault. When they do, a peer_data_ready
+    event will be sent back to the requester's pod.
+    """
+    # Resolve local recipient
+    result = await db.execute(
+        select(User).where(User.username == req.to_username, User.is_remote == False)  # noqa: E712
+    )
+    recipient = result.scalar_one_or_none()
+    if not recipient:
+        raise HTTPException(404, f"User '{req.to_username}' not found")
+
+    from src.models import Notification
+    import uuid as _uuid
+
+    # Store the data request for callback tracking
+    request_id = str(_uuid.uuid4())
+    db.add(DataRequest(
+        id=request_id,
+        recipient_user_id=recipient.id,
+        requester_pod_url=req.requester_pod_url,
+        requester_user_id=req.requester_user_id,
+        requester_display=req.requester_display,
+        original_question=req.original_question,
+        status="pending",
+    ))
+
+    # Create inbox notification
+    db.add(Notification(
+        user_id=recipient.id,
+        notification_type="data_request",
+        title=f"{req.requester_display} is asking for your help",
+        body=req.original_question,
+        related_id=request_id,
+    ))
+    await db.commit()
+
+    return {"received": True, "request_id": request_id}
+
+
+# ─── Peer data-ready callback ─────────────────────────────────────────────────
+
+class PeerDataReadyPayload(BaseModel):
+    from_did: str
+    for_user_id: str  # the requester's user_id on this pod
+    target_user_id: str  # the peer who just added data (their user_id on their pod)
+    category: str = "general"
+
+
+@router.post("/peer_data_ready")
+async def receive_peer_data_ready(
+    req: PeerDataReadyPayload,
+    db: AsyncSession = Depends(get_db),
+):
+    """Receive notification from a peer pod that the requested data is now available.
+
+    Fires the `peer_data_ready:{target_user_id}` event in the timeline engine,
+    which wakes up any dormant follow-up tasks waiting for this peer's data.
+    """
+    try:
+        from src.routes.capsules import _push_timeline_event
+        event_key = f"peer_data_ready:{req.target_user_id}"
+        _push_timeline_event(event_key)
+        logger.info("peer_data_ready: fired event %s for user %s", event_key, req.for_user_id)
+    except Exception as e:
+        logger.warning("peer_data_ready: could not push timeline event: %s", e)
+
+    return {"received": True}
+
 
 # /api/pod/connection-request and /api/pod/connection-accept are handled by
 # the native Zig kernel (handlers/pod_federation.zig).

@@ -1322,16 +1322,45 @@ def _build_entry_response(engine, entry_id) -> EntryResponse:
 async def get_timeline_state(
     auth_user_id: str = Depends(get_current_user_id),
 ) -> EngineStateResponse:
-    """Get the current central state of the timeline engine."""
-    engine = _get_engine()
+    """Get engine state filtered to the current user's entries."""
+    from src.timeline_bridge import EntryState
 
+    engine = _get_engine()
     state = engine.state
+
+    # Compute per-user counts from the engine entries
+    all_ids = engine.get_all_entry_ids()
+    user_active_ids = []
+    active_count = pending_count = dormant_count = failed_count = total_count = 0
+    for eid in all_ids:
+        spec = _get_entry_spec(str(eid))
+        owner_id = spec.get("owner_id") if spec else None
+        if owner_id != auth_user_id:
+            continue
+        sv = engine.get_entry_state(eid)
+        if sv is None:
+            continue
+        total_count += 1
+        try:
+            es = EntryState(sv)
+            if es.name in ("ACTIVE", "ACTIVATING", "DEACTIVATING"):
+                active_count += 1
+                user_active_ids.append(str(eid))
+            elif es.name == "PENDING":
+                pending_count += 1
+            elif es.name == "DORMANT":
+                dormant_count += 1
+            elif es.name in ("FAILED",):
+                failed_count += 1
+        except (ValueError, KeyError):
+            pass
+
     return EngineStateResponse(
-        active_count=state.active_count,
-        pending_count=state.pending_count,
-        dormant_count=state.dormant_count,
-        failed_count=state.failed_count,
-        total_count=state.total_count,
+        active_count=active_count,
+        pending_count=pending_count,
+        dormant_count=dormant_count,
+        failed_count=failed_count,
+        total_count=total_count,
         tick_count=state.tick_count,
         signal_count=state.signal_count,
         is_running=engine.is_running,
@@ -1343,7 +1372,7 @@ async def get_timeline_state(
             }
             for s in state.signals
         ],
-        active_ids=[str(uid) for uid in state.active_ids],
+        active_ids=user_active_ids,
     )
 
 
@@ -1484,13 +1513,17 @@ async def create_entry(
 async def list_entries(
     auth_user_id: str = Depends(get_current_user_id),
 ) -> list[EntryResponse]:
-    """List all entries in the timeline engine."""
+    """List entries owned by the current user."""
     engine = _get_engine()
     ids = engine.get_all_entry_ids()
     entries = []
     for eid in ids:
         state_val = engine.get_entry_state(eid)
         if state_val is None:
+            continue
+        spec = _get_entry_spec(str(eid))
+        owner_id = spec.get("owner_id") if spec else None
+        if owner_id != auth_user_id:
             continue
         entries.append(_build_entry_response(engine, eid))
     return entries

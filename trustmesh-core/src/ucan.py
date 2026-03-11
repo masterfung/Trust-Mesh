@@ -19,10 +19,9 @@ from src.crypto import sign_ed25519, verify_ed25519
 ROLE_SCOPES: dict[str, dict] = {
     "attending_physician": {
         "categories": ["health"],
-        # Stems used: prefix matching, so "medic" matches medication/medical,
-        # "allerg" matches allergy/allergies/allergic, etc.
         "keywords": [
-            "medic", "allerg", "condition", "surg", "prescription",
+            "medication", "medical", "allergy",
+            "condition", "surgery", "prescription",
             "emergency contact", "blood type", "blood pressure",
             "weight", "height", "dnr", "do not resuscitate",
             "insurance", "doctor", "hospital", "dialysis",
@@ -32,21 +31,22 @@ ROLE_SCOPES: dict[str, dict] = {
         "categories": ["health"],
         "keywords": [
             "blood type", "blood pressure", "weight", "height",
-            "allerg", "emergency contact", "medic", "dnr",
-            "do not resuscitate", "dialysis",
+            "allergy", "emergency contact", "medication", "medical",
+            "dnr", "do not resuscitate", "dialysis",
         ],
     },
     "paramedic": {
         "categories": ["health"],
         "keywords": [
-            "blood type", "allerg", "dnr", "do not resuscitate",
-            "emergency contact", "medic",
+            "blood type", "allergy", "dnr", "do not resuscitate",
+            "emergency contact",
         ],
     },
     "admin": {
         "categories": ["health", "personal"],
         "keywords": [
-            "insurance", "emergency contact", "next of kin", "medic",
+            "insurance", "emergency contact", "next of kin",
+            "medication", "medical",
         ],
     },
 }
@@ -196,9 +196,12 @@ def validate_ucan_token(
 def capsule_matches_scope(capsule_dict: dict, role: str) -> bool:
     """Check if a capsule matches the scope allowed by a role.
 
-    A capsule matches if its title or content contains any of the role's keywords.
-    Keywords use prefix matching (allergy matches allergies, allergic) and
-    underscores are treated as spaces (emergency_contact matches "emergency contact").
+    A capsule matches if:
+    - Its category is in the role's allowed categories, OR
+    - Its title or content contains any role keyword (whole-word match).
+
+    Underscores in title/content are normalized to spaces so that
+    "blood_type" matches keyword "blood type".
     """
     import re
 
@@ -206,17 +209,20 @@ def capsule_matches_scope(capsule_dict: dict, role: str) -> bool:
         return False
 
     scope = ROLE_SCOPES[role]
-    keywords = scope["keywords"]
 
-    title = capsule_dict.get("title", "").lower()
-    content = capsule_dict.get("content", "").lower()
+    # Category check (fast path)
+    category = capsule_dict.get("category", "").lower()
+    if category and category in scope.get("categories", []):
+        return True
+
+    # Keyword check — whole-word match, underscores normalized to spaces
+    title = capsule_dict.get("title", "").lower().replace("_", " ")
+    content = capsule_dict.get("content", "").lower().replace("_", " ")
     combined = f"{title} {content}"
 
-    for kw in keywords:
-        # Normalize underscore → space (emergency_contact → emergency contact)
+    for kw in scope.get("keywords", []):
         kw_normalized = kw.replace("_", " ").lower()
-        # Prefix match from a word boundary (allergy matches allergies/allergic)
-        if re.search(rf"\b{re.escape(kw_normalized)}", combined):
+        if re.search(rf"\b{re.escape(kw_normalized)}\b", combined):
             return True
     return False
 

@@ -698,6 +698,8 @@ AGENT_TOOLS = [
     {
         "name": "send_connection_request",
         "description": (
+            "BEFORE calling this tool, always tell the user: 'You're in [mode] mode — I'll add [name] as a [context] contact. Confirm, or say work / personal / both.' "
+            "Then wait for their reply before calling. "
             "Send a connection request to another user so you can query their agent "
             "and exchange messages. Use whenever the owner expresses intent to connect with, "
             "befriend, add, or follow someone — regardless of how they phrase it or what "
@@ -718,6 +720,11 @@ AGENT_TOOLS = [
                 "relationship_type": {
                     "type": "string",
                     "description": "Optional: 'friend', 'colleague', 'family', 'neighbor', 'classmate'",
+                },
+                "context": {
+                    "type": "string",
+                    "enum": ["work", "personal", "both"],
+                    "description": "Context for this connection. Leave unset to use the user's current mode (work/personal/both). Use 'both' when user is in 'all' mode or requests both.",
                 },
             },
             "required": ["to_username", "message"],
@@ -740,6 +747,7 @@ class ToolContext:
     networks: list[dict]  # [{id, name, network_type}]
     actions: list[dict] = field(default_factory=list)
     query_depth: int = 0  # Recursion guard for query_peer
+    active_context: str = "all"  # work | personal | all (user's current nav context)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2985,7 +2993,7 @@ async def handle_generate_emergency_qr(
     })
 
 
-async def _send_federated_connection_request(ctx, ghost, message: str, relationship_type: str) -> str:
+async def _send_federated_connection_request(ctx, ghost, message: str, relationship_type: str, context: str = "personal") -> str:
     """Send a cross-pod connection request to a remote user via their pod.
 
     Also creates a local pending ConnectionRequest so the agent can track state
@@ -3066,6 +3074,7 @@ async def _send_federated_connection_request(ctx, ghost, message: str, relations
         from_user_id=ctx.owner_id,
         to_user_id=ghost.id,
         message=message,
+        context=context,
         relationship_type=relationship_type or None,
         status="pending",
     )
@@ -3091,6 +3100,8 @@ async def handle_send_connection_request(ctx: ToolContext, params: dict) -> str:
     to_username = params["to_username"].strip()
     message = params.get("message", "")[:500]
     relationship_type = params.get("relationship_type", "")
+    raw_context = params.get("context", "") or ctx.active_context or "personal"
+    context = "both" if raw_context == "all" else raw_context
 
     # Resolve target user
     result = await ctx.db.execute(
@@ -3135,6 +3146,7 @@ async def handle_send_connection_request(ctx: ToolContext, params: dict) -> str:
                 ghost=ghost,
                 message=message,
                 relationship_type=relationship_type,
+                context=context,
             )
         # Last resort: scan sibling demo pods directly (when peer registry is empty)
         from src.federation import scan_demo_pods_for_user
@@ -3154,6 +3166,7 @@ async def handle_send_connection_request(ctx: ToolContext, params: dict) -> str:
                 ghost=ghost,
                 message=message,
                 relationship_type=relationship_type,
+                context=context,
             )
         return json.dumps({"success": False, "error": f"User '{to_username}' not found locally or in connected pods. Ask them to share an invite link."})
 
@@ -3169,6 +3182,7 @@ async def handle_send_connection_request(ctx: ToolContext, params: dict) -> str:
             ghost=target,
             message=message,
             relationship_type=relationship_type,
+            context=context,
         )
 
     # Check if already connected
@@ -3203,6 +3217,7 @@ async def handle_send_connection_request(ctx: ToolContext, params: dict) -> str:
         from_user_id=ctx.owner_id,
         to_user_id=target.id,
         message=message,
+        context=context,
         relationship_type=relationship_type or None,
         status="pending",
     )
@@ -3718,7 +3733,7 @@ You have tools:
 20. **check_conflicts** — Check if something the user said conflicts with their vault data. Call before acting on any date, name, location, or amount the user states.
 
 ## When to use tools — match INTENT, not literal phrases (works in any language):
-- User wants to befriend, add, connect with, or follow someone → **send_connection_request** IMMEDIATELY (do NOT search_vault first)
+- User wants to befriend, add, connect with, or follow someone → FIRST confirm context ("You're in [Work/Personal/All] mode — I'll add [name] as a [Work/Personal/Both] contact. Confirm, or say: work / personal / both?"), THEN call **send_connection_request** with the confirmed context
 - User wants to send a private message to someone NOW → **send_message** immediately
 - User wants to send a message IN THE FUTURE (e.g. "in 5 minutes", "later today", "remind me to message X") → **create_timeline_entry** with trigger_type="time" and trigger_at_ms=now+delay, with hook_prompt instructing the agent to call send_message at that time. ALSO call **create_task** so it appears on the dashboard as pending. Do NOT call send_message immediately.
 - User is asking about services, businesses, or providers of any kind → ALWAYS list_services first, then request_quotes for matches, then web_search

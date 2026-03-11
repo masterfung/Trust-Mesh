@@ -3,7 +3,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, or_, and_
+from sqlalchemy import select, or_, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth import get_current_user_id
@@ -74,6 +74,7 @@ async def send_connection_request(
         from_user_id=data.from_user_id,
         to_user_id=data.to_user_id,
         message=data.message,
+        context=data.context,
         relationship_type=data.relationship_type,
         from_label=data.from_label,
     )
@@ -87,6 +88,7 @@ async def send_connection_request(
         to_user_id=req.to_user_id,
         message=req.message,
         status=req.status,
+        context=req.context,
         relationship_type=req.relationship_type,
         from_label=req.from_label,
         created_at=req.created_at,
@@ -124,11 +126,19 @@ async def list_connections(user_id: str, context: str | None = None,
                 continue
         filtered.append(conn)
 
+    # Batch-fetch all peer users in a single query (avoids N+1)
+    peer_ids = [
+        (conn.to_user_id if conn.from_user_id == user_id else conn.from_user_id)
+        for conn in filtered
+    ]
+    peers_result = await db.execute(select(User).where(User.id.in_(peer_ids)))
+    peer_by_id = {u.id: u for u in peers_result.scalars().all()}
+
     response = []
     for conn in filtered:
         is_from = conn.from_user_id == user_id
         peer_id = conn.to_user_id if is_from else conn.from_user_id
-        peer = await db.get(User, peer_id)
+        peer = peer_by_id.get(peer_id)
         # Resolve labels from the current user's perspective
         my_label = conn.from_label if is_from else conn.to_label
         peer_label = conn.to_label if is_from else conn.from_label
@@ -256,6 +266,8 @@ async def update_connection_label(
             conn.to_label = data.my_label
     if data.relationship_type is not None:
         conn.relationship_type = data.relationship_type
+    if data.context is not None:
+        conn.context = data.context
 
     await db.commit()
     await db.refresh(conn)

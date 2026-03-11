@@ -180,7 +180,7 @@ fn handleListConnectionRequests(ctx: *http.RequestContext) !void {
 
     var stmt = database.prepare(
         "SELECT cr.id, cr.from_user_id, cr.to_user_id, cr.message, cr.status, cr.created_at, " ++
-            "u.display_name, u.user_type " ++
+            "u.display_name, u.user_type, cr.context " ++
             "FROM connection_requests cr " ++
             "JOIN users u ON u.id = cr.from_user_id " ++
             "WHERE cr.to_user_id = ? AND cr.status = 'pending' " ++
@@ -208,19 +208,23 @@ fn handleListConnectionRequests(ctx: *http.RequestContext) !void {
         const created_s = if (created_ptr) |p| std.mem.span(p) else "";
         const sender_name_ptr = stmt.getText(6) orelse continue;
         const sender_name_s = std.mem.span(sender_name_ptr);
+        const req_ctx_ptr = stmt.getText(8);
+        const req_ctx_s = if (req_ctx_ptr) |p| std.mem.span(p) else "personal";
 
         var esc_id: [128]u8 = undefined;
         var esc_msg: [1024]u8 = undefined;
         var esc_created: [64]u8 = undefined;
         var esc_sender: [256]u8 = undefined;
+        var esc_rctx: [32]u8 = undefined;
         const eid = json_mod.escapeJsonString(id_s, &esc_id) catch continue;
         const emsg = json_mod.escapeJsonString(msg_s, &esc_msg) catch continue;
         const ecreated = json_mod.escapeJsonString(created_s, &esc_created) catch continue;
         const esender = json_mod.escapeJsonString(sender_name_s, &esc_sender) catch continue;
+        const erctx = json_mod.escapeJsonString(req_ctx_s, &esc_rctx) catch continue;
 
         const entry = std.fmt.allocPrint(ctx.allocator,
-            "{{\"id\":\"{s}\",\"from_user_id\":\"{s}\",\"to_user_id\":\"{s}\",\"message\":\"{s}\",\"status\":\"pending\",\"created_at\":\"{s}\",\"from_display_name\":\"{s}\"}}",
-            .{ esc_id[0..eid], from_s, auth_user_id, esc_msg[0..emsg], esc_created[0..ecreated], esc_sender[0..esender] },
+            "{{\"id\":\"{s}\",\"from_user_id\":\"{s}\",\"to_user_id\":\"{s}\",\"message\":\"{s}\",\"status\":\"pending\",\"context\":\"{s}\",\"created_at\":\"{s}\",\"from_display_name\":\"{s}\"}}",
+            .{ esc_id[0..eid], from_s, auth_user_id, esc_msg[0..emsg], esc_rctx[0..erctx], esc_created[0..ecreated], esc_sender[0..esender] },
         ) catch continue;
         try result.appendSlice(ctx.allocator, entry);
     }
@@ -283,11 +287,13 @@ fn handleUpdateConnectionRequest(ctx: *http.RequestContext) !void {
     var remote_did_len: usize = 0;
     var from_display_buf: [256]u8 = undefined;
     var from_display_len: usize = 0;
+    var req_context_buf: [20]u8 = undefined;
+    var req_context_len: usize = 0;
 
     {
         var stmt = database.prepare(
             "SELECT cr.from_user_id, cr.to_user_id, cr.status, " ++
-                "u.is_remote, u.remote_pod_url, u.remote_did, u.display_name " ++
+                "u.is_remote, u.remote_pod_url, u.remote_did, u.display_name, cr.context " ++
                 "FROM connection_requests cr " ++
                 "JOIN users u ON u.id = cr.from_user_id " ++
                 "WHERE cr.id = ? LIMIT 1",
@@ -343,6 +349,17 @@ fn handleUpdateConnectionRequest(ctx: *http.RequestContext) !void {
             @memcpy(from_display_buf[0..dn_s.len], dn_s);
             from_display_len = dn_s.len;
         }
+        // context
+        const ctx_ptr = stmt.getText(7);
+        const ctx_s = if (ctx_ptr) |p| std.mem.span(p) else "personal";
+        if (ctx_s.len <= req_context_buf.len) {
+            @memcpy(req_context_buf[0..ctx_s.len], ctx_s);
+            req_context_len = ctx_s.len;
+        } else {
+            // fallback to "personal" if unexpected length
+            @memcpy(req_context_buf[0..8], "personal");
+            req_context_len = 8;
+        }
     }
 
     const req_to_user_id = req_to_user_id_buf[0..req_to_user_id_len];
@@ -350,6 +367,7 @@ fn handleUpdateConnectionRequest(ctx: *http.RequestContext) !void {
     const req_status = req_status_buf[0..req_status_len];
     const remote_pod_url = remote_pod_url_buf[0..remote_pod_url_len];
     const remote_did = remote_did_buf[0..remote_did_len];
+    const req_context = if (req_context_len > 0) req_context_buf[0..req_context_len] else "personal";
 
     // Authorization: only the recipient can accept/decline
     if (!std.mem.eql(u8, req_to_user_id, auth_user_id)) {
@@ -390,15 +408,16 @@ fn handleUpdateConnectionRequest(ctx: *http.RequestContext) !void {
 
         var stmt = database.prepare(
             "INSERT INTO connections " ++
-                "(id, from_user_id, to_user_id, status, created_at, accepted_at) " ++
-                "VALUES (?, ?, ?, 'accepted', ?, ?)",
+                "(id, from_user_id, to_user_id, status, context, created_at, accepted_at) " ++
+                "VALUES (?, ?, ?, 'accepted', ?, ?, ?)",
         ) catch return ctx.sendError(.internal_server_error, "DB error");
         defer stmt.finalize();
         stmt.bindText(1, conn_id.ptr, 36) catch return ctx.sendError(.internal_server_error, "DB error");
         stmt.bindText(2, req_from_user_id.ptr, @intCast(req_from_user_id.len)) catch return ctx.sendError(.internal_server_error, "DB error");
         stmt.bindText(3, req_to_user_id.ptr, @intCast(req_to_user_id.len)) catch return ctx.sendError(.internal_server_error, "DB error");
-        stmt.bindText(4, ts.ptr, @intCast(ts.len)) catch return ctx.sendError(.internal_server_error, "DB error");
+        stmt.bindText(4, req_context.ptr, @intCast(req_context.len)) catch return ctx.sendError(.internal_server_error, "DB error");
         stmt.bindText(5, ts.ptr, @intCast(ts.len)) catch return ctx.sendError(.internal_server_error, "DB error");
+        stmt.bindText(6, ts.ptr, @intCast(ts.len)) catch return ctx.sendError(.internal_server_error, "DB error");
         _ = stmt.step() catch return ctx.sendError(.internal_server_error, "Connection insert failed");
     }
 

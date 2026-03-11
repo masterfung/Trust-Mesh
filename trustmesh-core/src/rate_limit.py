@@ -5,10 +5,12 @@ Falls back to Python if Zig is not initialized (e.g., in test fixtures).
 """
 
 import ctypes
+import logging
 import time
 from collections import defaultdict
 from ctypes import c_uint32
 
+log = logging.getLogger(__name__)
 _zig_initialized = False
 
 
@@ -24,9 +26,12 @@ def _ensure_zig():
         try:
             lib = _get_lib()
             rc = lib.podos_rate_init()
-            _zig_initialized = (rc == 0)
-        except Exception:
-            pass
+            if rc == 0:
+                _zig_initialized = True
+            else:
+                log.warning("Zig rate limiter init returned rc=%d — using Python fallback", rc)
+        except Exception as exc:
+            log.warning("Zig rate limiter load failed (%s) — using Python fallback", exc)
 
 
 def _init_rate_limits():
@@ -58,9 +63,12 @@ class SlidingWindowCounter:
 
     def count(self, key: str, window_seconds: int) -> int:
         cutoff = time.time() - window_seconds
-        events = self._events[key]
-        self._events[key] = [t for t in events if t > cutoff]
-        return len(self._events[key])
+        pruned = [t for t in self._events.get(key, []) if t > cutoff]
+        if pruned:
+            self._events[key] = pruned
+        elif key in self._events:
+            del self._events[key]  # prune empty keys to prevent unbounded growth
+        return len(pruned)
 
     def reset(self) -> None:
         self._events.clear()

@@ -35,6 +35,7 @@ _POD_USERS: dict[str, frozenset[str]] = {
                             "riverside_hospital", "riverside_ambulance"]),
     "work":     frozenset(["kyle", "sparkleclean", "acetutor", "handypro",
                             "riverside_gov", "city_general_hospital", "metro_fire_emergency"]),
+    "user":     frozenset(["johnny"]),
 }
 # Seeded everywhere as thin stubs (user + agent DID, no capsules) so that
 # trigger_emergency can look up riverside_hospital's DID for UCAN issuance
@@ -334,6 +335,27 @@ USERS = [
             "family_status": "unknown",
             "age_range": "30s",
             "location_hints": ["Riverside"],
+        },
+    },
+    {
+        "username": "johnny",
+        "display_name": "Johnny Hung",
+        "bio": "Tech entrepreneur. Builder of things. Bay Area.",
+        "agent_personality": "Direct, curious, and pragmatic. Interested in technology, startups, and connecting the dots between people.",
+        "active_context": "all",
+        "profile_data": {
+            "occupation": {"title": "Founder", "industry": "Technology"},
+            "skills": [
+                {"name": "Product", "category": "professional"},
+                {"name": "Engineering", "category": "professional"},
+            ],
+            "interests": [
+                {"name": "AI", "category": "work"},
+                {"name": "Startups", "category": "work"},
+            ],
+            "family_status": "unknown",
+            "age_range": "30s",
+            "location_hints": ["Bay Area"],
         },
     },
 ]
@@ -694,6 +716,14 @@ CONNECTIONS = [
     ("nurse_davis", "riverside_hospital", "work", "work", "hospital", "ER nurse"),
     ("emt_johnson", "riverside_ambulance", "work", "work", "ambulance service", "paramedic"),
     ("emt_johnson", "riverside_hospital", "work", "work", "hospital", "field paramedic"),
+    # Service org ↔ customer connections (work context)
+    ("molly", "sparkleclean", "work", "work", "cleaning service", "customer"),
+    ("jane", "acetutor", "work", "work", "tutor", "student"),
+    ("peter", "handypro", "work", "work", "handyman", "customer"),
+    ("molly", "riverside_gov", "work", "work", "city hall", "resident"),
+    # Johnny's connections
+    ("johnny", "molly", "both", "work", "PM colleague", "founder"),
+    ("johnny", "peter", "personal", "friend", "friend", "friend"),
 ]
 
 NETWORKS = [
@@ -1887,6 +1917,213 @@ CAPSULES = [
         "category": "personal",
         "networks": ["Bay Area Music Lovers"],
     },
+    # ── JOHNNY ─────────────────────────────────
+    # Work
+    {
+        "owner": "johnny",
+        "type": "skill",
+        "title": "Johnny's Professional Background",
+        "content": (
+            "Founder & CEO of TrustMesh (2024–present) — building federated AI agents with "
+            "trust-tiered knowledge sharing. Previously: Senior PM at Stripe (2021–2023), "
+            "led the Billing Reliability team. Before that: founding engineer at Harbor (2018–2021), "
+            "B2B SaaS for port logistics, acquired by Maersk. Stanford CS grad, class of 2017. "
+            "10+ years in product and engineering across fintech, logistics, and AI infrastructure."
+        ),
+        "visibility": "open",
+        "category": "work",
+        "context": "work",
+        "networks": [],
+    },
+    {
+        "owner": "johnny",
+        "type": "preference",
+        "title": "Johnny's Work Focus",
+        "content": (
+            "Building TrustMesh. Core thesis: personal AI agents should share knowledge through "
+            "trust networks, not centralized platforms. Current sprint: federated agent queries, "
+            "UCAN-based emergency access, and multi-pod connection graph. "
+            "Looking for design partners — healthcare, eldercare, and family coordination use cases."
+        ),
+        "visibility": "internal",
+        "category": "work",
+        "context": "work",
+        "networks": [],
+    },
+    {
+        "owner": "johnny",
+        "type": "memory",
+        "title": "TrustMesh Fundraising Notes",
+        "content": (
+            "Seed round: $1.2M closed Dec 2024. Lead: Quiet Capital. Angel: former Stripe CTO. "
+            "Currently raising $3.5M pre-A. Targeting close by Q2 2026. "
+            "Key milestones needed: 10 paying design partners, federation protocol v1, "
+            "and Citadel AI security integration shipped. "
+            "Warm intros pending: a16z crypto (through Sarah Kim at Stripe), "
+            "First Round (through Marcus at Harbor)."
+        ),
+        "visibility": "private",
+        "category": "financial",
+        "context": "work",
+        "networks": [],
+    },
+    {
+        "owner": "johnny",
+        "type": "schedule",
+        "title": "Johnny's Upcoming Work Events",
+        "content": (
+            f"Investor meeting: Quiet Capital quarterly check-in, {_rel_date(3)}, 10am Zoom. "
+            f"Design partner demo: Riverside General Hospital, {_rel_date(7)}, 2pm onsite. "
+            f"Conference: AI Infra Summit SF, {_rel_date(14)}, speaking slot 11:30am Track B. "
+            "Weekly: team standup M/W/F 9am, 1:1 with co-founder Tues 4pm."
+        ),
+        "visibility": "internal",
+        "category": "work",
+        "context": "work",
+        "networks": [],
+    },
+    # Health
+    {
+        "owner": "johnny",
+        "type": "memory",
+        "title": "Johnny's Medical Profile",
+        "content": (
+            "DOB: March 15, 1993. Blood type: O+. Height: 5'11\". Weight: 172 lbs. "
+            "Primary care: Dr. James Okafor, UCSF Medical Center, (415) 555-0182. "
+            "Last physical: October 2025 — all clear. "
+            "Conditions: mild seasonal allergies (pollen, dust). No chronic conditions. "
+            "Vaccinations up to date including COVID booster (Nov 2025) and flu shot (Oct 2025)."
+        ),
+        "visibility": "private",
+        "category": "health",
+        "emergency_accessible": True,
+        "context": "personal",
+        "networks": [],
+    },
+    {
+        "owner": "johnny",
+        "type": "memory",
+        "title": "Johnny's Allergies & Medications",
+        "content": (
+            "ALLERGIES: Penicillin (rash, confirmed allergy — documented). "
+            "Seasonal: grass pollen, dust mites (mild, managed with Claritin 10mg as needed). "
+            "No food allergies. No latex allergy. "
+            "MEDICATIONS: Claritin 10mg (OTC, seasonal only). No prescription medications. "
+            "Supplements: Vitamin D 2000IU daily, Omega-3 1g daily, Magnesium 400mg nightly."
+        ),
+        "visibility": "private",
+        "category": "health",
+        "emergency_accessible": True,
+        "context": "personal",
+        "networks": [],
+    },
+    {
+        "owner": "johnny",
+        "type": "preference",
+        "title": "Johnny's Health & Fitness Routine",
+        "content": (
+            "Runs 3-4x per week, usually 5-6 miles around Dolores Park or Crissy Field. "
+            "Strength training 2x/week at Equinox Castro. "
+            "Diet: mostly plant-forward, not strict — will eat anything. "
+            "Tries to avoid processed food. Coffee 1-2 cups/day max. "
+            "Sleep goal: 7.5 hrs. Uses Oura ring to track. "
+            "Mental health: meditates 10 min/day (Waking Up app). Therapy monthly with Dr. Priya Mehta."
+        ),
+        "visibility": "private",
+        "category": "health",
+        "context": "personal",
+        "networks": [],
+    },
+    # Personal & contacts
+    {
+        "owner": "johnny",
+        "type": "contact",
+        "title": "Johnny's Contact Info",
+        "content": (
+            "Mobile: (415) 555-0193. Email: hungmasterj@gmail.com. "
+            "Work email: johnny@trustmesh.io. "
+            "Address: 2847 Valencia St, Apt 4, San Francisco CA 94110. "
+            "Emergency contact: Mom — Grace Hung, (650) 555-0147. "
+            "Emergency contact 2: best friend — Daniel Park, (415) 555-0261."
+        ),
+        "visibility": "private",
+        "category": "personal",
+        "context": "personal",
+        "networks": [],
+    },
+    {
+        "owner": "johnny",
+        "type": "preference",
+        "title": "Johnny's Personal Journal",
+        "content": (
+            "Building a company is lonelier than I expected. The team is great — "
+            "just 4 of us right now — but the weight of it all sits with me constantly. "
+            "The Riverside Hospital demo next week could be a turning point. "
+            "If we close them as a design partner, the pre-A story gets so much stronger. "
+            "Also been thinking about moving — Valencia St rent is $3,400/mo and it's killing runway. "
+            "Mom keeps asking when I'm coming home to Palo Alto. I tell her 'soon'. "
+            "It's been 8 months since I've been back."
+        ),
+        "visibility": "private",
+        "category": "personal",
+        "context": "personal",
+        "networks": [],
+    },
+    # Hobbies
+    {
+        "owner": "johnny",
+        "type": "preference",
+        "title": "Johnny's Hobbies & Interests",
+        "content": (
+            "MUSIC: plays electric guitar (intermediate). Listens to: math rock, jazz fusion, "
+            "and 90s hip-hop. Favorite artists: Tigran Hamasyan, Hiatus Kaiyote, Nas. "
+            "Jams occasionally with a loose group of SF musicians — no regular band. "
+            "OUTDOORS: hiking (Marin Headlands, Tahoe), cycling (owns a Cannondale road bike). "
+            "Surfing (beginner, goes to Ocean Beach when the weather is right). "
+            "FOOD: huge ramen nerd. Knows every ramen spot in the Bay. "
+            "Cooks at home on weekends — mostly Japanese and Korean food. "
+            "READING: currently: 'The Righteous Mind' (Haidt), 'Designing Data-Intensive Applications' (Kleppmann). "
+            "GAMING: occasional — Factorio, Civilization VI."
+        ),
+        "visibility": "internal",
+        "category": "personal",
+        "context": "personal",
+        "networks": [],
+    },
+    {
+        "owner": "johnny",
+        "type": "memory",
+        "title": "Johnny's Travel & Wishlist",
+        "content": (
+            "Recent: Tokyo (Jan 2026, solo trip — best ramen of his life at Fuunji in Shinjuku). "
+            "Seoul (Oct 2025 with college friends). "
+            "Upcoming planned: Lisbon for a month (remote work, targeting Aug 2026 — 'founder sabbatical'). "
+            "Bucket list: Iceland Northern Lights, hiking in Patagonia, Trans-Siberian railway."
+        ),
+        "visibility": "internal",
+        "category": "personal",
+        "context": "personal",
+        "networks": [],
+    },
+    # Financial
+    {
+        "owner": "johnny",
+        "type": "memory",
+        "title": "Johnny's Financial Snapshot",
+        "content": (
+            "Personal runway: ~14 months at current burn (taking $8k/mo founder salary). "
+            "Savings: $42k HYSA (Ally, 4.8% APY). "
+            "Investments: $18k Vanguard index funds (taxable), $34k Roth IRA. "
+            "Student loans: fully paid off as of 2023. "
+            "Equity: 28% TrustMesh common stock (pre-dilution). "
+            "Monthly expenses: rent $3,400, food $600, gym $250, misc $400. "
+            "Goals: extend personal runway to 24 months post-pre-A close."
+        ),
+        "visibility": "private",
+        "category": "financial",
+        "context": "personal",
+        "networks": [],
+    },
 ]
 
 
@@ -1960,6 +2197,7 @@ async def seed():
                 vault_key_salt=salt,
                 encrypted_vault_key=encrypted_vault_key,
                 pin_hash=hash_pin("1234"),  # Default demo PIN
+                active_context=u.get("active_context", "all"),
             )
             db.add(user)
             await db.flush()
@@ -2005,6 +2243,7 @@ async def seed():
                 vault_key_salt=salt,
                 encrypted_vault_key=encrypted_vault_key,
                 agent_personality=sp["agent_personality"],
+                active_context=sp.get("active_context", "work" if sp.get("user_type") in ("organization", "government") else "all"),
             )
             db.add(service_user)
             await db.flush()

@@ -26,7 +26,7 @@ from sqlalchemy import select, or_
 from src.crypto import decrypt, derive_vault_key, public_key_to_b64
 from src.database import async_session, init_db
 from src.models import Agent, Connection, KnowledgeCapsule, Network, NetworkMembership, User, parse_profile_data
-from src.routes import _internal, audit, briefing, capsules, connections, emergency, fhir, intake, invites, live, messages, networks, notifications, pin, pod, queries, registry, research, services, tasks, timeline, users
+from src.routes import _internal, audit, briefing, capsules, channels, connections, emergency, fhir, intake, invites, live, memory, messages, networks, notifications, pin, pod, queries, registry, research, services, tasks, timeline, users
 from src.schemas import GraphEdge, GraphNetwork, GraphNode, GraphResponse
 
 # Transit-backed vault key store. Keys live in Zig memory (secureZero on removal).
@@ -198,9 +198,9 @@ async def lifespan(app: FastAPI):
     from src.message_bridge import init_tables as message_init_tables
     message_init_tables()
     _init_pod_kek()
-    # Auto-register discoverable agents with the public registry (fire-and-forget)
+    # Auto-register discoverable agents with the public registry (save handle for clean shutdown)
     from src.federation import sync_discoverable_agents_to_registry
-    asyncio.create_task(sync_discoverable_agents_to_registry())
+    _sync_task = asyncio.create_task(sync_discoverable_agents_to_registry())
     # Start the PodOS Timeline auto-tick loop (fire-and-forget)
     from src.routes.timeline import start_auto_tick
     asyncio.create_task(start_auto_tick())
@@ -215,9 +215,15 @@ async def lifespan(app: FastAPI):
     _log.info(
         "Model stack — main: %s  tee: %s",
         "gemini-3.1-pro-preview" if _router.has_gemini else "claude-sonnet-4-6",
-        _router.tee_provider_name or "none (sensitive → gemini fallback)",
+        _router.tee_provider_name or "none (sensitive → anthropic fallback)",
     )
     yield
+    # Shutdown: cancel the registry-sync task if still running
+    _sync_task.cancel()
+    try:
+        await _sync_task
+    except (asyncio.CancelledError, Exception):
+        pass
     # Shutdown: stop the timeline engine and Zig subsystems
     from src.routes.timeline import stop_auto_tick
     await stop_auto_tick()
@@ -227,6 +233,8 @@ async def lifespan(app: FastAPI):
     from src.rate_limit import _deinit_rate_limits
     _deinit_sessions()
     _deinit_rate_limits()
+    from src.citadel import close_citadel_client
+    await close_citadel_client()
     _transit.deinit()
 
 
@@ -244,10 +252,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3050", "http://localhost:3000",
+        "http://127.0.0.1:3050", "http://127.0.0.1:3000",  # Explicit IPv4 (Chrome may use 127.0.0.1)
         "http://localhost:9000",  # User's own pod
+        "http://127.0.0.1:9000",
         # Multi-pod federation: allow cross-pod requests from any localhost port
         *[f"http://localhost:{p}" for p in range(9001, 9017)],
+        *[f"http://127.0.0.1:{p}" for p in range(9001, 9017)],
         "http://localhost:9100",  # Public registry
+        "http://127.0.0.1:9100",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -278,6 +290,8 @@ app.include_router(timeline.router)
 app.include_router(live.router)
 app.include_router(messages.router)
 app.include_router(research.router)
+app.include_router(channels.router)
+app.include_router(memory.router)
 app.include_router(_internal.router)
 
 
@@ -462,16 +476,24 @@ async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
         if not my_network_ids:
             return GraphResponse(nodes=nodes, edges=edges, networks=[])
         net_query = net_query.where(Network.id.in_(my_network_ids))
-    net_result = await db.execute(net_query)
-    graph_networks = []
-    for n in net_result.scalars().all():
-        mem_result = await db.execute(
-            select(NetworkMembership.user_id).where(NetworkMembership.network_id == n.id)
+    networks = (await db.execute(net_query)).scalars().all()
+
+    # Batch-fetch all memberships in one query (avoids N+1)
+    net_ids = [n.id for n in networks]
+    members_by_network: dict[str, list[str]] = {n.id: [] for n in networks}
+    if net_ids:
+        all_mems = await db.execute(
+            select(NetworkMembership.network_id, NetworkMembership.user_id)
+            .where(NetworkMembership.network_id.in_(net_ids))
         )
-        # Parse shared_categories from JSON string
+        for net_id, user_id in all_mems.all():
+            members_by_network[net_id].append(user_id)
+
+    import json as _json
+    graph_networks = []
+    for n in networks:
         shared_cats = None
         if n.shared_categories:
-            import json as _json
             try:
                 shared_cats = _json.loads(n.shared_categories) if isinstance(n.shared_categories, str) else n.shared_categories
             except (ValueError, TypeError):
@@ -479,7 +501,7 @@ async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
         graph_networks.append(GraphNetwork(
             id=n.id, name=n.name, network_type=n.network_type,
             pool_type=n.pool_type, shared_categories=shared_cats,
-            members=list(mem_result.scalars().all()),
+            members=members_by_network.get(n.id, []),
         ))
 
     return GraphResponse(nodes=nodes, edges=edges, networks=graph_networks)

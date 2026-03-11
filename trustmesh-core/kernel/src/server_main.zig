@@ -27,6 +27,8 @@ const connections_handler = @import("handlers/connections.zig");
 const capsules_handler = @import("handlers/capsules.zig");
 const emergency_handler = @import("handlers/emergency.zig");
 const pod_federation_handler = @import("handlers/pod_federation.zig");
+const channel_tokens_handler = @import("handlers/channel_tokens.zig");
+const channels_handler = @import("handlers/channels.zig");
 
 // ── Globals ──
 var _gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -135,6 +137,12 @@ pub fn main() !void {
     users_handler.setSessionStore(&sess_store);
     users_handler.registerRoutes();
 
+    // Channel token CRUD — registered BEFORE connections/capsules/notifications
+    // so that /api/users/*/channel-tokens is matched before those prefix handlers
+    // call proxyFromHandler() for unrecognised sub-paths.
+    channel_tokens_handler.setDatabase(&database);
+    channel_tokens_handler.registerRoutes();
+
     // Connection reads + accept/decline mutations
     connections_handler.setDatabase(&database);
     connections_handler.setSessionStore(&sess_store);
@@ -156,6 +164,11 @@ pub fn main() !void {
     emergency_handler.setTransitEngine(&transit_engine);
     emergency_handler.setRateLimiter(&rate_limiter);
     emergency_handler.registerRoutes();
+
+    // Channel bridge (Bearer auth → pre-flight sensitivity → proxy to Python LLM)
+    channels_handler.setDatabase(&database);
+    channels_handler.setRateLimiter(&rate_limiter);
+    channels_handler.registerRoutes();
 
     // ── Start HTTP server ──
     // C2: Read proxy shared secret from environment

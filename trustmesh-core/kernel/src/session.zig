@@ -8,7 +8,7 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 const Allocator = std.mem.Allocator;
 
 pub const SESSION_TTL: i64 = 86400; // 24 hours in seconds
-pub const MAX_LOGIN_ATTEMPTS: usize = 100; // per window
+pub const MAX_LOGIN_ATTEMPTS: usize = 10; // per window
 pub const LOGIN_WINDOW: i64 = 300; // 5 minutes in seconds
 pub const TOKEN_BYTES = 32; // random bytes for token generation
 pub const MAX_SESSIONS_PER_USER: usize = 10;

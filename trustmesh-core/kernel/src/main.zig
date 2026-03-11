@@ -28,6 +28,7 @@ pub const credential = @import("credential.zig");
 pub const credential_audit = @import("credential_audit.zig");
 pub const message = @import("message.zig");
 pub const research = @import("research.zig");
+pub const sensitivity = @import("sensitivity.zig");
 
 // Page allocator for FFI — simple, no libc dependency
 const ffi_allocator = std.heap.page_allocator;
@@ -1996,4 +1997,20 @@ export fn podos_freshness_score(
     authority_weight: f32,
 ) callconv(.c) f32 {
     return research.freshness_score(freshness_type, days_since_verified, authority_weight);
+}
+
+// ═══════════════════════════════════════════
+//  PRE-FLIGHT SENSITIVITY (ZeroClaw/NullClaw)
+// ═══════════════════════════════════════════
+
+/// Check if text or relationship_type indicate sensitive content.
+/// Returns 1 if sensitive, 0 if standard.
+/// Called from Python via ctypes as a fast pre-flight check at the channel boundary.
+export fn podos_preflight_sensitivity(
+    text_ptr: [*]const u8,
+    text_len: usize,
+    rel_type_ptr: ?[*]const u8,
+    rel_type_len: usize,
+) callconv(.c) u8 {
+    return sensitivity.podos_preflight_sensitivity(text_ptr, text_len, rel_type_ptr, rel_type_len);
 }

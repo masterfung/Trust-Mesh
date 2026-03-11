@@ -222,6 +222,7 @@ class ConnectionRequestResponse(BaseModel):
     to_user_id: str
     message: str
     status: str
+    context: str = "personal"
     relationship_type: str | None = None
     from_label: str | None = None
     mutual_connections: int = 0
@@ -242,6 +243,7 @@ class ConnectionRequestUpdate(BaseModel):
 class ConnectionLabelUpdate(BaseModel):
     my_label: str | None = Field(default=None, max_length=50)
     relationship_type: str | None = None
+    context: str | None = Field(default=None, pattern=r"^(work|personal|both)$")
 
     @field_validator("relationship_type")
     @classmethod

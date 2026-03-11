@@ -420,10 +420,20 @@ class ModelRouter:
         Yields:
             str chunks of the response text.
         """
-        if sensitivity == "sensitive" and self._tee_client:
-            async for chunk in self._tee_stream(messages, system, model, max_tokens):
+        if sensitivity == "sensitive":
+            if self._tee_client:
+                async for chunk in self._tee_stream(messages, system, model, max_tokens):
+                    yield chunk
+                return
+            # TEE unavailable — Anthropic only, never Gemini for sensitive data
+            log.warning(
+                "[ROUTING] TEE unavailable for sensitive query (stream) — using Anthropic fallback."
+            )
+            async for chunk in self._anthropic_stream(messages, system, model, max_tokens):
                 yield chunk
-        elif self._gemini_client:
+            return
+
+        if self._gemini_client:
             async for chunk in self._gemini_stream(messages, system, model, max_tokens):
                 yield chunk
         else:

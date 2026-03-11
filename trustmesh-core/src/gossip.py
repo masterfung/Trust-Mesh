@@ -244,6 +244,7 @@ async def query_agent_public(
     from_did: str,
     from_pod: str,
     vault_keys=None,
+    sensitivity_hint: str = "standard",
 ) -> dict:
     """Handle a cross-pod query at public trust level.
 
@@ -385,6 +386,7 @@ async def query_agent(
     question: str,
     vault_keys=None,
     query_depth: int = 0,
+    sensitivity_hint: str = "standard",
 ) -> dict:
     """The core inter-agent query flow.
 
@@ -540,6 +542,7 @@ async def query_agent(
                 owner_name=to_user.display_name,
                 networks=user_networks,
                 query_depth=query_depth,
+                active_context=to_user.active_context or "all",
             )
             response_text, actions, routing_provider = await agent_respond_with_tools(
                 agent=agent,
@@ -551,6 +554,7 @@ async def query_agent(
                 entity_type=to_user.user_type or "person",
                 org_subtype=getattr(to_user, "org_subtype", None),
                 agent_mode=getattr(to_user, "agent_mode", "private"),
+                sensitivity_hint=sensitivity_hint,
             )
         else:
             # Cross-query: read-only
@@ -565,6 +569,7 @@ async def query_agent(
                 entity_type=to_user.user_type or "person",
                 org_subtype=getattr(to_user, "org_subtype", None),
                 agent_mode=getattr(to_user, "agent_mode", "private"),
+                sensitivity_hint=sensitivity_hint,
             )
     except Exception as e:
         import logging
