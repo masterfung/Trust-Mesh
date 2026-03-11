@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type User, type QueryResult, type AgentAction, type Connection, type RegistryAgent, getPodUrl } from "@/lib/api";
+import { SIBLING_PORTS, fetchSiblingPodUsers } from "@/lib/pods";
 import { ResearchFeed } from "@/components/ResearchFeed";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
@@ -487,10 +488,9 @@ export default function ChatPage() {
 
   // Research feed pod URLs: current pod + demo sibling pods (if in multi-pod mode)
   const currentPodUrl = typeof window !== "undefined" ? getPodUrl() : "";
-  const demoPodPorts = ["9001", "9002", "9003", "9004", "9005", "9006", "9007", "9008"];
   const currentPort = currentPodUrl.match(/:(\d+)/)?.[1] ?? "";
-  const researchPodUrls = demoPodPorts.includes(currentPort)
-    ? demoPodPorts.map((p) => currentPodUrl.replace(/:(\d+)/, `:${p}`))
+  const researchPodUrls = SIBLING_PORTS.includes(currentPort)
+    ? SIBLING_PORTS.map((p) => currentPodUrl.replace(/:(\d+)/, `:${p}`))
     : currentPodUrl
       ? [currentPodUrl]
       : [];
@@ -498,29 +498,7 @@ export default function ChatPage() {
   // Fetch owners of sibling pods for cross-pod @mention
   useEffect(() => {
     if (!currentPodUrl) return;
-    const sibling = demoPodPorts
-      .map(p => currentPodUrl.replace(/:(\d+)/, `:${p}`))
-      .filter(u => u !== currentPodUrl);
-    Promise.all(sibling.map(async podUrl => {
-      try {
-        const r = await fetch(`${podUrl}/api/pod`, { signal: AbortSignal.timeout(3000) });
-        if (!r.ok) return null;
-        const d = await r.json();
-        // agents[0] is the primary user; fallback to pod_name
-        const agent = d.agents?.[0];
-        if (!agent?.owner_id) return null;
-        return {
-          id: agent.owner_id,
-          username: agent.owner_username,
-          display_name: agent.owner_display_name ?? d.pod_name,
-          user_type: "person",
-          bio: d.pod_name ?? "",
-          is_discoverable: true,
-          is_remote: true,
-          pod_url: podUrl,
-        } as User;
-      } catch { return null; }
-    })).then(res => setPodUsers(res.filter(Boolean) as User[]));
+    fetchSiblingPodUsers(currentPodUrl).then(setPodUsers);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPodUrl]);
 

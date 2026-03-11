@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, getPodUrl, getCsrfToken, type QueryResult, type User, type GraphData } from "@/lib/api";
 import { TrustGraph } from "@/components/TrustGraph";
+import { fetchSiblingPodUsers } from "@/lib/pods";
 import Link from "next/link";
 
 const DEMO_SCENARIOS = [
@@ -83,17 +84,6 @@ const KNOWN_PODS = [
   { label: "Pod :9004 (Rose)", url: "http://localhost:9004" },
 ];
 
-// Pod neighbor info collected from sibling pod /api/pod probes
-interface PodNeighborInfo {
-  owner_id: string;
-  owner_username: string;
-  owner_display_name: string;
-  pod_name: string;
-  pod_url: string;
-  port: string;
-}
-
-const SIBLING_PORTS = ["9001", "9002", "9003", "9004", "9005", "9006", "9007", "9008"];
 
 export default function GraphPage() {
   const [recentQueries, setRecentQueries] = useState<QueryResult[]>([]);
@@ -104,7 +94,7 @@ export default function GraphPage() {
   const [podOverride, setPodOverride] = useState<string>(() =>
     typeof window !== "undefined" ? getPodUrl() : "http://localhost:9000"
   );
-  const [siblingPods, setSiblingPods] = useState<PodNeighborInfo[]>([]);
+  const [siblingPods, setSiblingPods] = useState<User[]>([]);
 
   const { data: users } = useQuery({
     queryKey: ["users", podOverride],
@@ -128,39 +118,8 @@ export default function GraphPage() {
   });
 
   // Probe sibling pods (9001-9008) and collect their primary owner info.
-  // Skip the current pod's own port so we don't double-render.
   useEffect(() => {
-    const currentPort = podOverride.match(/:(\d+)/)?.[1] ?? "";
-    const baseUrl = podOverride.replace(/:(\d+)/, ""); // strip port
-
-    Promise.all(
-      SIBLING_PORTS
-        .filter((p) => p !== currentPort)
-        .map(async (port) => {
-          const podUrl = `${baseUrl}:${port}`;
-          try {
-            const r = await fetch(`${podUrl}/api/pod`, {
-              signal: AbortSignal.timeout(3000),
-            });
-            if (!r.ok) return null;
-            const d = await r.json();
-            const agent = d.agents?.[0];
-            if (!agent?.owner_id) return null;
-            return {
-              owner_id: agent.owner_id as string,
-              owner_username: (agent.owner_username as string) ?? "",
-              owner_display_name: (agent.owner_display_name as string) ?? d.pod_name ?? `Pod :${port}`,
-              pod_name: (d.pod_name as string) ?? `Pod :${port}`,
-              pod_url: podUrl,
-              port,
-            } satisfies PodNeighborInfo;
-          } catch {
-            return null;
-          }
-        })
-    ).then((results) => {
-      setSiblingPods(results.filter(Boolean) as PodNeighborInfo[]);
-    });
+    fetchSiblingPodUsers(podOverride).then(setSiblingPods);
   }, [podOverride]);
 
   const rawGraph = graphView === "my" ? userGraph : fullGraph;
@@ -183,23 +142,23 @@ export default function GraphPage() {
 
     if (!anchorId) return rawGraph;
 
-    // Filter out siblings whose owner_id is already in the graph (e.g. formally connected)
+    // Filter out siblings whose id is already in the graph (e.g. formally connected)
     const existingIds = new Set(rawGraph.nodes.map((n) => n.id));
-    const newNeighbors = siblingPods.filter((p) => !existingIds.has(p.owner_id));
+    const newNeighbors = siblingPods.filter((p) => !existingIds.has(p.id));
 
     if (newNeighbors.length === 0) return rawGraph;
 
     const extraNodes: GraphData["nodes"] = newNeighbors.map((p) => ({
-      id: p.owner_id,
-      username: p.owner_username,
-      display_name: p.owner_display_name,
-      bio: `${p.pod_name} — :${p.port}`,
+      id: p.id,
+      username: p.username ?? "",
+      display_name: p.display_name,
+      bio: `${p.bio} — :${p.pod_url?.match(/:(\d+)/)?.[1] ?? ""}`,
       user_type: "pod_neighbor",
     }));
 
     const extraEdges: GraphData["edges"] = newNeighbors.map((p) => ({
       source: anchorId,
-      target: p.owner_id,
+      target: p.id,
       type: "cross_pod",
     }));
 

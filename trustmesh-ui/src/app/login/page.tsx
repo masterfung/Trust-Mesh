@@ -5,26 +5,7 @@ import { useAuth } from "@/lib/auth";
 import Link from "next/link";
 import { Loader2, ChevronDown, Check } from "lucide-react";
 import { setPodUrl, getPodUrl } from "@/lib/api";
-
-const DEMO_PODS = [
-  { label: "Molly Johnson", sublabel: ":9001", url: "http://localhost:9001" },
-  { label: "Peter Johnson", sublabel: ":9002", url: "http://localhost:9002" },
-  { label: "Jane Johnson", sublabel: ":9003", url: "http://localhost:9003" },
-  { label: "Grandma Rose", sublabel: ":9004", url: "http://localhost:9004" },
-  { label: "Dr. Sarah Lee", sublabel: ":9005", url: "http://localhost:9005" },
-  { label: "Kyle Rivera", sublabel: ":9006", url: "http://localhost:9006" },
-  { label: "Amy Torres", sublabel: ":9007", url: "http://localhost:9007" },
-  { label: "Dorothy Park", sublabel: ":9008", url: "http://localhost:9008" },
-  { label: "Nurse Davis", sublabel: ":9009", url: "http://localhost:9009" },
-  { label: "EMT Mike", sublabel: ":9010", url: "http://localhost:9010" },
-  { label: "SparkleClean", sublabel: ":9011", url: "http://localhost:9011" },
-  { label: "Riverside Hospital", sublabel: ":9012", url: "http://localhost:9012" },
-  { label: "AceTutor", sublabel: ":9013", url: "http://localhost:9013" },
-  { label: "City of Riverside", sublabel: ":9014", url: "http://localhost:9014" },
-  { label: "HandyPro", sublabel: ":9015", url: "http://localhost:9015" },
-  { label: "Dance Studio", sublabel: ":9016", url: "http://localhost:9016" },
-  { label: "Your Pod (default)", sublabel: ":9000", url: "http://localhost:9000" },
-];
+import { DEMO_PODS } from "@/lib/pods";
 
 export default function LoginPage() {
   const { login } = useAuth();
