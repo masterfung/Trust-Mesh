@@ -725,6 +725,7 @@ class EmergencyBeaconResponse(BaseModel):
     expires_in: int           # seconds (1800)
     generated_at: str         # ISO-8601 timestamp
     audit_id: str
+    capsule_count: int = 0    # number of emergency_accessible capsules
 
 
 class EmergencyAccessResponse(BaseModel):

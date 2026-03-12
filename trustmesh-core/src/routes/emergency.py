@@ -638,6 +638,16 @@ async def generate_emergency_beacon(
 
     record_emergency_issue(user_id)
 
+    # Count emergency-accessible capsules so the UI can show intake wizard if empty
+    from sqlalchemy import func as _func
+    from src.models import KnowledgeCapsule as _CapsuleModel
+    capsule_count_result = await db.execute(
+        select(_func.count(_CapsuleModel.id))
+        .where(_CapsuleModel.owner_id == user_id)
+        .where(_CapsuleModel.emergency_accessible == True)
+    )
+    capsule_count = capsule_count_result.scalar() or 0
+
     return EmergencyBeaconResponse(
         tokens=tokens,
         qr_urls=qr_urls,
@@ -647,6 +657,7 @@ async def generate_emergency_beacon(
         expires_in=_BEACON_DURATION,
         generated_at=_dt.now(tz=timezone.utc).isoformat(),
         audit_id=audit_id,
+        capsule_count=capsule_count,
     )
 
 
