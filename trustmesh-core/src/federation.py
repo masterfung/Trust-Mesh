@@ -5,9 +5,11 @@ Federation lets pods discover each other's agents and proxy gossip queries acros
 """
 
 import asyncio
+import ipaddress
 import logging
 import os
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select
@@ -26,6 +28,49 @@ REGISTRY_URL = os.getenv("TRUSTMESH_REGISTRY_URL", "")
 
 # Timeout for cross-pod HTTP calls
 FEDERATION_TIMEOUT = 15.0
+
+# ── SSRF protection ─────────────────────────────────────────────
+
+_PRIVATE_NETS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+]
+_BLOCKED_HOSTNAMES = frozenset([
+    "localhost", "metadata.google.internal", "169.254.169.254",
+    "instance-data", "computeMetadata",
+])
+
+
+def _validate_peer_url(url: str) -> None:
+    """Raise ValueError if url targets a private/metadata/loopback address.
+
+    In dev mode (TRUSTMESH_DEV_MODE=1), localhost/private addresses are allowed
+    for multi-pod local development and testing.
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError(f"Invalid peer URL (no hostname): {url!r}")
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Peer URL has disallowed scheme: {parsed.scheme!r}")
+    # Skip private/loopback checks in dev mode (multi-pod local setup uses localhost)
+    if os.getenv("TRUSTMESH_DEV_MODE"):
+        return
+    if host.lower() in _BLOCKED_HOSTNAMES:
+        raise ValueError(f"Peer URL targets blocked host: {host!r}")
+    try:
+        addr = ipaddress.ip_address(host)
+        if any(addr in net for net in _PRIVATE_NETS):
+            raise ValueError(f"Peer URL targets private address: {host!r}")
+    except ValueError as e:
+        if "targets" in str(e) or "disallowed" in str(e) or "blocked" in str(e):
+            raise  # re-raise our own checks
+        pass  # hostname (not IP literal) — allow, DNS resolves later
 
 
 async def get_pod_info() -> dict:
@@ -61,6 +106,11 @@ async def get_pod_info() -> dict:
 
 async def ping_peer(peer_url: str) -> dict | None:
     """Ping a peer pod and return its info, or None if unreachable."""
+    try:
+        _validate_peer_url(peer_url)
+    except ValueError as exc:
+        logger.warning("federation: SSRF check rejected %r — %s", peer_url, exc)
+        return None
     try:
         async with httpx.AsyncClient(timeout=FEDERATION_TIMEOUT) as client:
             r = await client.get(f"{peer_url.rstrip('/')}/api/pod")
@@ -127,6 +177,11 @@ async def connect_to_peer(db: AsyncSession, peer_url: str) -> PeerPod | None:
 async def _validate_agent_card(peer_url: str) -> bool:
     """Fetch and validate a peer's agent card — verify the pod_url matches what we fetched from."""
     try:
+        _validate_peer_url(peer_url)
+    except ValueError as exc:
+        logger.warning("federation: SSRF check rejected agent card URL %r — %s", peer_url, exc)
+        return False
+    try:
         async with httpx.AsyncClient(timeout=FEDERATION_TIMEOUT) as client:
             r = await client.get(f"{peer_url.rstrip('/')}/.well-known/agent-card.json")
             if r.status_code == 200:
@@ -149,6 +204,11 @@ async def _validate_agent_card(peer_url: str) -> bool:
 
 async def _verify_did_on_pod(did: str, pod_url: str) -> bool:
     """Verify a DID is listed in a pod's agent card (ghost DID ownership check)."""
+    try:
+        _validate_peer_url(pod_url)
+    except ValueError as exc:
+        logger.warning("federation: SSRF check rejected DID verify URL %r — %s", pod_url, exc)
+        return False
     try:
         async with httpx.AsyncClient(timeout=FEDERATION_TIMEOUT) as client:
             r = await client.get(f"{pod_url.rstrip('/')}/.well-known/agent-card.json")
@@ -184,6 +244,50 @@ async def _register_with_peer(peer_url: str):
             )
     except (httpx.RequestError, httpx.HTTPStatusError):
         pass  # Best-effort — peer may already know us
+
+
+async def scan_demo_pods_for_user(username: str, display_name: str = "") -> dict | None:
+    """Probe sibling demo pods (same host, ports 9001-9016) for a matching user.
+
+    Returns a dict with keys: owner_id, owner_username, owner_display_name, pod_url
+    if found, otherwise None. Used as fallback when peer registry is empty.
+    """
+    import re
+    own_port = int(re.search(r":(\d+)", POD_URL).group(1)) if re.search(r":(\d+)", POD_URL) else 9000
+    base = re.sub(r":\d+", "", POD_URL.rstrip("/"))  # strip port
+    # Keep scheme+host, try known multi-pod range
+    demo_ports = list(range(9001, 9017))
+    query = username.lower().strip()
+    dn_query = display_name.lower().strip()
+
+    async def probe(port: int) -> dict | None:
+        if port == own_port:
+            return None
+        url = f"{base}:{port}"
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                r = await client.get(f"{url}/api/pod")
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            for agent in data.get("agents", []):
+                u = agent.get("owner_username", "").lower()
+                d = agent.get("owner_display_name", "").lower()
+                if u == query or (dn_query and (dn_query in d or d.startswith(dn_query))) or (query and query in d):
+                    return {
+                        "owner_id": agent.get("owner_id", ""),
+                        "owner_username": agent.get("owner_username", ""),
+                        "owner_display_name": agent.get("owner_display_name", ""),
+                        "did": agent.get("did", ""),
+                        "pod_url": url,
+                        "_pod": {"name": data.get("pod_name", f"Pod :{port}"), "url": url},
+                    }
+        except Exception:
+            pass
+        return None
+
+    results = await asyncio.gather(*[probe(p) for p in demo_ports])
+    return next((r for r in results if r is not None), None)
 
 
 async def discover_remote_agents(db: AsyncSession) -> list[dict]:
@@ -231,6 +335,11 @@ async def remote_query(
     The remote pod runs its own trust resolution + Citadel pipeline.
     We send our agent DID so the remote pod can verify identity.
     """
+    try:
+        _validate_peer_url(peer_url)
+    except ValueError as exc:
+        logger.warning("federation: SSRF check rejected %r — %s", peer_url, exc)
+        return None
     try:
         import json as _json
         from src.federation_auth import sign_federation_request
@@ -283,13 +392,18 @@ async def get_or_create_ghost_user(
     if ghost:
         return ghost
 
-    # Verify the DID is actually listed in the remote pod's agent card
-    verified_did = await _verify_did_on_pod(remote_did, remote_pod_url)
-    if not verified_did:
-        logger.warning(f"Ghost DID {remote_did[:20]}... not found on {remote_pod_url} agent card — proceeding with caution")
+    # Verify the DID is actually listed in the remote pod's agent card.
+    # Skip in dev/test mode (TRUSTMESH_DEV_MODE=1) where remote pods are unavailable.
+    if not os.getenv("TRUSTMESH_DEV_MODE"):
+        verified_did = await _verify_did_on_pod(remote_did, remote_pod_url)
+        if not verified_did:
+            logger.warning(
+                "Ghost DID %s... rejected — not found on %s agent card",
+                remote_did[:20], remote_pod_url,
+            )
+            raise ValueError(f"DID {remote_did[:20]}... not verified on {remote_pod_url}")
 
     # Extract hostname from pod URL for username
-    from urllib.parse import urlparse
     hostname = urlparse(remote_pod_url).hostname or "unknown"
 
     ghost = User(
@@ -376,6 +490,11 @@ async def send_pool_invite(
     The remote pod will create a ghost user for us and add it to their copy
     of the pool (if they have one), or just acknowledge.
     """
+    try:
+        _validate_peer_url(peer_url)
+    except ValueError as exc:
+        logger.warning("federation: SSRF check rejected %r — %s", peer_url, exc)
+        return None
     try:
         async with httpx.AsyncClient(timeout=FEDERATION_TIMEOUT) as client:
             r = await client.post(

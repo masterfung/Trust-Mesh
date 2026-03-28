@@ -57,9 +57,12 @@ def _build_agent_card(user: User, agent: Agent) -> AgentCard:
 
 @router.get("/services", response_model=list[ServiceResponse])
 async def list_services(db: AsyncSession = Depends(get_db)):
-    """List all service provider agents with their cards."""
+    """List public org agents (agent_mode=public) with their agent cards."""
     result = await db.execute(
-        select(User).where(User.user_type.in_(["service", "organization"])).order_by(User.display_name)
+        select(User).where(
+            User.user_type == "organization",
+            User.agent_mode == "public",
+        ).order_by(User.display_name)
     )
     services = []
     for user in result.scalars().all():
@@ -77,6 +80,8 @@ async def list_services(db: AsyncSession = Depends(get_db)):
             display_name=user.display_name,
             bio=user.bio,
             user_type=user.user_type,
+            org_subtype=user.org_subtype,
+            agent_mode=user.agent_mode,
             profile_data=profile,
             agent_card=card,
         ))
@@ -102,6 +107,7 @@ async def create_service(data: ServiceCreate, db: AsyncSession = Depends(get_db)
         display_name=data.display_name,
         bio=data.bio,
         user_type="organization",
+        agent_mode="public",  # Services created via POST /api/services are public by design
         profile_data=json.dumps(profile) if profile else None,
         is_discoverable=True,
         vault_key_salt=salt,

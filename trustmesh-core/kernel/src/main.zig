@@ -26,6 +26,9 @@ pub const federation = @import("federation.zig");
 pub const json = @import("json.zig");
 pub const credential = @import("credential.zig");
 pub const credential_audit = @import("credential_audit.zig");
+pub const message = @import("message.zig");
+pub const research = @import("research.zig");
+pub const sensitivity = @import("sensitivity.zig");
 
 // Page allocator for FFI — simple, no libc dependency
 const ffi_allocator = std.heap.page_allocator;
@@ -1709,4 +1712,305 @@ export fn podos_credential_init_tables(
     const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
     database.initCredentialTables() catch return -2;
     return 0;
+}
+
+// ═══════════════════════════════════════════
+//  MESSAGE STORE (Phase 8)
+// ═══════════════════════════════════════════
+
+/// Create messages + message_fts tables (idempotent). Returns 0 on success.
+export fn podos_message_init_tables(
+    db_handle: ?*anyopaque,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    message.initTables(database) catch return -2;
+    return 0;
+}
+
+/// Insert a new encrypted message. body_encrypted is already encrypted by transit engine.
+/// Returns 0 on success, negative on error.
+export fn podos_message_create(
+    db_handle: ?*anyopaque,
+    id: [*]const u8,
+    id_len: u32,
+    sender_id: [*]const u8,
+    sender_id_len: u32,
+    sender_username: [*]const u8,
+    sender_username_len: u32,
+    sender_display_name: [*]const u8,
+    sender_dn_len: u32,
+    sender_pod_url: ?[*]const u8,
+    sender_pod_url_len: u32,
+    recipient_id: [*]const u8,
+    recipient_id_len: u32,
+    subject: [*]const u8,
+    subject_len: u32,
+    body_encrypted: [*]const u8,
+    body_enc_len: u32,
+    body_hash: [*]const u8,
+    body_hash_len: u32,
+    scope: [*]const u8,
+    scope_len: u32,
+    network_id: ?[*]const u8,
+    network_id_len: u32,
+    trust_level: [*]const u8,
+    trust_level_len: u32,
+    expires_at: ?[*]const u8,
+    expires_at_len: u32,
+    rekey_needed: i32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const spurl = if (sender_pod_url != null and sender_pod_url_len > 0) sender_pod_url.?[0..sender_pod_url_len] else null;
+    const nid = if (network_id != null and network_id_len > 0) network_id.?[0..network_id_len] else null;
+    const exp = if (expires_at != null and expires_at_len > 0) expires_at.?[0..expires_at_len] else null;
+    message.create(
+        database,
+        id[0..id_len],
+        sender_id[0..sender_id_len],
+        sender_username[0..sender_username_len],
+        sender_display_name[0..sender_dn_len],
+        spurl,
+        recipient_id[0..recipient_id_len],
+        subject[0..subject_len],
+        body_encrypted[0..body_enc_len],
+        body_hash[0..body_hash_len],
+        scope[0..scope_len],
+        nid,
+        trust_level[0..trust_level_len],
+        exp,
+        rekey_needed,
+    ) catch return -2;
+    return 0;
+}
+
+/// List inbox messages for a recipient. Returns JSON array in out_buf.
+export fn podos_message_list_inbox(
+    db_handle: ?*anyopaque,
+    recipient_id: [*]const u8,
+    recipient_id_len: u32,
+    limit_n: i32,
+    offset_n: i32,
+    unread_only: i32,
+    out_buf: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const written = message.listInbox(
+        database,
+        recipient_id[0..recipient_id_len],
+        limit_n,
+        offset_n,
+        unread_only != 0,
+        out_buf[0..out_cap],
+    ) catch return -2;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// List sent messages for a sender. Returns JSON array in out_buf.
+export fn podos_message_list_sent(
+    db_handle: ?*anyopaque,
+    sender_id: [*]const u8,
+    sender_id_len: u32,
+    limit_n: i32,
+    offset_n: i32,
+    out_buf: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const written = message.listSent(
+        database,
+        sender_id[0..sender_id_len],
+        limit_n,
+        offset_n,
+        out_buf[0..out_cap],
+    ) catch return -2;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Get body_encrypted (base64) for a specific message.
+/// Returns bytes written to out_buf, or 0 if not found.
+export fn podos_message_get_body(
+    db_handle: ?*anyopaque,
+    id: [*]const u8,
+    id_len: u32,
+    recipient_id: [*]const u8,
+    recipient_id_len: u32,
+    out_buf: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const written = message.getBody(
+        database,
+        id[0..id_len],
+        recipient_id[0..recipient_id_len],
+        out_buf[0..out_cap],
+    ) catch return -2;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+/// Count unread messages for a recipient. Returns count, or negative on error.
+export fn podos_message_unread_count(
+    db_handle: ?*anyopaque,
+    recipient_id: [*]const u8,
+    recipient_id_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    return message.unreadCount(database, recipient_id[0..recipient_id_len]);
+}
+
+/// Mark a message as read (recipient only). Returns 0 on success, -3 on permission denied.
+export fn podos_message_mark_read(
+    db_handle: ?*anyopaque,
+    id: [*]const u8,
+    id_len: u32,
+    recipient_id: [*]const u8,
+    recipient_id_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    message.markRead(database, id[0..id_len], recipient_id[0..recipient_id_len]) catch |err| switch (err) {
+        message.MessageError.PermissionDenied => return -3,
+        else => return -2,
+    };
+    return 0;
+}
+
+/// Soft-delete a message from recipient's inbox. Returns 0 on success, -3 on permission denied.
+export fn podos_message_soft_delete(
+    db_handle: ?*anyopaque,
+    id: [*]const u8,
+    id_len: u32,
+    recipient_id: [*]const u8,
+    recipient_id_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    message.softDelete(database, id[0..id_len], recipient_id[0..recipient_id_len]) catch |err| switch (err) {
+        message.MessageError.PermissionDenied => return -3,
+        else => return -2,
+    };
+    return 0;
+}
+
+/// Delete expired messages. Returns count of deleted messages.
+export fn podos_message_sweep_expired(
+    db_handle: ?*anyopaque,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    return message.sweepExpired(database);
+}
+
+/// Re-encrypt a message from pod KEK to vault key (rekey on login).
+/// Returns 0 on success, negative on error.
+export fn podos_message_rekey(
+    db_handle: ?*anyopaque,
+    id: [*]const u8,
+    id_len: u32,
+    recipient_id: [*]const u8,
+    recipient_id_len: u32,
+    new_body_encrypted: [*]const u8,
+    new_body_len: u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    message.rekey(
+        database,
+        id[0..id_len],
+        recipient_id[0..recipient_id_len],
+        new_body_encrypted[0..new_body_len],
+    ) catch return -2;
+    return 0;
+}
+
+/// List messages needing rekey for a recipient. Returns JSON array in out_buf.
+export fn podos_message_list_rekey_pending(
+    db_handle: ?*anyopaque,
+    recipient_id: [*]const u8,
+    recipient_id_len: u32,
+    out_buf: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const database: *db.Database = @ptrCast(@alignCast(db_handle orelse return -1));
+    const written = message.listRekeyPending(
+        database,
+        recipient_id[0..recipient_id_len],
+        out_buf[0..out_cap],
+    ) catch return -2;
+    out_len.* = @intCast(written);
+    return 0;
+}
+
+// ═══════════════════════════════════════════
+//  RESEARCH CACHE + FRESHNESS
+// ═══════════════════════════════════════════
+
+/// Look up a cached TinyFish result. Returns 0 on hit (writes to out_buf), 1 on miss, -1 on error.
+export fn podos_research_cache_get(
+    url: [*]const u8,
+    url_len: u32,
+    goal: [*]const u8,
+    goal_len: u32,
+    max_age_secs: i64,
+    out_buf: [*]u8,
+    out_cap: u32,
+    out_len: *u32,
+) callconv(.c) i32 {
+    const result = research.cache_get(
+        url[0..url_len],
+        goal[0..goal_len],
+        max_age_secs,
+    ) orelse return 1; // 1 = cache miss (not an error)
+    if (result.len > out_cap) return -1; // buffer too small
+    @memcpy(out_buf[0..result.len], result);
+    out_len.* = @intCast(result.len);
+    return 0; // 0 = cache hit
+}
+
+/// Store a TinyFish result in the cache. Returns 0 on success, -1 on OOM.
+export fn podos_research_cache_put(
+    url: [*]const u8,
+    url_len: u32,
+    goal: [*]const u8,
+    goal_len: u32,
+    value: [*]const u8,
+    value_len: u32,
+    ttl_secs: i64,
+) callconv(.c) i32 {
+    research.cache_put(
+        url[0..url_len],
+        goal[0..goal_len],
+        value[0..value_len],
+        ttl_secs,
+    ) catch return -1;
+    return 0;
+}
+
+/// Compute composite freshness score [0.0, 1.0].
+/// freshness_type: 0=permanent, 1=temporary, 2=recurring
+export fn podos_freshness_score(
+    freshness_type: u8,
+    days_since_verified: i32,
+    authority_weight: f32,
+) callconv(.c) f32 {
+    return research.freshness_score(freshness_type, days_since_verified, authority_weight);
+}
+
+// ═══════════════════════════════════════════
+//  PRE-FLIGHT SENSITIVITY (ZeroClaw/NullClaw)
+// ═══════════════════════════════════════════
+
+/// Check if text or relationship_type indicate sensitive content.
+/// Returns 1 if sensitive, 0 if standard.
+/// Called from Python via ctypes as a fast pre-flight check at the channel boundary.
+export fn podos_preflight_sensitivity(
+    text_ptr: [*]const u8,
+    text_len: usize,
+    rel_type_ptr: ?[*]const u8,
+    rel_type_len: usize,
+) callconv(.c) u8 {
+    return sensitivity.podos_preflight_sensitivity(text_ptr, text_len, rel_type_ptr, rel_type_len);
 }

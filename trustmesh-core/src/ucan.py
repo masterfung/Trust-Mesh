@@ -20,28 +20,33 @@ ROLE_SCOPES: dict[str, dict] = {
     "attending_physician": {
         "categories": ["health"],
         "keywords": [
-            "medication", "allergy", "condition", "surgery", "prescription",
-            "emergency_contact", "medical", "blood_type", "weight", "height",
-            "dnr", "insurance", "doctor", "hospital",
+            "medication", "medical", "allergy",
+            "condition", "surgery", "prescription",
+            "emergency contact", "blood type", "blood pressure",
+            "weight", "height", "dnr", "do not resuscitate",
+            "insurance", "doctor", "hospital", "dialysis",
         ],
     },
     "er_nurse": {
         "categories": ["health"],
         "keywords": [
-            "blood_type", "weight", "height", "allergy",
-            "emergency_contact", "medical", "dnr",
+            "blood type", "blood pressure", "weight", "height",
+            "allergy", "emergency contact", "medication", "medical",
+            "dnr", "do not resuscitate", "dialysis",
         ],
     },
     "paramedic": {
         "categories": ["health"],
         "keywords": [
-            "blood_type", "allergy", "dnr", "emergency_contact", "medical",
+            "blood type", "allergy", "dnr", "do not resuscitate",
+            "emergency contact",
         ],
     },
     "admin": {
         "categories": ["health", "personal"],
         "keywords": [
-            "insurance", "emergency_contact", "next_of_kin", "medical",
+            "insurance", "emergency contact", "next of kin",
+            "medication", "medical",
         ],
     },
 }
@@ -193,7 +198,10 @@ def capsule_matches_scope(capsule_dict: dict, role: str) -> bool:
 
     A capsule matches if:
     - Its category is in the role's allowed categories, OR
-    - Its title or content contains any of the role's keywords (word-boundary match)
+    - Its title or content contains any role keyword (whole-word match).
+
+    Underscores in title/content are normalized to spaces so that
+    "blood_type" matches keyword "blood type".
     """
     import re
 
@@ -201,22 +209,22 @@ def capsule_matches_scope(capsule_dict: dict, role: str) -> bool:
         return False
 
     scope = ROLE_SCOPES[role]
-    allowed_categories = scope["categories"]
-    keywords = scope["keywords"]
 
-    # Check category match
-    capsule_category = capsule_dict.get("category", "").lower()
-    if capsule_category and capsule_category in allowed_categories:
+    # Category check (fast path)
+    category = capsule_dict.get("category", "").lower()
+    if category and category in scope.get("categories", []):
         return True
 
-    # Check keyword match in title and content using word boundaries
-    title = capsule_dict.get("title", "").lower()
-    content = capsule_dict.get("content", "").lower()
+    # Keyword check — whole-word match, underscores normalized to spaces
+    title = capsule_dict.get("title", "").lower().replace("_", " ")
+    content = capsule_dict.get("content", "").lower().replace("_", " ")
     combined = f"{title} {content}"
 
-    # Use word-boundary regex to avoid substring false positives
-    # e.g., "doctor" should not match "doctored"
-    return any(re.search(rf"\b{re.escape(kw)}\b", combined) for kw in keywords)
+    for kw in scope.get("keywords", []):
+        kw_normalized = kw.replace("_", " ").lower()
+        if re.search(rf"\b{re.escape(kw_normalized)}\b", combined):
+            return True
+    return False
 
 
 def token_hash(token: str) -> str:

@@ -65,12 +65,20 @@ async def intake_step(user_id: str, data: IntakeMessage,
 
             # Determine the message to send
             message = data.message
+            is_org = getattr(user, "user_type", "person") == "organization"
             if not message.strip() and not data.conversation_history:
                 # First message — trigger the agent to start the conversation
-                message = (
-                    f"Hi! I just signed up for TrustMesh. My name is {user.display_name}."
-                    + (f" Here's a bit about me: {user.bio}" if user.bio else "")
-                )
+                if is_org:
+                    message = (
+                        f"Hello! I just set up our organization on TrustMesh. "
+                        f"Our org name is {user.display_name}."
+                        + (f" Brief description: {user.bio}" if user.bio else "")
+                    )
+                else:
+                    message = (
+                        f"Hi! I just signed up for TrustMesh. My name is {user.display_name}."
+                        + (f" Here's a bit about me: {user.bio}" if user.bio else "")
+                    )
 
             try:
                 response_text, actions = await run_intake_step(
@@ -78,10 +86,34 @@ async def intake_step(user_id: str, data: IntakeMessage,
                     user_message=message,
                     conversation_history=data.conversation_history,
                     tool_context=tool_context,
+                    personality=agent.personality or "",
+                    entity_type=getattr(user, "user_type", "person"),
+                    org_subtype=getattr(user, "org_subtype", None),
                 )
 
                 # Commit capsules saved by the agent tools
                 await db.commit()
+
+                # Audit: log onboarding activity
+                try:
+                    from src.audit import log_event
+                    capsule_ids = [str(a["capsule_id"]) for a in actions if isinstance(a, dict) and a.get("capsule_id")]
+                    await log_event(
+                        db,
+                        actor_user_id=user_id,
+                        target_user_id=user_id,
+                        action="onboard_step",
+                        event_type="capsule",
+                        decision="allowed",
+                        capsule_ids_accessed=capsule_ids or None,
+                        details={
+                            "capsules_saved": len(actions),
+                            "message_preview": message[:80],
+                        },
+                    )
+                    await db.commit()
+                except Exception:
+                    pass
 
                 # Stream the response in chunks for a nice UX
                 chunk_size = 4

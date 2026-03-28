@@ -2,10 +2,14 @@
 
 import json
 import os
+import logging
+
+log = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents import extract_profile
@@ -21,11 +25,13 @@ from src.auth import (
     invalidate_user_sessions,
     record_failed_login,
 )
-from src.crypto import decrypt, derive_vault_key, encrypt, generate_key, generate_ed25519_keypair, public_key_to_did, public_key_to_b64
+import base64
+from src.crypto import decrypt, derive_vault_key, encrypt, generate_key, generate_ed25519_keypair, generate_x25519_keypair, public_key_to_did, public_key_to_b64
 from src.database import get_db
-from src.models import Agent, User, parse_profile_data
+from src.models import Agent, Network, NetworkMembership, User, parse_profile_data
 from src.schemas import (
     AgentCard,
+    AgentModeUpdate,
     AgentResponse,
     AgentSkillSchema,
     ContextSwitch,
@@ -84,30 +90,82 @@ async def create_user(data: UserCreate, request: Request, db: AsyncSession = Dep
     # Extract structured profile from bio
     profile = await extract_profile(data.bio, data.display_name)
 
-    # Entity defaults: org/gov entities are discoverable by default
+    # Normalize legacy "government" user_type
+    user_type = data.user_type
+    org_subtype = data.org_subtype
+    if user_type == "government":
+        user_type = "organization"
+        if not org_subtype:
+            org_subtype = "government"
+
+    # Agent mode: orgs start internal, persons stay private
+    agent_mode = "internal" if user_type == "organization" else "private"
+
+    # Orgs are discoverable by default
     is_discoverable = data.is_discoverable
-    if data.user_type in ("organization", "government"):
+    if user_type == "organization":
         is_discoverable = True
+
+    # Connectivity mode: orgs default to relay_primary (always reachable), persons to invite_only
+    connectivity_mode = "relay_primary" if user_type == "organization" else "invite_only"
 
     user = User(
         username=username,  # NULL for private users, set on Go Live
         email=email,
         display_name=data.display_name,
         bio=data.bio,
-        user_type=data.user_type,
+        user_type=user_type,
+        org_subtype=org_subtype,
+        agent_mode=agent_mode,
         profile_data=json.dumps(profile) if profile else None,
         is_discoverable=is_discoverable,
+        connectivity_mode=connectivity_mode,
         vault_key_salt=salt,
         encrypted_vault_key=encrypted_vault_key,
         agent_personality=data.agent_personality,
+        avatar_url=data.avatar_url or None,
     )
     db.add(user)
     await db.flush()
 
-    # Generate ed25519 keypair for agent identity
+    # Org pods get two default team pools
+    if user_type == "organization":
+        all_staff_net = Network(
+            owner_id=user.id,
+            name="All Staff",
+            network_type="team",
+            pool_type="org_all_staff",
+            join_policy="invite_only",
+            context="work",
+            is_public=False,
+        )
+        db.add(all_staff_net)
+        await db.flush()
+        db.add(NetworkMembership(network_id=all_staff_net.id, user_id=user.id, role="owner"))
+
+        leadership_net = Network(
+            owner_id=user.id,
+            name="Leadership",
+            network_type="team",
+            pool_type="org_executives",
+            join_policy="invite_only",
+            context="work",
+            is_public=False,
+        )
+        db.add(leadership_net)
+        await db.flush()
+        db.add(NetworkMembership(network_id=leadership_net.id, user_id=user.id, role="owner"))
+
+    # Generate ed25519 keypair for agent identity (signing + DID)
     private_key_bytes, public_key_bytes = generate_ed25519_keypair()
     agent_did = public_key_to_did(public_key_bytes)
     encrypted_privkey = encrypt(private_key_bytes, vault_master_key)
+
+    # Generate X25519 keypair for future relay payload encryption (Phase 2)
+    x25519_priv_b64, x25519_pub_b64 = generate_x25519_keypair()
+    x25519_priv_bytes = base64.urlsafe_b64decode(x25519_priv_b64 + "==")
+    encrypted_x25519_privkey = encrypt(x25519_priv_bytes, vault_master_key)
+    del x25519_priv_bytes  # zero ASAP
 
     agent = Agent(
         owner_id=user.id,
@@ -116,7 +174,9 @@ async def create_user(data: UserCreate, request: Request, db: AsyncSession = Dep
         public_key=public_key_bytes,
         encrypted_private_key=encrypted_privkey,
         did=agent_did,
+        encryption_public_key=x25519_pub_b64,
     )
+    _ = encrypted_x25519_privkey  # stored for Phase 2 (relay encryption)
     db.add(agent)
     await db.commit()
     await db.refresh(user)
@@ -147,21 +207,23 @@ async def login(data: LoginRequest, request: Request, db: AsyncSession = Depends
         raise HTTPException(401, "Name, email, or username required")
 
     # Try username first (exact match), then email (exact, case-insensitive), then display_name (case-insensitive)
+    looks_like_email = "@" in login_id
     user = None
     result = await db.execute(select(User).where(User.username == login_id))
     user = result.scalar_one_or_none()
     if not user:
-        from sqlalchemy import func
         result = await db.execute(
-            select(User).where(func.lower(User.email) == login_id.strip().lower())
+            select(User).where(
+                User.email.isnot(None),
+                func.lower(User.email) == login_id.strip().lower()
+            )
         )
-        user = result.scalar_one_or_none()
-    if not user:
-        from sqlalchemy import func
+        user = result.scalars().first()
+    if not user and not looks_like_email:
         result = await db.execute(
             select(User).where(func.lower(User.display_name) == login_id.lower())
         )
-        user = result.scalar_one_or_none()
+        user = result.scalars().first()
     if not user:
         record_failed_login(client_ip, login_id)
         raise HTTPException(401, "Invalid credentials")
@@ -179,28 +241,71 @@ async def login(data: LoginRequest, request: Request, db: AsyncSession = Depends
         record_failed_login(client_ip, login_id)
         raise HTTPException(401, "Invalid name or password")
 
-    # Store vault key in transit engine (key stays in Zig, zeroed in Python)
-    transit_bridge.store_key(user.id, vault_master_key)
+    # Store vault key in transit engine (key stays in Zig, zeroed in Python).
+    # Skip if already loaded — repeated logins would otherwise exhaust MAX_VERSIONS=8.
+    if not transit_bridge.has_key(user.id):
+        transit_bridge.store_key(user.id, vault_master_key)
     transit_bridge._zero_bytes(vault_master_key)
+
+    # Re-encrypt any messages that were stored with pod KEK while user was offline
+    try:
+        from src import message_bridge as _mb
+        _mb.rekey_pending(user.id)
+    except Exception as _e:
+        import logging
+        logging.getLogger(__name__).warning("rekey_pending failed for %s: %s", user.id, _e)
 
     # Session rotation: invalidate all existing sessions before creating new one
     invalidate_user_sessions(user.id)
 
     token = create_session(user.id, fingerprint=_compute_fingerprint(request))
     user_data = UserResponse.model_validate(user).model_dump(mode="json")
+
+    # Audit: login event
+    try:
+        from src.audit import log_event
+        await log_event(
+            db,
+            actor_user_id=user.id,
+            target_user_id=user.id,
+            action="login",
+            event_type="auth",
+            decision="allowed",
+            details={"ip": client_ip},
+        )
+        await db.commit()
+    except Exception as _e:
+        log.warning("Audit login failed: %s", _e)
+
     response = JSONResponse(content=user_data)
     _set_session_cookie(response, token)
     return response
 
 
 @router.post("/auth/logout")
-async def logout(request: Request, user_id: str = Depends(get_current_user_id)):
+async def logout(request: Request, user_id: str = Depends(get_current_user_id),
+                 db: AsyncSession = Depends(get_db)):
     """Invalidate session, clear vault key from memory, and clear httpOnly cookie."""
     token = get_session_token(request)
     if token:
         invalidate_session(token)
     invalidate_user_sessions(user_id)
     transit_bridge.remove_user(user_id)  # secureZero all key material
+
+    try:
+        from src.audit import log_event
+        await log_event(
+            db,
+            actor_user_id=user_id,
+            target_user_id=user_id,
+            action="logout",
+            event_type="auth",
+            decision="allowed",
+        )
+        await db.commit()
+    except Exception as _e:
+        log.warning("Audit logout failed: %s", _e)
+
     response = JSONResponse(content={"status": "ok"})
     _clear_session_cookie(response)
     return response
@@ -253,6 +358,26 @@ async def get_agent(user_id: str, db: AsyncSession = Depends(get_db)):
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(404, "Agent not found")
+    return agent
+
+
+class AgentUpdate(BaseModel):
+    personality: str
+
+
+@router.put("/users/{user_id}/agent", response_model=AgentResponse)
+async def update_agent(user_id: str, data: AgentUpdate, db: AsyncSession = Depends(get_db),
+                       auth_user_id: str = Depends(get_current_user_id)):
+    """Update agent personality mode."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
+    result = await db.execute(select(Agent).where(Agent.owner_id == user_id))
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+    agent.personality = data.personality
+    await db.commit()
+    await db.refresh(agent)
     return agent
 
 
@@ -479,3 +604,25 @@ async def switch_context(user_id: str, data: ContextSwitch, db: AsyncSession = D
     user.active_context = data.context
     await db.commit()
     return {"context": data.context}
+
+
+@router.patch("/users/{user_id}/agent-mode")
+async def patch_agent_mode(user_id: str, data: AgentModeUpdate, db: AsyncSession = Depends(get_db),
+                            auth_user_id: str = Depends(get_current_user_id)):
+    """Toggle org agent visibility between 'internal' and 'public'."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
+    if data.mode not in ("public", "internal"):
+        raise HTTPException(400, "mode must be 'public' or 'internal'")
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    if user.user_type != "organization":
+        raise HTTPException(400, "Only organization pods can change agent mode")
+    user.agent_mode = data.mode
+    user.is_discoverable = (data.mode == "public")
+    await db.commit()
+    await db.refresh(user)
+    return UserResponse.model_validate(user).model_dump(mode="json")
+
+# PATCH /api/users/{id}/connectivity is handled by the Zig kernel (handlers/users.zig).

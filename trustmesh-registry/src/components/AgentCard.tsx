@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { EntityBadge } from "@/components/EntityBadge";
+import { EntityBadge, ENTITY_CONFIG } from "@/components/EntityBadge";
 import { ExternalLink, Fingerprint } from "lucide-react";
 
 interface AgentCardProps {
@@ -52,22 +52,28 @@ export function AgentCard({
   pod_url,
 }: AgentCardProps) {
   const displayLabel = display_name || name;
+  const config = ENTITY_CONFIG[entity_type] || ENTITY_CONFIG.person;
 
   return (
     <Link href={`/agents/${encodeURIComponent(did)}`}>
-      <div className="group h-full cursor-pointer rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 transition-all hover:border-yellow-400/30 hover:bg-white/[0.04] hover:shadow-[0_0_20px_rgba(254,220,37,0.05)]">
-        {/* Header: Avatar + Name + Badge */}
+      <div
+        className={`group h-full cursor-pointer rounded-xl border border-l-4 ${config.border} border-white/[0.06] ${config.bg} p-4 transition-all hover:border-yellow-400/30 hover:shadow-[0_0_20px_rgba(254,220,37,0.05)]`}
+      >
+        {/* Entity type label — prominent at top */}
+        <div className="flex items-center justify-between mb-3">
+          <EntityBadge entityType={entity_type} size="md" />
+          <span className={`text-[10px] font-mono ${config.accent} opacity-60`}>live</span>
+        </div>
+
+        {/* Avatar + Name */}
         <div className="flex items-center gap-3 mb-3">
           <div
-            className={`flex size-9 shrink-0 items-center justify-center rounded-full border text-sm font-bold ${avatarColor(entity_type)}`}
+            className={`flex size-10 shrink-0 items-center justify-center rounded-full border text-base font-bold ${avatarColor(entity_type)}`}
           >
             {avatarInitial(displayLabel)}
           </div>
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
-              <span className="font-semibold text-sm truncate">{displayLabel}</span>
-              <EntityBadge entityType={entity_type} />
-            </div>
+            <span className="font-semibold text-sm block truncate">{displayLabel}</span>
             {username && (
               <p className="text-xs text-muted-foreground truncate">@{username}</p>
             )}

@@ -8,14 +8,19 @@ from pydantic import BaseModel, Field, field_validator
 
 # ── Users ──────────────────────────────────────────
 
+ORG_SUBTYPES = ("company", "nonprofit", "healthcare", "education", "emergency", "government")
+
+
 class UserCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=100)
     email: str | None = Field(default=None, max_length=254)
     bio: str = Field(default="", max_length=5000)
-    user_type: str = "person"  # "person" | "organization" | "government"
+    user_type: str = "person"  # "person" | "organization"
+    org_subtype: str | None = Field(default=None, max_length=20)  # only for organizations
     is_discoverable: bool = False
     password: str = Field(min_length=16, max_length=128)
     agent_personality: str | None = Field(default=None, max_length=1000)
+    avatar_url: str | None = Field(default=None, max_length=512_000)
     # Username is optional at signup — auto-generated if not provided.
     # Public handle is claimed later via Go Live.
     username: str | None = Field(default=None, min_length=2, max_length=50)
@@ -23,9 +28,10 @@ class UserCreate(BaseModel):
     @field_validator("display_name")
     @classmethod
     def validate_display_name(cls, v: str) -> str:
-        """Names must be alphabetic (letters, spaces, hyphens, apostrophes, periods)."""
+        """Names must be alphabetic (letters, spaces, hyphens, apostrophes, periods).
+        Orgs can be single-word — the check is a bit more permissive."""
         import re
-        if not re.match(r"^[A-Za-z][A-Za-z \-'.]+$", v.strip()):
+        if not re.match(r"^[A-Za-z][A-Za-z0-9 \-'&.,]+$", v.strip()):
             raise ValueError("Name must contain only letters, spaces, hyphens, and apostrophes")
         return v.strip()
 
@@ -43,9 +49,17 @@ class UserCreate(BaseModel):
     @field_validator("user_type")
     @classmethod
     def validate_user_type(cls, v: str) -> str:
+        # "government" is accepted for backward compat — routes normalize it to organization+subtype
         allowed = ("person", "organization", "government")
         if v not in allowed:
             raise ValueError(f"user_type must be one of {allowed}")
+        return v
+
+    @field_validator("org_subtype")
+    @classmethod
+    def validate_org_subtype(cls, v: str | None) -> str | None:
+        if v is not None and v not in ORG_SUBTYPES:
+            raise ValueError(f"org_subtype must be one of {ORG_SUBTYPES}")
         return v
 
     @field_validator("password")
@@ -76,6 +90,10 @@ class ContextSwitch(BaseModel):
     context: str = Field(pattern=r"^(work|personal|all)$")
 
 
+class AgentModeUpdate(BaseModel):
+    mode: str  # "public" | "internal"
+
+
 class UserResponse(BaseModel):
     id: str
     username: str | None = None  # NULL for private users, set on Go Live
@@ -83,11 +101,15 @@ class UserResponse(BaseModel):
     display_name: str
     bio: str
     user_type: str = "person"
+    org_subtype: str | None = None
+    agent_mode: str = "private"
     profile_data: dict | None = None
     is_discoverable: bool
     is_demo: bool = False
+    is_remote: bool = False
     active_context: str = "all"
     avatar_url: str | None = None
+    connectivity_mode: str = "invite_only"
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -200,6 +222,7 @@ class ConnectionRequestResponse(BaseModel):
     to_user_id: str
     message: str
     status: str
+    context: str = "personal"
     relationship_type: str | None = None
     from_label: str | None = None
     mutual_connections: int = 0
@@ -220,6 +243,7 @@ class ConnectionRequestUpdate(BaseModel):
 class ConnectionLabelUpdate(BaseModel):
     my_label: str | None = Field(default=None, max_length=50)
     relationship_type: str | None = None
+    context: str | None = Field(default=None, pattern=r"^(work|personal|both)$")
 
     @field_validator("relationship_type")
     @classmethod
@@ -255,7 +279,7 @@ class NetworkCreate(BaseModel):
     is_public: bool = False
     join_policy: str = "invite_only"
     context: str = "personal"  # work | personal | both
-    pool_type: str = "standard"  # standard | category_scoped | public_registry
+    pool_type: str = "standard"  # standard | category_scoped | public_registry | org_all_staff | org_executives
     shared_categories: list[str] | None = None
     expires_at: datetime | None = None
     initial_member_ids: list[str] | None = None
@@ -508,9 +532,9 @@ class QueryResponse(BaseModel):
 
 class GraphNode(BaseModel):
     id: str
-    username: str
+    username: str | None = None
     display_name: str
-    bio: str
+    bio: str | None = None
     user_type: str = "person"
     profile_data: dict | None = None
 
@@ -524,8 +548,8 @@ class GraphEdge(BaseModel):
 class GraphNetwork(BaseModel):
     id: str
     name: str
-    network_type: str
-    pool_type: str = "standard"
+    network_type: str | None = None
+    pool_type: str | None = "standard"
     shared_categories: list[str] | None = None
     members: list[str]
 
@@ -582,10 +606,12 @@ class ServiceCreate(BaseModel):
 
 class ServiceResponse(BaseModel):
     id: str
-    username: str
+    username: str | None = None
     display_name: str
     bio: str
     user_type: str = "organization"
+    org_subtype: str | None = None
+    agent_mode: str = "public"
     profile_data: dict | None = None
     agent_card: AgentCard | None = None
 
@@ -690,13 +716,48 @@ class EmergencyAccessRequest(BaseModel):
     patient_username: str = Field(max_length=50)
 
 
+class EmergencyBeaconResponse(BaseModel):
+    tokens: dict[str, str]    # role → signed UCAN token
+    qr_urls: dict[str, str]   # role → full QR scan URL
+    patient_did: str
+    patient_name: str
+    pod_url: str
+    expires_in: int           # seconds (1800)
+    generated_at: str         # ISO-8601 timestamp
+    audit_id: str
+    capsule_count: int = 0    # number of emergency_accessible capsules
+
+
 class EmergencyAccessResponse(BaseModel):
     patient_name: str
     role: str
     capsules: list[dict]
     capsule_count: int
+    total_capsules: int = 0
     categories: list[str]
     audit_id: str
     expires_at: datetime
     family_notified: int = 0
     fhir_bundle_url: str | None = None
+
+
+class MessageResponse(BaseModel):
+    id: str
+    sender_id: str
+    sender_username: str
+    sender_display_name: str
+    sender_pod_url: str | None = None
+    recipient_id: str
+    subject: str
+    body: str | None = None  # Decrypted body (None if vault key unavailable)
+    scope: str
+    trust_level_at_send: str
+    expires_at: datetime | None = None
+    rekey_needed: bool = False
+    is_read: bool = False
+    read_at: datetime | None = None
+    created_at: datetime
+
+
+class MessageUnreadCount(BaseModel):
+    count: int

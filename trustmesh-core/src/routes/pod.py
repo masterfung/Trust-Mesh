@@ -6,10 +6,11 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from src.auth import get_current_user_id
-from src.database import async_session
+from src.database import async_session, get_db
+from sqlalchemy.ext.asyncio import AsyncSession
 from src.federation import (
     POD_NAME,
     POD_URL,
@@ -22,7 +23,7 @@ from src.federation import (
     ping_peer,
     send_pool_invite,
 )
-from src.models import Agent, Connection, Network, NetworkMembership, PeerPod, PoolInviteToken, User
+from src.models import Agent, DataRequest, Network, NetworkMembership, PeerPod, PoolInviteToken, User
 from src.rate_limit import check_query_rate, record_query
 from src.federation_auth import verify_federation_request
 
@@ -517,16 +518,21 @@ async def receive_pool_invite(req: PoolInviteRequest):
     network with auto-accepted connections to all local members.
     """
     async with async_session() as db:
-        # Verify invite token exists and is valid
-        token_result = await db.execute(
-            select(PoolInviteToken).where(
+        # SECURITY: Atomic token claim — prevents TOCTOU replay where two concurrent
+        # requests both pass the SELECT check before either commits the UPDATE.
+        # Only one UPDATE wins the race; the other gets no row back.
+        update_result = await db.execute(
+            update(PoolInviteToken)
+            .where(
                 PoolInviteToken.token == req.invite_token,
                 PoolInviteToken.status == "pending",
             )
+            .values(status="consumed")
+            .returning(PoolInviteToken)
         )
-        invite_token = token_result.scalar_one_or_none()
+        invite_token = update_result.scalar_one_or_none()
         if not invite_token:
-            raise HTTPException(403, "Invalid or expired invite token")
+            raise HTTPException(403, "Invalid, expired, or already-used invite token")
 
         # SECURITY: Bind token to the intended sender pod URL (defense in depth if token is leaked)
         if invite_token.target_pod_url and req.from_pod.rstrip("/") != invite_token.target_pod_url.rstrip("/"):
@@ -542,8 +548,6 @@ async def receive_pool_invite(req: PoolInviteRequest):
         if expires.tzinfo is None:
             expires = expires.replace(tzinfo=timezone.utc)
         if expires < now:
-            invite_token.status = "expired"
-            await db.commit()
             raise HTTPException(403, "Invite token has expired")
 
         # Verify the network exists locally
@@ -573,10 +577,13 @@ async def receive_pool_invite(req: PoolInviteRequest):
         if total_ghosts.scalar() >= MAX_GHOSTS_PER_POD:
             raise HTTPException(429, "Pod has reached maximum remote user capacity")
 
-        # Create or get ghost user
-        ghost = await get_or_create_ghost_user(
-            db, req.username, req.display_name, req.did, req.from_pod
-        )
+        # Create or get ghost user (raises ValueError if DID verification fails)
+        try:
+            ghost = await get_or_create_ghost_user(
+                db, req.username, req.display_name, req.did, req.from_pod
+            )
+        except ValueError as exc:
+            raise HTTPException(403, f"Remote DID verification failed: {exc}")
 
         # Add ghost to network if not already a member
         existing_mem = await db.execute(
@@ -596,9 +603,6 @@ async def receive_pool_invite(req: PoolInviteRequest):
 
         # Create auto-accepted connections with all local members
         await _create_ghost_connections(db, ghost.id, network.id)
-
-        # Consume the invite token
-        invite_token.status = "consumed"
 
         await db.commit()
 
@@ -643,10 +647,13 @@ async def send_pool_invite_endpoint(
         db.add(invite_token)
 
         # Create ghost user locally for the remote user
-        ghost = await get_or_create_ghost_user(
-            db, req.target_username, req.target_display_name,
-            req.target_did, req.target_pod_url,
-        )
+        try:
+            ghost = await get_or_create_ghost_user(
+                db, req.target_username, req.target_display_name,
+                req.target_did, req.target_pod_url,
+            )
+        except ValueError as exc:
+            raise HTTPException(403, f"Remote DID verification failed: {exc}")
 
         # Add ghost to network if not already a member
         existing_mem = await db.execute(
@@ -840,10 +847,17 @@ async def pool_sync(req: PoolSyncRequest, request: Request):
             if member.pod_url.rstrip("/") == POD_URL.rstrip("/"):
                 continue
 
-            ghost = await get_or_create_ghost_user(
-                db, member.username, member.display_name,
-                member.did, member.pod_url,
-            )
+            try:
+                ghost = await get_or_create_ghost_user(
+                    db, member.username, member.display_name,
+                    member.did, member.pod_url,
+                )
+            except ValueError:
+                logger.warning(
+                    "pool_sync: skipping member %s — DID not verified on %s",
+                    member.username, member.pod_url,
+                )
+                continue
 
             # Add ghost to network if not already a member
             existing_ghost_mem = await db.execute(
@@ -873,3 +887,233 @@ async def pool_sync(req: PoolSyncRequest, request: Request):
             "local_user": local_user.username,
             "ghost_members_added": ghost_count,
         }
+
+
+# ── Federation Message Delivery ──
+
+class DeliverMessageRequest(BaseModel):
+    from_did: str = Field(..., min_length=1, max_length=MAX_DID_CHARS)
+    from_pod: str = Field(..., min_length=1, max_length=MAX_POD_URL_CHARS)
+    to_username: str = Field(..., min_length=1, max_length=50)
+    subject: str = Field(..., min_length=1, max_length=200)
+    body: str = Field(..., min_length=1, max_length=10_000)
+    scope: str = "direct"
+    expires_in_hours: int | None = None
+    sender_username: str = Field(..., min_length=1, max_length=50)
+    sender_display_name: str = Field(..., min_length=1, max_length=100)
+    federation_signature: str = ""
+
+
+@router.post("/messages/deliver")
+async def deliver_message(
+    req: DeliverMessageRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Receive a federated message delivery from a remote pod.
+
+    Security:
+    - Rate limited by from_did
+    - DID spoofing check via ghost.remote_pod_url
+    - Federation signature required (ed25519)
+    - Trust: recipient must be connected to or share a pool with the sender
+    """
+    from datetime import timedelta
+
+    client_ip = request.client.host if request.client else "unknown"
+
+    # 1. Rate limit by from_did
+    rate_ok, rate_reason = check_query_rate(req.from_did, f"deliver:{req.to_username}", "public")
+    if not rate_ok:
+        raise HTTPException(429, rate_reason)
+    record_query(req.from_did, f"deliver:{req.to_username}")
+
+    # 2. Resolve recipient — local, non-remote user
+    result = await db.execute(
+        select(User).where(User.username == req.to_username, User.is_remote == False)  # noqa: E712
+    )
+    recipient = result.scalar_one_or_none()
+    if not recipient:
+        raise HTTPException(404, f"User '{req.to_username}' not found")
+
+    # 3. Ghost lookup + DID spoofing check
+    ghost = await lookup_ghost_by_did(db, req.from_did)
+    if ghost:
+        if ghost.remote_pod_url and req.from_pod.rstrip("/") != ghost.remote_pod_url.rstrip("/"):
+            logger.warning(
+                "Federated message delivery DID spoofing: %s claims pod %s, ghost registered from %s",
+                req.from_did, req.from_pod, ghost.remote_pod_url,
+            )
+            raise HTTPException(403, "DID spoofing detected: pod URL mismatch")
+
+    # 4. Verify federation signature (reject unsigned)
+    raw_body = await request.body()
+    auth = verify_federation_request(from_did=req.from_did, body=raw_body, headers=request.headers)
+    if auth.status not in ("valid", "missing"):
+        raise HTTPException(403, f"Invalid federation signature: {auth.reason or 'invalid'}")
+    if auth.status == "missing":
+        # Require signature for message delivery (unlike query which has backward-compat mode)
+        raise HTTPException(403, "Federation signature required for message delivery")
+
+    # 5. Trust check: sender (ghost) must be connected or pool-member
+    if ghost:
+        from src.trust import resolve_trust_level
+        trust, _ = await resolve_trust_level(db, ghost.id, recipient.id)
+        if trust not in ("connected", "network", "private"):
+            raise HTTPException(403, "Insufficient trust level for message delivery")
+    else:
+        raise HTTPException(403, "Sender ghost not found — complete pool setup before messaging")
+
+    # 6. Encrypt body for recipient
+    import uuid
+    import hashlib
+    from src import transit_bridge, message_bridge
+
+    msg_id = str(uuid.uuid4()).replace("-", "")[:32]
+    aad = f"message:{msg_id}"
+    body_bytes = req.body.encode("utf-8")
+    body_hash = hashlib.sha256(body_bytes).hexdigest()
+
+    if transit_bridge.has_key(recipient.id):
+        body_enc = transit_bridge.encrypt(recipient.id, body_bytes, aad=aad)
+        rekey_needed = False
+    else:
+        # Recipient offline — encrypt with pod KEK, rekey on next login
+        from src.main import _POD_KEK
+        from src.crypto import encrypt as crypto_encrypt
+        body_enc = crypto_encrypt(body_bytes, _POD_KEK)
+        rekey_needed = True
+
+    # 7. Compute expires_at
+    expires_at = None
+    if req.expires_in_hours:
+        from datetime import timedelta
+        expires_dt = datetime.now(timezone.utc) + timedelta(hours=req.expires_in_hours)
+        expires_at = expires_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    message_bridge.create_message(
+        message_id=msg_id,
+        sender_id=ghost.id,
+        sender_username=req.sender_username,
+        sender_display_name=req.sender_display_name,
+        sender_pod_url=req.from_pod,
+        recipient_id=recipient.id,
+        subject=req.subject,
+        body_encrypted=body_enc,
+        body_hash=body_hash,
+        scope=req.scope,
+        trust_level=trust,
+        expires_at=expires_at,
+        rekey_needed=rekey_needed,
+    )
+
+    # 8. Notification
+    from src.models import Notification
+    notif = Notification(
+        user_id=recipient.id,
+        notification_type="message_received",
+        title=f"Message from {req.sender_display_name}: {req.subject[:80]}",
+        body=req.subject,
+        related_id=msg_id,
+    )
+    db.add(notif)
+    await db.commit()
+
+    return {"delivered": True, "message_id": msg_id}
+
+
+# ─── Cross-pod data request delivery ─────────────────────────────────────────
+
+class DataRequestPayload(BaseModel):
+    from_did: str
+    to_username: str
+    subject: str
+    body: str
+    notification_type: str = "data_request"
+    requester_pod_url: str
+    requester_user_id: str
+    requester_display: str
+    original_question: str
+    signature: str | None = None
+
+
+@router.post("/data_request")
+async def receive_data_request(
+    req: DataRequestPayload,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Receive a cross-pod data request from a peer agent.
+
+    Creates an inbox notification for the local user asking them to add
+    the requested data to their vault. When they do, a peer_data_ready
+    event will be sent back to the requester's pod.
+    """
+    # Resolve local recipient
+    result = await db.execute(
+        select(User).where(User.username == req.to_username, User.is_remote == False)  # noqa: E712
+    )
+    recipient = result.scalar_one_or_none()
+    if not recipient:
+        raise HTTPException(404, f"User '{req.to_username}' not found")
+
+    from src.models import Notification
+    import uuid as _uuid
+
+    # Store the data request for callback tracking
+    request_id = str(_uuid.uuid4())
+    db.add(DataRequest(
+        id=request_id,
+        recipient_user_id=recipient.id,
+        requester_pod_url=req.requester_pod_url,
+        requester_user_id=req.requester_user_id,
+        requester_display=req.requester_display,
+        original_question=req.original_question,
+        status="pending",
+    ))
+
+    # Create inbox notification
+    db.add(Notification(
+        user_id=recipient.id,
+        notification_type="data_request",
+        title=f"{req.requester_display} is asking for your help",
+        body=req.original_question,
+        related_id=request_id,
+    ))
+    await db.commit()
+
+    return {"received": True, "request_id": request_id}
+
+
+# ─── Peer data-ready callback ─────────────────────────────────────────────────
+
+class PeerDataReadyPayload(BaseModel):
+    from_did: str
+    for_user_id: str  # the requester's user_id on this pod
+    target_user_id: str  # the peer who just added data (their user_id on their pod)
+    category: str = "general"
+
+
+@router.post("/peer_data_ready")
+async def receive_peer_data_ready(
+    req: PeerDataReadyPayload,
+    db: AsyncSession = Depends(get_db),
+):
+    """Receive notification from a peer pod that the requested data is now available.
+
+    Fires the `peer_data_ready:{target_user_id}` event in the timeline engine,
+    which wakes up any dormant follow-up tasks waiting for this peer's data.
+    """
+    try:
+        from src.routes.capsules import _push_timeline_event
+        event_key = f"peer_data_ready:{req.target_user_id}"
+        _push_timeline_event(event_key)
+        logger.info("peer_data_ready: fired event %s for user %s", event_key, req.for_user_id)
+    except Exception as e:
+        logger.warning("peer_data_ready: could not push timeline event: %s", e)
+
+    return {"received": True}
+
+
+# /api/pod/connection-request and /api/pod/connection-accept are handled by
+# the native Zig kernel (handlers/pod_federation.zig).

@@ -419,6 +419,28 @@ const PROXY_FORWARD_HEADERS = [_][]const u8{
     "cache-control",
 };
 
+/// Called by handlers when a path prefix matched but the specific sub-path is
+/// not their responsibility. Forwards the request to the Python backend.
+/// Use this instead of returning .not_found for "I don't own this route" cases.
+pub fn proxyFromHandler(ctx: *RequestContext) !void {
+    var origin: ?[]const u8 = null;
+    if (ctx.getHeader("origin")) |o| {
+        origin = try ctx.allocator.dupe(u8, o);
+    }
+    try proxyToPython(ctx._request, ctx.body, ctx.path, ctx.query, origin, ctx.head_buffer, ctx.config, ctx.allocator);
+}
+
+/// Like proxyFromHandler but appends `extra_headers` to the forwarded request.
+/// Used by channels.zig to pass auth context (X-Channel-Owner-Id, etc.) to Python
+/// without re-validation in the Python layer.
+pub fn proxyFromHandlerWithHeaders(ctx: *RequestContext, extra_headers: []const http.Header) !void {
+    var origin: ?[]const u8 = null;
+    if (ctx.getHeader("origin")) |o| {
+        origin = try ctx.allocator.dupe(u8, o);
+    }
+    try proxyToPythonWithHeaders(ctx._request, ctx.body, ctx.path, ctx.query, origin, ctx.head_buffer, ctx.config, ctx.allocator, extra_headers);
+}
+
 fn proxyToPython(
     server_request: *http.Server.Request,
     body: []const u8,
@@ -536,6 +558,117 @@ fn proxyToPython(
     }
 
     // Send response to client
+    try server_request.respond(response_body, .{
+        .status = response.head.status,
+        .extra_headers = resp_headers.items,
+    });
+}
+
+/// Proxy variant that appends extra_headers to forwarded request.
+fn proxyToPythonWithHeaders(
+    server_request: *http.Server.Request,
+    body: []const u8,
+    target_path: []const u8,
+    query: []const u8,
+    origin: ?[]const u8,
+    head_buf_copy: []const u8,
+    config: *const Config,
+    allocator: std.mem.Allocator,
+    extra_headers: []const http.Header,
+) !void {
+    const url_str = try buildProxyUrl(target_path, query, config, allocator);
+    defer allocator.free(url_str);
+    const uri = try std.Uri.parse(url_str);
+
+    var fwd_headers: std.ArrayList(http.Header) = .{};
+    defer fwd_headers.deinit(allocator);
+
+    var req_it = http.HeaderIterator.init(head_buf_copy);
+    while (req_it.next()) |hdr| {
+        for (PROXY_FORWARD_HEADERS) |fh| {
+            if (std.ascii.eqlIgnoreCase(hdr.name, fh)) {
+                try fwd_headers.append(allocator, .{ .name = hdr.name, .value = hdr.value });
+                break;
+            }
+        }
+    }
+
+    if (validateProxySession(head_buf_copy)) |user_id| {
+        const uid_dup = try allocator.dupe(u8, user_id);
+        try fwd_headers.append(allocator, .{ .name = "x-verified-user-id", .value = uid_dup });
+    }
+
+    if (config.proxy_secret.len > 0) {
+        try fwd_headers.append(allocator, .{ .name = "x-internal-proxy-secret", .value = config.proxy_secret });
+    }
+
+    // Append caller-supplied extra headers (e.g., X-Channel-Owner-Id)
+    for (extra_headers) |eh| {
+        const name_dup = try allocator.dupe(u8, eh.name);
+        const val_dup = try allocator.dupe(u8, eh.value);
+        try fwd_headers.append(allocator, .{ .name = name_dup, .value = val_dup });
+    }
+
+    var client = http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    var proxy_req = try client.request(server_request.head.method, uri, .{
+        .extra_headers = fwd_headers.items,
+        .redirect_behavior = .unhandled,
+    });
+    defer proxy_req.deinit();
+
+    if (body.len > 0) {
+        proxy_req.transfer_encoding = .{ .content_length = body.len };
+        var bw = try proxy_req.sendBodyUnflushed(&.{});
+        try bw.writer.writeAll(body);
+        try bw.end();
+        try proxy_req.connection.?.flush();
+    } else {
+        try proxy_req.sendBodiless();
+    }
+
+    var redirect_buf: [8192]u8 = undefined;
+    var response = try proxy_req.receiveHead(&redirect_buf);
+
+    var resp_headers: std.ArrayList(http.Header) = .{};
+    defer resp_headers.deinit(allocator);
+
+    var resp_it = response.head.iterateHeaders();
+    while (resp_it.next()) |hdr| {
+        if (std.ascii.eqlIgnoreCase(hdr.name, "transfer-encoding")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "content-length")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "connection")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "server")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "x-powered-by")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "x-process-time")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "x-content-type-options")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "x-frame-options")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "strict-transport-security")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "referrer-policy")) continue;
+        if (std.ascii.eqlIgnoreCase(hdr.name, "permissions-policy")) continue;
+        const name_dup = try allocator.dupe(u8, hdr.name);
+        const val_dup = try allocator.dupe(u8, hdr.value);
+        try resp_headers.append(allocator, .{ .name = name_dup, .value = val_dup });
+    }
+
+    var transfer_buf: [64]u8 = undefined;
+    var resp_reader = response.reader(&transfer_buf);
+    const response_body = try resp_reader.allocRemaining(allocator, .limited(64 * 1024 * 1024));
+    defer allocator.free(response_body);
+
+    for (&SECURITY_HEADERS) |sh| {
+        try resp_headers.append(allocator, sh);
+    }
+
+    if (origin) |o| {
+        if (isAllowedOrigin(o)) {
+            try resp_headers.append(allocator, .{ .name = "access-control-allow-origin", .value = o });
+            try resp_headers.append(allocator, .{ .name = "access-control-allow-credentials", .value = "true" });
+            try resp_headers.append(allocator, .{ .name = "vary", .value = "Origin" });
+        }
+    }
+
     try server_request.respond(response_body, .{
         .status = response.head.status,
         .extra_headers = resp_headers.items,

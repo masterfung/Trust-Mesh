@@ -51,6 +51,8 @@ POD_ENTITIES = {
     "city":      {"port": 9014, "username": "riverside_gov",       "type": "government"},
     "insurance": {"port": 9015, "username": "handypro",            "type": "organization"},
     "dance":     {"port": 9016, "username": "riverside_ambulance", "type": "organization"},
+    # User pod (port 9000)
+    "user":      {"port": 9000, "username": "johnny",              "type": "person"},
 }
 
 # Build lookup maps
@@ -110,17 +112,19 @@ async def seed_pod(entity_key: str, db_path: str):
         derived_key, salt = derive_vault_key(DEMO_PASSWORD)
         encrypted_vault_key = encrypt(vault_master_key, derived_key)
 
+        user_type = user_data.get("user_type", entity["type"])
         user = User(
             username=user_data["username"],
             display_name=user_data["display_name"],
             bio=user_data["bio"],
-            user_type=user_data.get("user_type", entity["type"]),
+            user_type=user_type,
             is_demo=True,
             profile_data=json.dumps(user_data["profile_data"]) if user_data.get("profile_data") else None,
             vault_key_salt=salt,
             encrypted_vault_key=encrypted_vault_key,
             pin_hash=hash_pin("1234"),
             agent_personality=user_data.get("agent_personality"),
+            active_context=user_data.get("active_context", "work" if user_type in ("organization", "government") else "all"),
         )
         db.add(user)
         await db.flush()

@@ -244,6 +244,7 @@ async def query_agent_public(
     from_did: str,
     from_pod: str,
     vault_keys=None,
+    sensitivity_hint: str = "standard",
 ) -> dict:
     """Handle a cross-pod query at public trust level.
 
@@ -316,6 +317,9 @@ async def query_agent_public(
             capsules=capsules,
             requester_name=f"Remote agent ({from_did[:20]}...)",
             owner_name=to_user.display_name,
+            entity_type=to_user.user_type or "person",
+            org_subtype=getattr(to_user, "org_subtype", None),
+            agent_mode=getattr(to_user, "agent_mode", "private"),
         )
     except Exception as e:
         import logging
@@ -382,6 +386,7 @@ async def query_agent(
     question: str,
     vault_keys=None,
     query_depth: int = 0,
+    sensitivity_hint: str = "standard",
 ) -> dict:
     """The core inter-agent query flow.
 
@@ -525,6 +530,7 @@ async def query_agent(
 
     # 6. Sonnet 4.5 agent responds
     actions = []
+    routing_provider = "anthropic"
     try:
         if is_self_query:
             # Self-query: tools enabled (search, save, update)
@@ -536,13 +542,19 @@ async def query_agent(
                 owner_name=to_user.display_name,
                 networks=user_networks,
                 query_depth=query_depth,
+                active_context=to_user.active_context or "all",
             )
-            response_text, actions = await agent_respond_with_tools(
+            response_text, actions, routing_provider = await agent_respond_with_tools(
                 agent=agent,
                 question=question,
                 capsules=capsules,
                 owner_name=to_user.display_name,
                 tool_context=tool_context,
+                personality=agent.personality or "",
+                entity_type=to_user.user_type or "person",
+                org_subtype=getattr(to_user, "org_subtype", None),
+                agent_mode=getattr(to_user, "agent_mode", "private"),
+                sensitivity_hint=sensitivity_hint,
             )
         else:
             # Cross-query: read-only
@@ -554,6 +566,10 @@ async def query_agent(
                 capsules=capsules,
                 requester_name=from_user.display_name,
                 owner_name=to_user.display_name,
+                entity_type=to_user.user_type or "person",
+                org_subtype=getattr(to_user, "org_subtype", None),
+                agent_mode=getattr(to_user, "agent_mode", "private"),
+                sensitivity_hint=sensitivity_hint,
             )
     except Exception as e:
         import logging
@@ -644,5 +660,9 @@ async def query_agent(
     # Include agent actions for self-query
     if actions:
         result["agent_actions"] = actions
+
+    # Include routing metadata for self-query (so UI can show provider pill)
+    if is_self_query:
+        result["routing"] = {"provider": routing_provider}
 
     return result

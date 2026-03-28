@@ -1,6 +1,7 @@
 "use client";
 
 import type { User } from "@/lib/api";
+import Image from "next/image";
 
 interface UserAvatarProps {
   user: Pick<User, "display_name" | "avatar_url">;
@@ -21,9 +22,11 @@ export function UserAvatar({ user, size = "md", className = "" }: UserAvatarProp
 
   if (user.avatar_url) {
     return (
-      <img
+      <Image
         src={user.avatar_url}
         alt={user.display_name}
+        width={80}
+        height={80}
         className={`${sizeClass} rounded-xl object-cover shrink-0 ${className}`}
       />
     );

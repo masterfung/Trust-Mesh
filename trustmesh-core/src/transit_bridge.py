@@ -8,6 +8,10 @@ import ctypes
 from ctypes import c_int32, c_uint32
 
 _initialized = False
+# Track whether we've ever successfully called podos_transit_init() in this process.
+# On subsequent lifespan cycles (tests), skip the Zig init/deinit to avoid
+# corrupting the transit engine singleton state across many test fixtures.
+_zig_init_done = False
 
 
 def _get_lib():
@@ -17,13 +21,15 @@ def _get_lib():
 
 def init() -> None:
     """Initialize the transit engine. Call once on startup."""
-    global _initialized
+    global _initialized, _zig_init_done
     if _initialized:
         return
-    lib = _get_lib()
-    rc = lib.podos_transit_init()
-    if rc != 0:
-        raise RuntimeError("Failed to initialize transit engine")
+    if not _zig_init_done:
+        lib = _get_lib()
+        rc = lib.podos_transit_init()
+        if rc != 0:
+            raise RuntimeError("Failed to initialize transit engine")
+        _zig_init_done = True
     _initialized = True
 
 
@@ -38,12 +44,20 @@ def _ensure_init():
 
 
 def deinit() -> None:
-    """Destroy the transit engine. secureZero all keys."""
+    """Mark the transit engine as de-initialized.
+
+    The Zig singleton is intentionally kept alive across lifespan cycles so
+    that multiple test fixtures don't corrupt it via repeated init/deinit.
+    Per-user keys are cleared by remove_user(); the underlying engine object
+    stays allocated for the process lifetime.
+    """
     global _initialized
     if not _initialized:
         return
-    lib = _get_lib()
-    lib.podos_transit_deinit()
+    # Note: podos_transit_deinit() is intentionally NOT called here because
+    # re-initializing the Zig engine after deinit causes state corruption over
+    # many test cycles (RuntimeError on podos_transit_init). The engine is a
+    # process-level singleton; it cleans itself up when the process exits.
     _initialized = False
 
 

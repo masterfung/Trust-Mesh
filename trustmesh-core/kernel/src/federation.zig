@@ -492,6 +492,90 @@ fn extractHostname(url: []const u8) []const u8 {
 }
 
 // ═══════════════════════════════════════════
+//  ACCEPT CALLBACK
+// ═══════════════════════════════════════════
+
+/// Send a cross-pod connection acceptance callback.
+/// Builds JSON payload, signs with provided seed, POSTs to {remote_pod_url}/api/pod/connection-accept.
+/// Returns true on success, false on any failure (caller logs and ignores — fire-and-forget).
+pub fn sendConnectionAcceptCallback(
+    remote_pod_url: []const u8,
+    accepted_by_did: []const u8,
+    requester_did: []const u8,
+    accepted_by_display_name: []const u8,
+    private_key_seed: *const [32]u8,
+    allocator: Allocator,
+) bool {
+    // SSRF protection (reuses validatePeerUrl)
+    if (!validatePeerUrl(remote_pod_url)) return false;
+
+    // Build URL
+    const url = std.fmt.allocPrint(allocator, "{s}/api/pod/connection-accept", .{
+        std.mem.trimRight(u8, remote_pod_url, "/"),
+    }) catch return false;
+    defer allocator.free(url);
+
+    // Build payload with JSON-escaped fields
+    var esc_did_buf: [256]u8 = undefined;
+    var esc_rdid_buf: [256]u8 = undefined;
+    var esc_name_buf: [256]u8 = undefined;
+    const esc_did_len = json_mod.escapeJsonString(accepted_by_did, &esc_did_buf) catch return false;
+    const esc_rdid_len = json_mod.escapeJsonString(requester_did, &esc_rdid_buf) catch return false;
+    const esc_name_len = json_mod.escapeJsonString(accepted_by_display_name, &esc_name_buf) catch return false;
+
+    const payload = std.fmt.allocPrint(allocator,
+        "{{\"accepted_by_did\":\"{s}\",\"requester_did\":\"{s}\",\"accepted_by_display_name\":\"{s}\"}}",
+        .{ esc_did_buf[0..esc_did_len], esc_rdid_buf[0..esc_rdid_len], esc_name_buf[0..esc_name_len] },
+    ) catch return false;
+    defer allocator.free(payload);
+
+    // Sign the request
+    const signed = fed_auth.signRequest(
+        payload,
+        private_key_seed,
+        "POST",
+        "/api/pod/connection-accept",
+        allocator,
+    ) catch return false;
+
+    // Build signed headers
+    var ts_val_buf: [32]u8 = undefined;
+    var nonce_val_buf: [64]u8 = undefined;
+    var sig_val_buf: [128]u8 = undefined;
+    var method_val_buf: [16]u8 = undefined;
+    var path_val_buf: [512]u8 = undefined;
+
+    var headers_list: std.ArrayList(std.http.Header) = .{};
+    defer headers_list.deinit(allocator);
+
+    const ts_s = signed.getTimestamp();
+    @memcpy(ts_val_buf[0..ts_s.len], ts_s);
+    headers_list.append(allocator, .{ .name = "X-TrustMesh-Timestamp", .value = ts_val_buf[0..ts_s.len] }) catch return false;
+
+    const n_s = signed.getNonce();
+    @memcpy(nonce_val_buf[0..n_s.len], n_s);
+    headers_list.append(allocator, .{ .name = "X-TrustMesh-Nonce", .value = nonce_val_buf[0..n_s.len] }) catch return false;
+
+    const sig_s = signed.getSignature();
+    @memcpy(sig_val_buf[0..sig_s.len], sig_s);
+    headers_list.append(allocator, .{ .name = "X-TrustMesh-Signature", .value = sig_val_buf[0..sig_s.len] }) catch return false;
+    headers_list.append(allocator, .{ .name = "X-TrustMesh-Signature-Alg", .value = "ed25519" }) catch return false;
+
+    const m_s = signed.getMethod();
+    @memcpy(method_val_buf[0..m_s.len], m_s);
+    headers_list.append(allocator, .{ .name = "X-TrustMesh-Method", .value = method_val_buf[0..m_s.len] }) catch return false;
+
+    const p_s = signed.getPath();
+    @memcpy(path_val_buf[0..p_s.len], p_s);
+    headers_list.append(allocator, .{ .name = "X-TrustMesh-Path", .value = path_val_buf[0..p_s.len] }) catch return false;
+
+    // POST — ignore response body, just check it didn't error
+    const response = httpPost(url, payload, headers_list.items, allocator) catch return false;
+    allocator.free(response);
+    return true;
+}
+
+// ═══════════════════════════════════════════
 //  C ABI EXPORTS
 // ═══════════════════════════════════════════
 

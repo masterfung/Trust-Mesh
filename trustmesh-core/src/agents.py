@@ -10,6 +10,7 @@ Agents have two modes:
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -161,6 +162,100 @@ AGENT_TOOLS = [
                 },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "browse_web",
+        "description": (
+            "Browse a real website and extract structured data using an AI-powered browser. "
+            "Use for: finding home care agencies, searching Kayak for flights, reading "
+            "service listings, extracting pricing, or filling out forms on behalf of the user. "
+            "Use a direct results URL when possible to skip navigation steps. "
+            "Results are returned as JSON and optionally saved to the vault. "
+            "Takes 60-120s — only call when real web data is needed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL to browse. Use a direct results URL when possible.",
+                },
+                "goal": {
+                    "type": "string",
+                    "description": "What to extract or do on the page. Be specific.",
+                },
+                "save_as_capsule": {
+                    "type": "boolean",
+                    "description": "If true, save result as a vault capsule. Default false.",
+                },
+                "capsule_title": {
+                    "type": "string",
+                    "description": "Title for the capsule if save_as_capsule is true.",
+                },
+                "capsule_visibility": {
+                    "type": "string",
+                    "enum": ["private", "internal", "open"],
+                    "description": "Visibility for saved capsule. Use 'internal' to share with trust network.",
+                },
+            },
+            "required": ["url", "goal"],
+        },
+    },
+    {
+        "name": "research_parallel",
+        "description": (
+            "Browse multiple websites simultaneously using TinyFish — each URL gets its own "
+            "AI browser session running in parallel. Use for comparing agencies, gathering "
+            "reviews from multiple sources, or checking listings across several sites at once. "
+            "Results are aggregated into a comparison summary. Much faster than sequential browsing. "
+            "Max 8 URLs. Takes 60-120s total regardless of URL count."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "url": {"type": "string"},
+                            "goal": {"type": "string", "description": "What to extract from this page"},
+                            "label": {"type": "string", "description": "Display name e.g. 'SeniorHelpers Riverside'"},
+                        },
+                        "required": ["url", "goal"],
+                    },
+                },
+                "save_as_capsule": {"type": "boolean", "default": False},
+                "capsule_title": {"type": "string"},
+                "capsule_visibility": {
+                    "type": "string",
+                    "enum": ["private", "internal", "open"],
+                    "default": "private",
+                },
+                "share_with_network": {
+                    "type": "string",
+                    "description": "Network name to auto-share results with",
+                },
+            },
+            "required": ["tasks"],
+        },
+    },
+    {
+        "name": "check_conflicts",
+        "description": (
+            "Check if a stated fact conflicts with anything in the vault. Call this when the "
+            "user states a date, name, location, or amount that you want to verify against "
+            "stored knowledge before acting on it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "claim": {"type": "string", "description": "The fact the user just stated"},
+                "search_query": {"type": "string", "description": "What to search in vault to verify"},
+            },
+            "required": ["claim", "search_query"],
         },
     },
     {
@@ -374,7 +469,7 @@ AGENT_TOOLS = [
                 },
                 "trigger_at_ms": {
                     "type": "integer",
-                    "description": "For 'time' trigger: Unix ms when to activate",
+                    "description": "For 'time' trigger: Unix ms when to activate. Example: 'in 5 minutes' = int(time.time()*1000) + 5*60*1000. Compute this from current time.",
                 },
                 "trigger_event_type": {
                     "type": "string",
@@ -435,6 +530,72 @@ AGENT_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    # Emergency escalation
+    {
+        "name": "trigger_emergency",
+        "description": (
+            "Declare a medical emergency on behalf of the owner. "
+            "Issues a 30-minute UCAN access token to Riverside Hospital for the owner's "
+            "health capsules, and sends urgent notifications to the owner's family connections. "
+            "Use when the owner indicates they are in immediate danger or medical distress. "
+            "Do NOT wait for confirmation — act immediately when emergency language is detected."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Brief description of the emergency (e.g., 'fell and cannot get up', 'chest pain')",
+                },
+            },
+            "required": ["reason"],
+        },
+    },
+    # Emergency QR beacon for inbound responders
+    {
+        "name": "generate_emergency_qr",
+        "description": (
+            "Generate a time-limited, cryptographically signed QR code URL that a "
+            "first responder can scan to access the owner's emergency health data — "
+            "NO login required on the responder's side. "
+            "Use ONLY when an external party (EMT, nurse, physician) explicitly states "
+            "the owner is unconscious, incapacitated, or cannot respond, AND "
+            "identifies themselves with a healthcare role. "
+            "The tool verifies the requester's organization against the TrustMesh "
+            "agent registry: if verified as a medical org, the token is scoped to their "
+            "role; if unverified, only minimal paramedic-level access is issued. "
+            "The scan endpoint re-validates the org DID against the registry — "
+            "unregistered requesters fail at scan time even if they have the URL. "
+            "REFUSE if there is no clear emergency context."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "role": {
+                    "type": "string",
+                    "enum": ["paramedic", "er_nurse", "attending_physician"],
+                    "description": (
+                        "The responder's claimed role: 'paramedic' (EMT), 'er_nurse', or "
+                        "'attending_physician'. Will be downgraded to 'paramedic' if the "
+                        "org cannot be verified in the registry."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief reason for access (e.g. 'vehicle accident, patient unresponsive').",
+                },
+                "requester_org": {
+                    "type": "string",
+                    "description": (
+                        "Name or partial name of the requester's hospital / EMS org "
+                        "(e.g. 'Riverside Hospital', 'County EMS'). Used to look up their "
+                        "DID in the TrustMesh registry for verification."
+                    ),
+                },
+            },
+            "required": ["role", "reason"],
         },
     },
     # Credential tools
@@ -502,6 +663,73 @@ AGENT_TOOLS = [
             "required": ["action"],
         },
     },
+    # Messaging tools
+    {
+        "name": "send_message",
+        "description": (
+            "Send an encrypted message to a connected or pool-member user. "
+            "Works cross-pod via federation. Message is delivered to their inbox immediately. "
+            "Only message users you have a connection with or share a pool with. "
+            "Always confirm the recipient's username before sending."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to_username": {
+                    "type": "string",
+                    "description": "Recipient's username (e.g. 'dr_lee', 'kyle')",
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Subject line (max 200 chars)",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Message body text",
+                },
+                "expires_in_hours": {
+                    "type": "integer",
+                    "description": "Auto-expire after N hours (optional — omit for permanent)",
+                },
+            },
+            "required": ["to_username", "subject", "body"],
+        },
+    },
+    {
+        "name": "send_connection_request",
+        "description": (
+            "BEFORE calling this tool, always tell the user: 'You're in [mode] mode — I'll add [name] as a [context] contact. Confirm, or say work / personal / both.' "
+            "Then wait for their reply before calling. "
+            "Send a connection request to another user so you can query their agent "
+            "and exchange messages. Use whenever the owner expresses intent to connect with, "
+            "befriend, add, or follow someone — regardless of how they phrase it or what "
+            "language they use. Requires their username. "
+            "Include a short friendly note explaining why you'd like to connect."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to_username": {
+                    "type": "string",
+                    "description": "Username of the person to connect with (e.g. 'amy', 'dr_lee')",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Short message to the recipient explaining the connection request",
+                },
+                "relationship_type": {
+                    "type": "string",
+                    "description": "Optional: 'friend', 'colleague', 'family', 'neighbor', 'classmate'",
+                },
+                "context": {
+                    "type": "string",
+                    "enum": ["work", "personal", "both"],
+                    "description": "Context for this connection. Leave unset to use the user's current mode (work/personal/both). Use 'both' when user is in 'all' mode or requests both.",
+                },
+            },
+            "required": ["to_username", "message"],
+        },
+    },
 ]
 
 
@@ -519,6 +747,7 @@ class ToolContext:
     networks: list[dict]  # [{id, name, network_type}]
     actions: list[dict] = field(default_factory=list)
     query_depth: int = 0  # Recursion guard for query_peer
+    active_context: str = "all"  # work | personal | all (user's current nav context)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -569,6 +798,9 @@ async def handle_search_vault(ctx: ToolContext, query: str) -> str:
             "emergency_accessible": c.emergency_accessible,
             "category": c.category,
             "content": content[:500],  # Truncate for context window
+            "freshness": c.freshness,
+            "last_verified_at": c.last_verified_at.isoformat() if c.last_verified_at else None,
+            "authority_weight": c.authority_weight,
         })
 
     return json.dumps({
@@ -749,7 +981,7 @@ async def handle_web_search(ctx: ToolContext, query: str, context: str = "") -> 
         if not api_key:
             return json.dumps({
                 "success": False,
-                "error": "Web search unavailable (no API key configured)",
+                "error": "Web search is not configured on this pod (TAVILY_API_KEY missing). Tell the user: web search is not available on this pod.",
                 "results": [],
             })
         client = TavilyClient(api_key=api_key)
@@ -769,6 +1001,475 @@ async def handle_web_search(ctx: ToolContext, query: str, context: str = "") -> 
         })
     except Exception as e:
         return json.dumps({"success": False, "error": str(e), "results": []})
+
+
+# ── TinyFish PII protection ──────────────────────────────────────────
+
+_PII_PATTERNS = [
+    re.compile(r'\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b'),          # phone
+    re.compile(r'\b[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}\b'),           # email
+    re.compile(r'\b\d{3}-\d{2}-\d{4}\b'),                        # SSN
+    re.compile(r'\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b'),    # card
+]
+
+# Only these capsule types are safe to include in goals sent to external services
+_TINYFISH_SAFE_TYPES = frozenset({"preference"})
+
+
+def _redact_pii(text: str) -> str:
+    """Redact phone, email, SSN, and card patterns from text."""
+    for pattern in _PII_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    return text
+
+
+async def _enrich_goal_with_vault_context(
+    ctx: "ToolContext", goal: str, categories: list[str] | None = None,
+    tinyfish_safe: bool = False,
+) -> tuple[str, list[dict]]:
+    """Pull relevant, fresh vault context to personalize a TinyFish goal.
+
+    Returns (enriched_goal, context_manifest) where manifest describes
+    each piece of vault data used (for UI authorization display).
+    """
+    from src import research_bridge
+
+    try:
+        result_str = await handle_search_vault(ctx, goal)
+        result = json.loads(result_str)
+    except Exception:
+        return goal, []
+
+    now = datetime.now(timezone.utc)
+    useful_types = ("preference", "contact", "schedule", "memory", "procedure")
+    # When sending to external services, restrict to non-PII capsule types only
+    allowed_types = _TINYFISH_SAFE_TYPES if tinyfish_safe else useful_types
+    context_items = []
+
+    for cap in result.get("capsules", []):
+        if cap["capsule_type"] not in allowed_types:
+            continue
+        if categories and cap.get("category") not in categories:
+            continue
+
+        freshness = cap.get("freshness", "permanent")
+        last_verified = cap.get("last_verified_at")
+        if freshness == "temporary" and last_verified:
+            try:
+                days_old = (now - datetime.fromisoformat(last_verified)).days
+                confidence = f"[Verified {days_old}d ago — may have changed]" if days_old > 7 else "[Recent]"
+            except Exception:
+                confidence = "[Temporary]"
+        elif freshness == "recurring":
+            confidence = "[Recurring — verify current schedule]"
+        else:
+            confidence = "[Permanent fact]"
+
+        authority_weight = cap.get("authority_weight", 1.0)
+        last_verified_for_score = last_verified or "2020-01-01T00:00:00+00:00"
+        try:
+            days_since = (now - datetime.fromisoformat(last_verified_for_score)).days
+        except Exception:
+            days_since = 0
+
+        content = cap["content"][:150]
+        if tinyfish_safe:
+            content = _redact_pii(content)
+
+        context_items.append({
+            "title": cap["title"],
+            "content": content,
+            "capsule_type": cap["capsule_type"],
+            "freshness": freshness,
+            "confidence": confidence,
+            "authority_weight": authority_weight,
+            "capsule_id": cap["id"],
+            "_score": research_bridge.freshness_score(freshness, days_since, authority_weight),
+        })
+
+    # Sort: highest freshness score first
+    context_items.sort(key=lambda c: -c["_score"])
+    # Strip internal sort key before returning
+    for c in context_items:
+        c.pop("_score", None)
+
+    if context_items:
+        context_lines = "\n".join(
+            f"- {c['title']}: {c['content']} {c['confidence']}"
+            for c in context_items
+        )
+        enriched = goal + f"\n\nApply these verified user preferences and facts:\n{context_lines}"
+        return enriched, context_items
+
+    return goal, []
+
+
+def _infer_categories(goal: str) -> list[str]:
+    """Infer relevant capsule categories from a goal string."""
+    goal_lower = goal.lower()
+    categories = []
+    if any(w in goal_lower for w in ("home care", "health", "medical", "medication", "hospital", "doctor", "nurse", "care", "therapy")):
+        categories.append("health")
+    if any(w in goal_lower for w in ("home", "house", "repair", "cleaning", "moving")):
+        categories.append("home")
+    if any(w in goal_lower for w in ("work", "job", "business", "office", "career")):
+        categories.append("work")
+    if any(w in goal_lower for w in ("family", "parent", "child", "grandma", "grandpa", "brother", "sister")):
+        categories.append("family")
+    if any(w in goal_lower for w in ("prefer", "like", "food", "diet", "language", "prefer")):
+        categories.append("personal")
+    # Default: include health and personal for most searches
+    if not categories:
+        categories = ["health", "personal", "family"]
+    return categories
+
+
+async def _call_tinyfish_single(
+    url: str, goal: str, label: str, ctx: "ToolContext"
+) -> dict:
+    """Single TinyFish browse session. Returns result dict (success/error)."""
+    import asyncio
+    import aiohttp
+    from src import research_bus
+
+    api_key = os.getenv("TINYFISH_API_KEY", "")
+    if not api_key:
+        return {"url": url, "label": label, "success": False, "error": "TINYFISH_API_KEY not configured"}
+
+    endpoint = "https://agent.tinyfish.ai/v1/automation/run-sse"
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+
+    steps = []
+    result_data = None
+
+    try:
+        await research_bus.publish(ctx.owner_id, {
+            "type": "research_started",
+            "label": label or url[:50],
+            "url": url,
+        })
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                endpoint,
+                headers=headers,
+                json={"url": url, "goal": goal},
+                timeout=aiohttp.ClientTimeout(total=45),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    await research_bus.publish(ctx.owner_id, {
+                        "type": "research_done",
+                        "label": label or url[:50],
+                        "success": False,
+                        "error": f"HTTP {resp.status}",
+                    })
+                    return {"url": url, "label": label, "success": False, "error": f"HTTP {resp.status}: {body[:200]}"}
+
+                async for line in resp.content:
+                    line = line.decode("utf-8").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data_str)
+                        event_type = event.get("type", "")
+                        if event_type == "PROGRESS":
+                            purpose = event.get("purpose", "")
+                            steps.append(purpose)
+                            log.info("tinyfish [%s] step: %s", url[:50], purpose[:80])
+                            await research_bus.publish(ctx.owner_id, {
+                                "type": "research_step",
+                                "label": label or url[:50],
+                                "step": purpose[:120],
+                            })
+                        elif event_type == "COMPLETE":
+                            result_data = event.get("resultJson") or event.get("result")
+                        elif event_type == "ERROR":
+                            err_msg = event.get("message", "TinyFish error")
+                            await research_bus.publish(ctx.owner_id, {
+                                "type": "research_done",
+                                "label": label or url[:50],
+                                "success": False,
+                                "error": err_msg,
+                            })
+                            return {"url": url, "label": label, "success": False, "error": err_msg, "steps": steps}
+                    except json.JSONDecodeError:
+                        pass
+
+    except asyncio.TimeoutError:
+        await research_bus.publish(ctx.owner_id, {
+            "type": "research_done",
+            "label": label or url[:50],
+            "success": False,
+            "error": "Timed out",
+        })
+        return {"url": url, "label": label, "success": False, "error": "Browse timed out after 180s", "steps_completed": steps}
+    except Exception as e:
+        await research_bus.publish(ctx.owner_id, {
+            "type": "research_done",
+            "label": label or url[:50],
+            "success": False,
+            "error": str(e),
+        })
+        return {"url": url, "label": label, "success": False, "error": str(e)}
+
+    summary = ""
+    if result_data is not None:
+        summary = (json.dumps(result_data)[:200] if not isinstance(result_data, str) else result_data[:200])
+
+    await research_bus.publish(ctx.owner_id, {
+        "type": "research_done",
+        "label": label or url[:50],
+        "success": True,
+        "summary": summary,
+    })
+
+    return {
+        "url": url,
+        "label": label,
+        "success": True,
+        "steps_taken": len(steps),
+        "result": result_data,
+    }
+
+
+async def handle_browse_web(ctx: ToolContext, params: dict) -> str:
+    """Browse a real website and extract structured data via TinyFish.
+
+    Automatically enriches the goal with vault context (preferences, health info)
+    and scans the result with Citadel before returning.
+    """
+    from src import research_bridge
+
+    if not os.getenv("TINYFISH_API_KEY", ""):
+        return json.dumps({
+            "success": False,
+            "error": "Web browsing unavailable (TINYFISH_API_KEY not configured)",
+        })
+
+    url = params["url"]
+    goal = params["goal"]
+    save_as_capsule = params.get("save_as_capsule", False)
+    capsule_title = params.get("capsule_title", "")
+    capsule_visibility = params.get("capsule_visibility", "private")
+
+    # Check Zig research cache before dispatching TinyFish
+    cached = research_bridge.cache_get(url, goal)
+    if cached:
+        log.info("browse_web: returning cached result for %s", url[:50])
+        try:
+            return cached
+        except Exception:
+            pass
+
+    # Enrich goal with vault context (tinyfish_safe=True: only preferences, PII redacted)
+    categories = _infer_categories(goal)
+    enriched_goal, context_items = await _enrich_goal_with_vault_context(
+        ctx, goal, categories, tinyfish_safe=True
+    )
+
+    # Browse via shared TinyFish helper (publishes bus events)
+    result = await _call_tinyfish_single(url, enriched_goal, url[:50], ctx)
+
+    if not result.get("success"):
+        return json.dumps(result)
+
+    result_data = result.get("result")
+
+    # Citadel scan — TinyFish output is from untrusted websites
+    from src import citadel
+    result_text = json.dumps(result_data) if result_data is not None else ""
+    scan = await citadel.scan_output(result_text, trust_level="public")
+    citadel_flagged = not scan.is_safe
+    if citadel_flagged:
+        log.warning("browse_web: Citadel flagged TinyFish result for %s: %s", url[:50], scan.findings)
+
+    # Optionally save result as a vault capsule (temporary, expires in 7 days)
+    saved_capsule_id = None
+    if save_as_capsule and capsule_title:
+        try:
+            from datetime import timedelta
+            content = json.dumps(result_data) if not isinstance(result_data, str) else result_data
+            if citadel_flagged:
+                content = f"[Security notice: content flagged during scan]\n\n{content}"
+            save_params = {
+                "title": capsule_title,
+                "content": content,
+                "capsule_type": "memory",
+                "visibility": capsule_visibility,
+                "category": "general",
+                "freshness": "temporary",
+            }
+            save_result_str = await handle_save_capsule(ctx, save_params)
+            save_result = json.loads(save_result_str)
+            if save_result.get("success"):
+                saved_capsule_id = save_result.get("capsule_id")
+        except Exception as e:
+            log.warning("browse_web: failed to save capsule: %s", e)
+
+    output = json.dumps({
+        "success": True,
+        "url": url,
+        "steps_taken": result.get("steps_taken", 0),
+        "result": result_data,
+        "vault_context_used": context_items,
+        **({"citadel_flagged": True, "citadel_findings": scan.findings} if citadel_flagged else {}),
+        **({"saved_capsule_id": saved_capsule_id} if saved_capsule_id else {}),
+    })
+
+    # Store in research cache
+    research_bridge.cache_put(url, goal, output)
+
+    return output
+
+
+async def handle_research_parallel(ctx: ToolContext, params: dict) -> str:
+    """Browse multiple websites simultaneously using TinyFish parallel sessions."""
+    import asyncio
+    from src import research_bus
+
+    if not os.getenv("TINYFISH_API_KEY", ""):
+        return json.dumps({
+            "success": False,
+            "error": "Web browsing unavailable (TINYFISH_API_KEY not configured)",
+        })
+
+    tasks = params.get("tasks", [])[:8]  # cap at 8
+    if not tasks:
+        return json.dumps({"success": False, "error": "No tasks provided"})
+
+    save_as_capsule = params.get("save_as_capsule", False)
+    capsule_title = params.get("capsule_title", "")
+    share_with_network = params.get("share_with_network", "")
+    # Default to internal when sharing with a network so peers can actually read it
+    capsule_visibility = params.get("capsule_visibility", "internal" if share_with_network else "private")
+
+    # Enrich all goals with shared vault context (tinyfish_safe=True: only preferences, PII redacted)
+    combined_goal = tasks[0]["goal"] if tasks else ""
+    categories = _infer_categories(combined_goal)
+    enriched_goal, context_items = await _enrich_goal_with_vault_context(
+        ctx, combined_goal, categories, tinyfish_safe=True
+    )
+
+    # Announce parallel research start
+    labels = [t.get("label", t["url"][:40]) for t in tasks]
+    await research_bus.publish(ctx.owner_id, {
+        "type": "research_parallel_started",
+        "tasks": labels,
+        "count": len(tasks),
+    })
+
+    # Dispatch all TinyFish sessions in parallel with a hard 60s total budget
+    coros = [
+        _call_tinyfish_single(
+            t["url"],
+            enriched_goal if t["goal"] == tasks[0]["goal"] else t["goal"],
+            t.get("label", t["url"][:40]),
+            ctx,
+        )
+        for t in tasks
+    ]
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*coros, return_exceptions=True),
+            timeout=60,
+        )
+    except asyncio.TimeoutError:
+        # Emit done for any labels that didn't finish
+        for label in labels:
+            await research_bus.publish(ctx.owner_id, {
+                "type": "research_done",
+                "label": label,
+                "success": False,
+                "error": "Timed out",
+            })
+        results = [Exception("Total budget exceeded")] * len(coros)
+
+    per_url = []
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            per_url.append({"label": labels[i], "success": False, "error": str(r)})
+        else:
+            per_url.append(r)
+
+    # Citadel scan of aggregated results
+    from src import citadel
+    all_text = json.dumps([r.get("result") for r in per_url if r.get("success")])
+    scan = await citadel.scan_output(all_text, trust_level="public")
+    if not scan.is_safe:
+        log.warning("research_parallel: Citadel flagged results: %s", scan.findings)
+
+    # Build aggregated summary
+    summaries = []
+    for r in per_url:
+        if r.get("success") and r.get("result"):
+            result_str = json.dumps(r["result"]) if not isinstance(r["result"], str) else r["result"]
+            summaries.append(f"{r.get('label', r.get('url', '?'))}: {result_str[:300]}")
+    aggregated_summary = "\n\n".join(summaries) if summaries else "No results"
+
+    # Optionally save aggregated result as capsule
+    saved_capsule_id = None
+    if save_as_capsule and capsule_title:
+        try:
+            save_params = {
+                "title": capsule_title,
+                "content": aggregated_summary,
+                "capsule_type": "memory",
+                "visibility": capsule_visibility,
+                "category": "general",
+                "freshness": "temporary",
+            }
+            if share_with_network:
+                save_params["network_names"] = [share_with_network]
+            save_result_str = await handle_save_capsule(ctx, save_params)
+            save_result = json.loads(save_result_str)
+            if save_result.get("success"):
+                saved_capsule_id = save_result.get("capsule_id")
+        except Exception as e:
+            log.warning("research_parallel: failed to save capsule: %s", e)
+
+    return json.dumps({
+        "success": True,
+        "results": per_url,
+        "aggregated_summary": aggregated_summary,
+        "vault_context_used": context_items,
+        **({"citadel_flagged": True, "citadel_findings": scan.findings} if not scan.is_safe else {}),
+        **({"saved_capsule_id": saved_capsule_id} if saved_capsule_id else {}),
+    })
+
+
+async def handle_check_conflicts(ctx: ToolContext, params: dict) -> str:
+    """Check if a stated claim conflicts with vault data."""
+    claim = params.get("claim", "")
+    search_query = params.get("search_query", "")
+
+    vault_result_str = await handle_search_vault(ctx, search_query)
+    vault_result = json.loads(vault_result_str)
+
+    excerpts = []
+    for cap in vault_result.get("capsules", [])[:3]:
+        excerpts.append({
+            "title": cap["title"],
+            "content_snippet": cap["content"][:200],
+            "capsule_type": cap["capsule_type"],
+            "freshness": cap.get("freshness", "permanent"),
+        })
+
+    return json.dumps({
+        "claim": claim,
+        "vault_excerpts": excerpts,
+        "message": (
+            f"Found {len(excerpts)} vault entries related to your search. "
+            "Compare the claim against the excerpts to identify conflicts."
+        ),
+    })
 
 
 async def handle_create_task(ctx: ToolContext, params: dict) -> str:
@@ -811,10 +1512,19 @@ async def handle_discover_agents(ctx: ToolContext, params: dict) -> str:
     capability = params.get("capability", "").lower()
     user_type_filter = params.get("user_type")
 
-    # Build query for discoverable users (exclude self)
+    from sqlalchemy import or_
+
+    # Build query for discoverable users (exclude self).
+    # When searching by name/query, also include federated ghost users (is_remote=True)
+    # so users on other pods are findable even if they haven't set is_discoverable.
+    discoverability_clause = (
+        or_(User.is_discoverable == True, User.is_remote == True)  # noqa: E712
+        if query_text
+        else (User.is_discoverable == True)  # noqa: E712
+    )
     stmt = (
         select(User)
-        .where(User.is_discoverable == True)  # noqa: E712
+        .where(discoverability_clause)
         .where(User.id != ctx.owner_id)
         .order_by(User.display_name)
     )
@@ -873,6 +1583,7 @@ async def handle_discover_agents(ctx: ToolContext, params: dict) -> str:
             "pools": pools,
             "skills": [{"name": s.get("name", ""), "category": s.get("category", "")} for s in skills[:5]],
             "recommended": trust_level == "network",
+            **({"pod_url": user.remote_pod_url} if user.is_remote and user.remote_pod_url else {}),
         })
 
     # Sort: recommended (pool-sharing) agents first, then alphabetically
@@ -894,6 +1605,140 @@ async def handle_discover_agents(ctx: ToolContext, params: dict) -> str:
 
 MAX_QUERY_DEPTH = 2  # Prevent infinite agent-to-agent recursion
 
+# Phrases that indicate the peer had no matching data
+_EMPTY_RESPONSE_PHRASES = (
+    "i don't have", "i do not have", "no information", "not found",
+    "nothing in", "no data", "unable to find", "couldn't find",
+    "cannot find", "no records", "not available", "not stored",
+    "hasn't shared", "has not shared", "no relevant",
+)
+
+
+def _is_empty_peer_response(response: str) -> bool:
+    """Return True if the peer agent's response indicates no data was found."""
+    if not response:
+        return True
+    lower = response.lower()
+    return any(phrase in lower for phrase in _EMPTY_RESPONSE_PHRASES)
+
+
+async def _send_data_request_to_peer(
+    ctx: "ToolContext",
+    target_user: "User",
+    question: str,
+    requester_display: str,
+) -> None:
+    """Send a cross-pod inbox message to `target_user` asking them to add missing data.
+
+    Also creates a follow-up timeline entry on the requester's pod so the agent
+    resumes automatically when the peer adds the data.
+    """
+    from src.models import Notification
+    import time as _time
+
+    # ── 1. Create a "data_request" notification on the target user's local pod ──
+    #    For remote (ghost) users we send a federation message instead (see below).
+    subject = f"Data request from {requester_display}"
+    body = (
+        f"{requester_display}'s agent asked: \"{question}\"\n\n"
+        "Reply to this message and your agent will save it to your vault automatically. "
+        "Once saved, the requester will be notified and their agent will continue."
+    )
+
+    if not target_user.is_remote:
+        # Local user — write notification directly
+        ctx.db.add(Notification(
+            user_id=target_user.id,
+            notification_type="data_request",
+            title=subject,
+            body=body,
+            related_id=ctx.owner_id,  # requester's user_id for callback
+        ))
+        await ctx.db.flush()
+    else:
+        # Remote user — send via federation message
+        try:
+            import httpx
+            from src.models import Agent
+            from src import federation_auth, transit_bridge
+
+            agent_res = await ctx.db.execute(select(Agent).where(Agent.owner_id == ctx.owner_id))
+            our_agent = agent_res.scalar_one_or_none()
+            our_did = our_agent.did if our_agent else "unknown"
+            signing_key = None
+            if our_agent and our_agent.encrypted_private_key:
+                try:
+                    signing_key = transit_bridge.decrypt(ctx.owner_id, our_agent.encrypted_private_key)
+                except Exception:
+                    pass
+
+            real_username = target_user.username
+            if real_username.startswith("remote:"):
+                real_username = real_username[7:].split("@")[0]
+
+            payload: dict = {
+                "from_did": our_did,
+                "to_username": real_username,
+                "subject": subject,
+                "body": body,
+                "notification_type": "data_request",
+                "requester_pod_url": ctx.pod_url,
+                "requester_user_id": ctx.owner_id,
+                "requester_display": requester_display,
+                "original_question": question,
+            }
+            if signing_key:
+                payload["signature"] = federation_auth.sign_payload(payload, signing_key)
+
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"{target_user.remote_pod_url}/api/federation/data_request",
+                    json=payload,
+                )
+        except Exception as e:
+            log.warning("data_request federation delivery failed: %s", e)
+
+    # ── 2. Create a follow-up timeline entry on requester's pod ──
+    try:
+        from src.routes.timeline import _get_engine, persist_entry_spec
+        from src.timeline_bridge import EntryState, EntryType, ActivationTrigger, Visibility
+        import uuid as _uuid
+
+        engine = _get_engine()
+        entry_id = _uuid.uuid4()
+        target_display = target_user.display_name or real_username if target_user.is_remote else (target_user.display_name or target_user.username)
+        label = f"Waiting for {target_display}'s data — resume when ready"
+        event_key = f"peer_data_ready:{target_user.id}"
+
+        engine.add_entry(
+            entry_id=entry_id,
+            label=label,
+            category="general",
+            salience=0.7,
+            visibility=Visibility.PRIVATE,
+            activation_trigger=ActivationTrigger(kind="event", event_type=event_key),
+        )
+        persist_entry_spec(
+            owner_id=ctx.owner_id,
+            entry_id=entry_id,
+            state=int(EntryState.DORMANT),
+            spec={
+                "owner_id": ctx.owner_id,
+                "label": label,
+                "category": "general",
+                "entry_type": int(EntryType.EVENT),
+                "activation_trigger": {"kind": "event", "event_type": event_key},
+                "hooks": [{"action": 3, "phase": 0, "prompt": f"Resume planning: {question}"}],
+                "peer_data_request": {
+                    "target_user_id": target_user.id,
+                    "target_username": target_user.username,
+                    "original_question": question,
+                },
+            },
+        )
+    except Exception as e:
+        log.warning("Could not create follow-up timeline entry: %s", e)
+
 
 async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
     """Query another user's agent. Full trust pipeline enforced.
@@ -912,11 +1757,23 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
     target_username = params["target_username"]
     question = params["question"]
 
-    # Resolve username to user_id
+    # Resolve to a User: exact username match first, then display-name substring.
+    # This handles Gemini calling with "Dr. Lee" instead of the canonical "dr_lee".
     result = await ctx.db.execute(
         select(User).where(User.username == target_username)
     )
     target_user = result.scalar_one_or_none()
+    if not target_user:
+        # Case-insensitive display name fallback (e.g. "Dr. Lee" → dr_lee)
+        from sqlalchemy import func
+        result2 = await ctx.db.execute(
+            select(User).where(
+                func.lower(User.display_name).contains(target_username.lower().replace(".", ""))
+            ).limit(1)
+        )
+        target_user = result2.scalar_one_or_none()
+        if target_user:
+            log.debug("query_peer: resolved display-name %r → username %r", target_username, target_user.username)
 
     # ── Path 1: Local real user (unchanged fast path) ──
     if target_user and not target_user.is_remote:
@@ -947,6 +1804,26 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
             "public": "Limited access — only public/open information visible. Connect with them or join a shared pool for more access.",
         }.get(trust_level, "Unknown trust level")
 
+        peer_response = query_result.get("response", "No response")
+
+        # If the peer has no data, send them a data request and create a follow-up task
+        if _is_empty_peer_response(peer_response):
+            requester_result = await ctx.db.execute(select(User).where(User.id == ctx.owner_id))
+            requester = requester_result.scalar_one_or_none()
+            requester_display = requester.display_name if requester else "Someone"
+            await _send_data_request_to_peer(ctx, target_user, question, requester_display)
+            return json.dumps({
+                "success": True,
+                "target": target_username,
+                "target_display_name": target_user.display_name,
+                "data_requested": True,
+                "message": (
+                    f"{target_user.display_name} doesn't have this data yet. "
+                    "I've sent them an inbox request. A follow-up task has been created — "
+                    "I'll automatically continue when they add the information."
+                ),
+            })
+
         return json.dumps({
             "success": True,
             "target": target_username,
@@ -955,7 +1832,7 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
             "trust_level": trust_level,
             "trust_explanation": trust_explanation,
             "shared_networks": query_result.get("shared_networks", []),
-            "response": query_result.get("response", "No response"),
+            "response": peer_response,
             "decision": query_result.get("decision", "unknown"),
         })
 
@@ -1001,6 +1878,26 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
 
         if remote_result:
             remote_pod_name = remote_result.get("pod_name", "")
+            peer_response = remote_result.get("response", "No response")
+
+            if _is_empty_peer_response(peer_response):
+                requester_result = await ctx.db.execute(select(User).where(User.id == ctx.owner_id))
+                requester = requester_result.scalar_one_or_none()
+                requester_display = requester.display_name if requester else "Someone"
+                await _send_data_request_to_peer(ctx, target_user, question, requester_display)
+                return json.dumps({
+                    "success": True,
+                    "target": target_username,
+                    "target_display_name": target_user.display_name,
+                    "data_requested": True,
+                    "federated": True,
+                    "message": (
+                        f"{target_user.display_name} doesn't have this data yet. "
+                        "I've sent them an inbox request on their pod. "
+                        "A follow-up task has been created — I'll continue automatically when they add the information."
+                    ),
+                })
+
             return json.dumps({
                 "success": True,
                 "target": target_username,
@@ -1009,7 +1906,7 @@ async def handle_query_peer(ctx: ToolContext, params: dict) -> str:
                 "trust_level": remote_result.get("trust_level", "public"),
                 "trust_explanation": f"Federated query to {remote_pod_name or target_user.remote_pod_url}",
                 "shared_networks": remote_result.get("shared_networks", []),
-                "response": remote_result.get("response", "No response"),
+                "response": peer_response,
                 "decision": remote_result.get("decision", "unknown"),
                 "federated": True,
                 "remote_pod": target_user.remote_pod_url,
@@ -1757,6 +2654,841 @@ async def handle_manage_credential(ctx: ToolContext, params: dict) -> str:
         return json.dumps({"success": False, "error": f"Unknown action: {action}"})
 
 
+async def handle_trigger_emergency(ctx: ToolContext, reason: str) -> str:
+    """Issue a real UCAN token to Riverside Hospital + notify family connections.
+
+    Steps:
+    1. Look up the hospital user (riverside_hospital)
+    2. Generate a 30-min UCAN token (attending_physician role) using the owner's ed25519 key
+    3. Find family connections (trust_level >= network)
+    4. Create notifications for each family member
+    5. Return structured result with token + notified list + expiry
+    """
+    from sqlalchemy import select, or_
+    from src.models import Agent, Connection, User
+    from src import transit_bridge
+    from src.ucan import create_ucan_token
+    from src.trust import resolve_trust_level
+    import datetime
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expires_at = now + datetime.timedelta(minutes=30)
+
+    # 1. Look up hospital user
+    hosp_result = await ctx.db.execute(
+        select(User).where(User.username == "riverside_hospital")
+    )
+    hospital = hosp_result.scalar_one_or_none()
+    if not hospital:
+        # Try by display name fragment
+        hosp_result = await ctx.db.execute(
+            select(User).where(User.display_name.ilike("%Hospital%"))
+        )
+        hospital = hosp_result.scalar_one_or_none()
+
+    # 2. Get owner's agent DID + signing key
+    agent_result = await ctx.db.execute(
+        select(Agent).where(Agent.owner_id == ctx.owner_id)
+    )
+    owner_agent = agent_result.scalar_one_or_none()
+    if not owner_agent:
+        return json.dumps({"success": False, "error": "Owner agent not found"})
+
+    owner_did = owner_agent.did
+    signing_key: bytes | None = None
+    if owner_agent.encrypted_private_key:
+        try:
+            signing_key = transit_bridge.decrypt(ctx.owner_id, owner_agent.encrypted_private_key)
+        except Exception as e:
+            log.warning("Could not decrypt owner signing key: %s", e)
+
+    ucan_token: str | None = None
+    hospital_did = ""
+    if hospital:
+        # Get hospital's agent DID as audience
+        hosp_agent_result = await ctx.db.execute(
+            select(Agent).where(Agent.owner_id == hospital.id)
+        )
+        hosp_agent = hosp_agent_result.scalar_one_or_none()
+        hospital_did = hosp_agent.did if hosp_agent else "did:key:hospital"
+
+        if signing_key:
+            try:
+                ucan_token = create_ucan_token(
+                    issuer_did=owner_did,
+                    issuer_private_key=signing_key,
+                    audience_did=hospital_did,
+                    role="attending_physician",
+                    duration_seconds=1800,  # 30 minutes
+                    facts={
+                        "reason": reason,
+                        "issued_by": ctx.owner_name,
+                        "emergency": True,
+                    },
+                )
+            except Exception as e:
+                log.warning("UCAN token generation failed: %s", e)
+
+    # 3. Find family connections to notify
+    conn_result = await ctx.db.execute(
+        select(Connection).where(
+            or_(
+                Connection.from_user_id == ctx.owner_id,
+                Connection.to_user_id == ctx.owner_id,
+            ),
+            Connection.status == "accepted",
+        )
+    )
+    notified = []
+    for conn in conn_result.scalars().all():
+        other_id = conn.to_user_id if conn.from_user_id == ctx.owner_id else conn.from_user_id
+        trust_level, _ = await resolve_trust_level(ctx.db, ctx.owner_id, other_id)
+        if trust_level not in ("network", "private"):
+            continue
+        other = await ctx.db.get(User, other_id)
+        if not other or other.is_remote:
+            continue
+
+        # 4. Create notification
+        notification = Notification(
+            user_id=other_id,
+            notification_type="emergency_alert",
+            title=f"EMERGENCY: {ctx.owner_name} needs help",
+            body=f"{ctx.owner_name} has declared a medical emergency: {reason}. "
+                 f"Emergency services have been notified. Please check in immediately.",
+            related_id=ctx.owner_id,
+        )
+        ctx.db.add(notification)
+        notified.append(other.display_name)
+
+    # Also notify hospital if found
+    if hospital:
+        hosp_notification = Notification(
+            user_id=hospital.id,
+            notification_type="emergency_access_granted",
+            title=f"Emergency access granted by {ctx.owner_name}",
+            body=f"A 30-minute UCAN token has been issued for attending_physician access to "
+                 f"{ctx.owner_name}'s health data. Reason: {reason}",
+            related_id=ctx.owner_id,
+        )
+        ctx.db.add(hosp_notification)
+
+    await ctx.db.flush()
+
+    ctx.actions.append({
+        "type": "emergency_triggered",
+        "reason": reason,
+        "ucan_issued": ucan_token is not None,
+        "notified": notified,
+        "hospital": hospital.display_name if hospital else None,
+    })
+
+    return json.dumps({
+        "success": True,
+        "emergency_declared": True,
+        "reason": reason,
+        # Keep the token out of the LLM-visible result — it's long base64 that sounds
+        # terrible in voice and has no value for the agent to repeat.
+        "ucan_issued": ucan_token is not None,
+        "ucan_role": "attending_physician",
+        "expires_in": "30 minutes",
+        "hospital_notified": hospital.display_name if hospital else "Riverside Hospital (not found in mesh)",
+        "family_notified": notified,
+        "message": (
+            f"Emergency declared. UCAN access token issued to {hospital.display_name if hospital else 'hospital'} "
+            f"(valid 30 min, attending_physician role). "
+            f"Notified {len(notified)} family member(s): {', '.join(notified) or 'none'}."
+        ),
+    })
+
+
+async def handle_generate_emergency_qr(
+    ctx: ToolContext, role: str, reason: str, requester_org: str = ""
+) -> str:
+    """Generate a role-scoped UCAN beacon token and return the scanner URL.
+
+    Registry verification flow:
+    - If requester_org is provided, query the local DB + TrustMesh registry for
+      a matching organization DID.
+    - Verified medical org → token aud = org DID, role as requested.
+    - Unverified → token aud = "did:emergency:any", role downgraded to "paramedic"
+      (minimal scope: blood type, allergies, DNR, emergency contacts only).
+    - Scan endpoint re-checks the aud DID against the registry — an unregistered
+      person with the URL will fail verification at scan time.
+    """
+    from sqlalchemy import select
+    from src.models import Agent, User, AuditLog
+    from src import transit_bridge
+    from src.ucan import create_ucan_token
+    from src.rate_limit import check_emergency_issue_rate, record_emergency_issue
+    from src.federation import POD_URL, REGISTRY_URL
+    import os as _os
+    import uuid as _uuid
+
+    valid_roles = {"paramedic", "er_nurse", "attending_physician"}
+    if role not in valid_roles:
+        return json.dumps({"error": f"Invalid role '{role}'. Must be one of: {sorted(valid_roles)}"})
+
+    # Rate limit — same bucket as the beacon endpoint
+    rate_ok, rate_msg = check_emergency_issue_rate(ctx.owner_id)
+    if not rate_ok:
+        return json.dumps({"error": rate_msg})
+
+    # ── Registry verification ──────────────────────────────────────────────────
+    # Try to find the requester's org DID via local users (ghost users for known
+    # remote pods) or the public TrustMesh registry.
+    org_did: str = "did:emergency:any"   # default: unverified
+    org_verified: bool = False
+    org_verified_name: str = ""
+    final_role: str = role               # may be downgraded
+
+    MEDICAL_KEYWORDS = {"hospital", "medical", "health", "clinic", "ems", "emergency", "paramedic", "rescue"}
+
+    if requester_org:
+        org_lower = requester_org.lower()
+
+        # 1. Check local DB (ghost users from federated pods, or local org users)
+        local_result = await ctx.db.execute(
+            select(User, Agent)
+            .join(Agent, Agent.owner_id == User.id)
+            .where(User.user_type.in_(["organization", "service"]))
+            .where(User.display_name.ilike(f"%{requester_org}%"))
+        )
+        local_match = local_result.first()
+        if local_match:
+            local_user, local_agent = local_match
+            org_did = local_agent.did
+            org_verified = True
+            org_verified_name = local_user.display_name
+
+        # 2. If not local, try the registry API
+        if not org_verified and REGISTRY_URL:
+            try:
+                import httpx as _httpx
+                import urllib.parse
+                async with _httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(
+                        f"{REGISTRY_URL.rstrip('/')}/api/agents",
+                        params={"entity_type": "organization", "q": requester_org},
+                    )
+                    if resp.status_code == 200:
+                        for entry in resp.json().get("agents", []):
+                            name_lower = entry.get("name", "").lower()
+                            bio_lower = entry.get("bio", "").lower()
+                            # Must match the org name AND look like a medical org
+                            if requester_org.lower() in name_lower and any(
+                                kw in name_lower or kw in bio_lower for kw in MEDICAL_KEYWORDS
+                            ):
+                                org_did = entry.get("did", "did:emergency:any")
+                                org_verified = True
+                                org_verified_name = entry.get("name", requester_org)
+                                break
+            except Exception:
+                pass  # Registry unreachable — fall back to unverified
+
+        # 3. If still unverified, downgrade role to paramedic (minimal scope)
+        if not org_verified:
+            final_role = "paramedic"
+
+    # Load owner's agent + private key
+    agent_result = await ctx.db.execute(select(Agent).where(Agent.owner_id == ctx.owner_id))
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        return json.dumps({"error": "Agent not found for this user"})
+
+    user_result = await ctx.db.execute(select(User).where(User.id == ctx.owner_id))
+    user = user_result.scalar_one_or_none()
+    patient_username = (user.username if user else None) or ctx.owner_id
+
+    if not transit_bridge.has_key(ctx.owner_id):
+        return json.dumps({"error": "Vault key not loaded — owner must be logged in first"})
+
+    try:
+        private_key = transit_bridge.decrypt(ctx.owner_id, agent.encrypted_private_key)
+    except Exception:
+        return json.dumps({"error": "Failed to decrypt agent private key"})
+
+    # Sign the token with verified audience
+    try:
+        token = create_ucan_token(
+            issuer_did=agent.did,
+            issuer_private_key=private_key,
+            audience_did=org_did,
+            role=final_role,
+            duration_seconds=1800,
+            facts={
+                "emergency_beacon": True,
+                "issued_by": ctx.owner_name,
+                "reason": reason,
+                "org_verified": org_verified,
+                "org_name": org_verified_name or requester_org or "unknown",
+            },
+        )
+    except Exception as e:
+        return json.dumps({"error": f"Token generation failed: {e}"})
+    finally:
+        private_key = b"\x00" * len(private_key)
+
+    # Build the scanner URL (frontend + pod param for multi-pod)
+    _frontend_url = _os.getenv("TRUSTMESH_FRONTEND_URL", "http://localhost:3050").rstrip("/")
+    scanner_url = f"{_frontend_url}/emergency/scan?t={token}&p={patient_username}&pod={POD_URL}"
+
+    # Audit log
+    audit_id = str(_uuid.uuid4())
+    try:
+        audit_row = AuditLog(
+            id=audit_id,
+            actor_user_id=ctx.owner_id,
+            target_user_id=ctx.owner_id,
+            action="emergency_beacon_generated",
+            event_type="emergency",
+            token_role=final_role,
+            decision="allowed",
+            details=json.dumps({
+                "source": "agent_tool",
+                "reason": reason,
+                "org_verified": org_verified,
+                "org_name": org_verified_name or requester_org or "unknown",
+                "requested_role": role,
+                "issued_role": final_role,
+                "audience": org_did,
+            }),
+        )
+        ctx.db.add(audit_row)
+        await ctx.db.flush()
+    except Exception:
+        pass
+
+    record_emergency_issue(ctx.owner_id)
+
+    role_labels = {
+        "paramedic": "EMT / Paramedic",
+        "er_nurse": "ER Nurse",
+        "attending_physician": "Attending Physician",
+    }
+
+    downgraded_msg = ""
+    if final_role != role:
+        downgraded_msg = (
+            f" NOTE: Role downgraded from '{role}' to 'paramedic' because "
+            f"'{requester_org}' could not be verified as a registered medical organization. "
+            f"Only blood type, allergies, DNR, and emergency contacts will be visible."
+        )
+
+    return json.dumps({
+        "success": True,
+        "role": final_role,
+        "role_label": role_labels[final_role],
+        "org_verified": org_verified,
+        "org_name": org_verified_name or requester_org or "unverified",
+        "audience": org_did,
+        "scanner_url": scanner_url,
+        "expires_in": "30 minutes",
+        "audit_id": audit_id,
+        "instructions": (
+            f"Share this URL with the {role_labels[final_role]}: {scanner_url}\n"
+            f"They can open it on any device — no login required. "
+            f"Access is cryptographically verified and logged.{downgraded_msg}"
+        ),
+    })
+
+
+async def _send_federated_connection_request(ctx, ghost, message: str, relationship_type: str, context: str = "personal") -> str:
+    """Send a cross-pod connection request to a remote user via their pod.
+
+    Also creates a local pending ConnectionRequest so the agent can track state
+    and the accept callback has something to update.
+    """
+    import json as _json
+    import uuid
+    import httpx
+    from sqlalchemy import select
+    from src.models import User, Agent, Connection, ConnectionRequest, Notification
+    from src import transit_bridge
+    from src.federation import POD_URL
+    from src.federation_auth import sign_federation_request
+    from src.rate_limit import check_connection_rate, record_connection_request
+
+    # Rate limit
+    if not check_connection_rate(ctx.owner_id):
+        return _json.dumps({"success": False, "error": "Too many connection requests. Try again later."})
+
+    # Check already connected or pending
+    existing = await ctx.db.execute(
+        select(Connection).where(
+            ((Connection.from_user_id == ctx.owner_id) & (Connection.to_user_id == ghost.id)) |
+            ((Connection.from_user_id == ghost.id) & (Connection.to_user_id == ctx.owner_id))
+        )
+    )
+    if existing.scalar_one_or_none():
+        return _json.dumps({"success": False, "already_connected": True, "message": f"Already connected with {ghost.display_name}."})
+
+    existing_req = await ctx.db.execute(
+        select(ConnectionRequest).where(
+            ConnectionRequest.from_user_id == ctx.owner_id,
+            ConnectionRequest.to_user_id == ghost.id,
+            ConnectionRequest.status == "pending",
+        )
+    )
+    if existing_req.scalar_one_or_none():
+        return _json.dumps({"success": False, "already_pending": True, "message": "Request already pending."})
+
+    # Get our agent for signing
+    agent_result = await ctx.db.execute(select(Agent).where(Agent.owner_id == ctx.owner_id))
+    our_agent = agent_result.scalar_one_or_none()
+    if not our_agent or not our_agent.did:
+        return _json.dumps({"success": False, "error": "Agent configuration incomplete."})
+
+    if not transit_bridge.has_key(ctx.owner_id) or not our_agent.encrypted_private_key:
+        return _json.dumps({"success": False, "error": "Vault key not available for signing."})
+
+    private_key = transit_bridge.decrypt(ctx.owner_id, our_agent.encrypted_private_key)
+
+    payload = {
+        "from_did": our_agent.did,
+        "from_pod_url": POD_URL,
+        "from_display_name": ctx.owner_name,
+        "to_did": ghost.remote_did,
+        "message": message,
+    }
+    body = _json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    headers.update(sign_federation_request(body, private_key))
+    del private_key
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
+                f"{ghost.remote_pod_url.rstrip('/')}/api/pod/connection-request",
+                content=body,
+                headers=headers,
+            )
+            if r.status_code not in (200, 201):
+                return _json.dumps({"success": False, "error": f"Remote pod responded with {r.status_code}."})
+    except Exception as e:
+        return _json.dumps({"success": False, "error": f"Could not reach remote pod: {e}"})
+
+    # Create local pending record so accept callback can update it
+    local_req = ConnectionRequest(
+        id=str(uuid.uuid4()),
+        from_user_id=ctx.owner_id,
+        to_user_id=ghost.id,
+        message=message,
+        context=context,
+        relationship_type=relationship_type or None,
+        status="pending",
+    )
+    ctx.db.add(local_req)
+    await ctx.db.commit()
+    record_connection_request(ctx.owner_id)
+
+    return _json.dumps({
+        "success": True,
+        "message": f"Connection request sent to {ghost.display_name} on their pod.",
+        "recipient": ghost.display_name,
+        "request_id": local_req.id,
+        "cross_pod": True,
+    })
+
+
+async def handle_send_connection_request(ctx: ToolContext, params: dict) -> str:
+    """Send a connection request to another user on this pod."""
+    from sqlalchemy import select
+    from src.models import User, Connection, ConnectionRequest
+    from src.rate_limit import check_connection_rate, record_connection_request
+
+    to_username = params["to_username"].strip()
+    message = params.get("message", "")[:500]
+    relationship_type = params.get("relationship_type", "")
+    raw_context = params.get("context", "") or ctx.active_context or "personal"
+    context = "both" if raw_context == "all" else raw_context
+
+    # Resolve target user
+    result = await ctx.db.execute(
+        select(User).where(User.username == to_username)
+    )
+    target = result.scalar_one_or_none()
+    if not target:
+        # Fuzzy fallback: display name
+        result2 = await ctx.db.execute(
+            select(User).where(
+                User.display_name.ilike(f"%{to_username}%")
+            ).limit(1)
+        )
+        target = result2.scalar_one_or_none()
+    if not target:
+        # Not found locally — try remote discovery across peer pods
+        from src.federation import discover_remote_agents, get_or_create_ghost_user
+        remote_agents = await discover_remote_agents(ctx.db)
+        matched = None
+        for ra in remote_agents:
+            name_match = (
+                ra.get("owner_username", "").lower() == to_username.lower()
+                or ra.get("owner_display_name", "").lower() == to_username.lower()
+                or to_username.lower() in ra.get("owner_display_name", "").lower()
+            )
+            if name_match and ra.get("_pod", {}).get("url"):
+                matched = ra
+                break
+        if matched:
+            # Create ghost user and send federated request
+            pod_info = matched["_pod"]
+            ghost = await get_or_create_ghost_user(
+                ctx.db,
+                remote_username=matched.get("owner_username", matched.get("did", "")),
+                remote_display_name=matched.get("owner_display_name", to_username),
+                remote_did=matched.get("did", ""),
+                remote_pod_url=pod_info["url"],
+            )
+            await ctx.db.flush()
+            return await _send_federated_connection_request(
+                ctx=ctx,
+                ghost=ghost,
+                message=message,
+                relationship_type=relationship_type,
+                context=context,
+            )
+        # Last resort: scan sibling demo pods directly (when peer registry is empty)
+        from src.federation import scan_demo_pods_for_user
+        matched = await scan_demo_pods_for_user(username=to_username)
+        if matched:
+            pod_info = matched["_pod"]
+            ghost = await get_or_create_ghost_user(
+                ctx.db,
+                remote_username=matched.get("owner_username", to_username),
+                remote_display_name=matched.get("owner_display_name", to_username),
+                remote_did=matched.get("did", ""),
+                remote_pod_url=pod_info["url"],
+            )
+            await ctx.db.flush()
+            return await _send_federated_connection_request(
+                ctx=ctx,
+                ghost=ghost,
+                message=message,
+                relationship_type=relationship_type,
+                context=context,
+            )
+        return json.dumps({"success": False, "error": f"User '{to_username}' not found locally or in connected pods. Ask them to share an invite link."})
+
+    if target.id == ctx.owner_id:
+        return json.dumps({"success": False, "error": "Cannot connect with yourself."})
+
+    if target.is_remote:
+        # Found a ghost user — send cross-pod connection request
+        if not target.remote_did or not target.remote_pod_url:
+            return json.dumps({"success": False, "error": "Remote user is missing DID or pod URL."})
+        return await _send_federated_connection_request(
+            ctx=ctx,
+            ghost=target,
+            message=message,
+            relationship_type=relationship_type,
+            context=context,
+        )
+
+    # Check if already connected
+    existing = await ctx.db.execute(
+        select(Connection).where(
+            ((Connection.from_user_id == ctx.owner_id) & (Connection.to_user_id == target.id)) |
+            ((Connection.from_user_id == target.id) & (Connection.to_user_id == ctx.owner_id))
+        )
+    )
+    if existing.scalar_one_or_none():
+        return json.dumps({"success": False, "already_connected": True, "message": f"You're already connected with {target.display_name}."})
+
+    # Check for existing pending request
+    pending = await ctx.db.execute(
+        select(ConnectionRequest).where(
+            ConnectionRequest.from_user_id == ctx.owner_id,
+            ConnectionRequest.to_user_id == target.id,
+            ConnectionRequest.status == "pending",
+        )
+    )
+    if pending.scalar_one_or_none():
+        return json.dumps({"success": False, "already_pending": True, "message": f"A connection request to {target.display_name} is already pending."})
+
+    # Rate limit
+    if not check_connection_rate(ctx.owner_id):
+        return json.dumps({"success": False, "error": "Too many connection requests. Try again later."})
+
+    # Create the request
+    import uuid
+    req = ConnectionRequest(
+        id=str(uuid.uuid4()),
+        from_user_id=ctx.owner_id,
+        to_user_id=target.id,
+        message=message,
+        context=context,
+        relationship_type=relationship_type or None,
+        status="pending",
+    )
+    ctx.db.add(req)
+
+    # Create notification for recipient
+    from src.models import Notification
+    notif = Notification(
+        id=str(uuid.uuid4()),
+        user_id=target.id,
+        notification_type="connection_request",
+        title="New connection request",
+        body=f"{ctx.owner_name} wants to connect with you.",
+        related_id=req.id,
+    )
+    ctx.db.add(notif)
+    await ctx.db.commit()
+
+    record_connection_request(ctx.owner_id)
+
+    # Audit trail
+    try:
+        from src.audit import log_event
+        await log_event(
+            ctx.db,
+            actor_user_id=ctx.owner_id,
+            target_user_id=target.id,
+            action="connection_request_sent",
+            event_type="network",
+            decision="allowed",
+            details={"recipient": target.display_name, "request_id": req.id, "via": "agent"},
+        )
+    except Exception:
+        pass
+
+    return json.dumps({
+        "success": True,
+        "message": f"Connection request sent to {target.display_name}. They'll be notified.",
+        "recipient": target.display_name,
+        "request_id": req.id,
+    })
+
+
+async def handle_send_message(ctx: ToolContext, params: dict) -> str:
+    """Send an encrypted message to a connected/pool-member user (local or cross-pod).
+
+    Steps:
+    1. Resolve recipient by username (local or ghost)
+    2. Trust check — must be connected/network/private
+    3a. Local recipient — encrypt via transit/pod KEK, create_message, Notification
+    3b. Remote (ghost) — sign payload, POST to remote pod's deliver endpoint
+    4. Audit capsule in sender's vault (private memory)
+    5. Return structured result
+    """
+    import hashlib
+    import uuid
+    from datetime import datetime, timezone, timedelta
+
+    from sqlalchemy import select, func
+    from src.models import User, Notification
+    from src.trust import resolve_trust_level
+    from src import transit_bridge, message_bridge
+
+    to_username = params["to_username"]
+    subject = str(params["subject"])[:200]
+    body = params["body"]
+    expires_in_hours: int | None = params.get("expires_in_hours")
+
+    # ── 1. Resolve recipient ──────────────────────────────────────────────────
+    result = await ctx.db.execute(select(User).where(User.username == to_username))
+    recipient = result.scalar_one_or_none()
+    if not recipient:
+        # Display-name fallback (handles "Dr. Lee" → dr_lee)
+        result2 = await ctx.db.execute(
+            select(User).where(
+                func.lower(User.display_name).contains(to_username.lower().replace(".", ""))
+            ).limit(1)
+        )
+        recipient = result2.scalar_one_or_none()
+
+    if not recipient:
+        return json.dumps({"success": False, "error": f"User '{to_username}' not found in your network."})
+
+    # ── 2. Trust check ────────────────────────────────────────────────────────
+    trust_level, _ = await resolve_trust_level(ctx.db, ctx.owner_id, recipient.id)
+    if trust_level not in ("connected", "network", "private"):
+        return json.dumps({
+            "success": False,
+            "error": f"Cannot message {to_username}: trust level is '{trust_level}'. "
+                     "You can only message users you're connected to or share a pool with.",
+        })
+
+    # Owner info for sender fields
+    owner_result = await ctx.db.execute(select(User).where(User.id == ctx.owner_id))
+    owner = owner_result.scalar_one_or_none()
+    owner_username = owner.username if owner else ctx.owner_id
+    owner_display = owner.display_name if owner else ctx.owner_name
+
+    now = datetime.now(timezone.utc)
+    msg_id = str(uuid.uuid4())
+    expires_at: str | None = None
+    if expires_in_hours:
+        expires_at = (now + timedelta(hours=expires_in_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    body_bytes = body.encode("utf-8")
+    body_hash = hashlib.sha256(body_bytes).hexdigest()
+
+    cross_pod = bool(recipient.is_remote)
+
+    # ── 3a. Local recipient ───────────────────────────────────────────────────
+    if not cross_pod:
+        if transit_bridge.has_key(recipient.id):
+            aad = f"message:{msg_id}"
+            body_encrypted = transit_bridge.encrypt(recipient.id, body_bytes, aad=aad)
+            rekey_needed = False
+        else:
+            # Encrypt with pod KEK — rekey on recipient's next login
+            from src.main import _POD_KEK
+            from src.crypto import encrypt as _crypto_encrypt
+            body_encrypted = _crypto_encrypt(body_bytes, _POD_KEK)
+            rekey_needed = True
+
+        message_bridge.create_message(
+            message_id=msg_id,
+            sender_id=ctx.owner_id,
+            sender_username=owner_username,
+            sender_display_name=owner_display,
+            sender_pod_url=None,
+            recipient_id=recipient.id,
+            subject=subject,
+            body_encrypted=body_encrypted,
+            body_hash=body_hash,
+            scope="direct",
+            trust_level=trust_level,
+            expires_at=expires_at,
+            rekey_needed=rekey_needed,
+        )
+
+        ctx.db.add(Notification(
+            user_id=recipient.id,
+            notification_type="message_received",
+            title=f"Message from {owner_display}: {subject}",
+            body=subject,
+            related_id=msg_id,
+        ))
+        await ctx.db.flush()
+
+    # ── 3b. Remote (ghost) — federated delivery ───────────────────────────────
+    else:
+        import httpx
+        from src.models import Agent
+        from src import federation_auth
+
+        agent_result = await ctx.db.execute(select(Agent).where(Agent.owner_id == ctx.owner_id))
+        our_agent = agent_result.scalar_one_or_none()
+        our_did = our_agent.did if our_agent else "unknown"
+        signing_key: bytes | None = None
+        if our_agent and our_agent.encrypted_private_key:
+            try:
+                signing_key = transit_bridge.decrypt(ctx.owner_id, our_agent.encrypted_private_key)
+            except Exception:
+                signing_key = None
+
+        import json as _json
+        from src import federation_auth
+
+        # Strip "remote:" prefix and "@host" suffix to get bare username
+        real_to = recipient.username
+        if real_to.startswith("remote:"):
+            real_to = real_to[7:]
+        if "@" in real_to:
+            real_to = real_to.split("@")[0]
+
+        from src.main import app  # noqa: avoid circular — only for pod_url
+        pod_url = os.getenv("TRUSTMESH_POD_URL", "")
+
+        payload = {
+            "from_did": our_did,
+            "from_pod": pod_url,
+            "to_username": real_to,
+            "subject": subject,
+            "body": body,
+            "scope": "direct",
+            "expires_in_hours": expires_in_hours,
+            "sender_username": owner_username,
+            "sender_display_name": owner_display,
+            "federation_signature": "",
+        }
+
+        raw_body = _json.dumps(payload).encode()
+        deliver_path = "/api/pod/messages/deliver"
+        sig_headers: dict[str, str] = {}
+        if signing_key:
+            try:
+                sig_headers = federation_auth.sign_federation_request(
+                    raw_body, signing_key, method="POST", path=deliver_path
+                )
+            except Exception as e:
+                log.warning("send_message: federation signing failed: %s", e)
+
+        deliver_url = recipient.remote_pod_url.rstrip("/") + deliver_path
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(deliver_url, content=raw_body, headers={
+                    "Content-Type": "application/json",
+                    **sig_headers,
+                })
+                if resp.status_code != 200:
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Remote pod rejected delivery: HTTP {resp.status_code}",
+                    })
+        except Exception as e:
+            return json.dumps({"success": False, "error": f"Cross-pod delivery failed: {e}"})
+
+    # ── 4. Audit capsule (always) ─────────────────────────────────────────────
+    try:
+        from src.crypto import content_hash
+        from src.embeddings import upsert_capsule_embedding
+        from src.models import KnowledgeCapsule
+
+        audit_title = f"Sent: {subject}"
+        audit_content = f"To: {owner_display if cross_pod else recipient.display_name} ({to_username})\nSubject: {subject}\n\n{body}"
+        capsule = KnowledgeCapsule(
+            owner_id=ctx.owner_id,
+            capsule_type="memory",
+            title=audit_title,
+            content_encrypted=transit_bridge.encrypt_text(ctx.owner_id, audit_content),
+            content_hash=content_hash(audit_content),
+            visibility="private",
+            emergency_accessible=False,
+            can_reshare=False,
+            category="work",
+            freshness="current",
+        )
+        ctx.db.add(capsule)
+        await ctx.db.flush()
+        upsert_capsule_embedding(
+            capsule.id,
+            f"{audit_title}: {audit_content}",
+            {"capsule_id": capsule.id, "owner_id": ctx.owner_id, "visibility": "private"},
+            category="work",
+        )
+    except Exception as e:
+        log.warning("send_message: audit capsule failed: %s", e)
+
+    ctx.actions.append({
+        "type": "message_sent",
+        "message_id": msg_id,
+        "recipient": to_username,
+        "subject": subject,
+        "cross_pod": cross_pod,
+        "trust_level": trust_level,
+        "expires_at": expires_at,
+    })
+
+    return json.dumps({
+        "success": True,
+        "message_id": msg_id,
+        "recipient": to_username,
+        "recipient_display_name": recipient.display_name,
+        "subject": subject,
+        "cross_pod": cross_pod,
+        "trust_level": trust_level,
+        "expires_at": expires_at,
+        "message": f"Message sent to {recipient.display_name}"
+                   + (" (cross-pod)" if cross_pod else "")
+                   + (f", expires in {expires_in_hours}h" if expires_in_hours else ""),
+    })
+
+
 async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> str:
     """Route a tool call to its handler. Returns JSON string.
 
@@ -1771,6 +3503,12 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
         result = await handle_save_capsule(ctx, tool_input)
     elif tool_name == "web_search":
         result = await handle_web_search(ctx, tool_input["query"], tool_input.get("context", ""))
+    elif tool_name == "browse_web":
+        result = await handle_browse_web(ctx, tool_input)
+    elif tool_name == "research_parallel":
+        result = await handle_research_parallel(ctx, tool_input)
+    elif tool_name == "check_conflicts":
+        result = await handle_check_conflicts(ctx, tool_input)
     elif tool_name == "create_task":
         result = await handle_create_task(ctx, tool_input)
     elif tool_name == "discover_agents":
@@ -1798,11 +3536,26 @@ async def execute_tool(tool_name: str, tool_input: dict, ctx: ToolContext) -> st
         result = await handle_complete_timeline_entry(ctx, tool_input["entry_id"])
     elif tool_name == "check_timeline_state":
         result = await handle_check_timeline_state(ctx)
+    # Emergency escalation
+    elif tool_name == "trigger_emergency":
+        result = await handle_trigger_emergency(ctx, tool_input.get("reason", "unspecified emergency"))
+    elif tool_name == "generate_emergency_qr":
+        result = await handle_generate_emergency_qr(
+            ctx,
+            role=tool_input.get("role", "paramedic"),
+            reason=tool_input.get("reason", "emergency access requested"),
+            requester_org=tool_input.get("requester_org", ""),
+        )
     # Credential tools
     elif tool_name == "list_credentials":
         result = await handle_list_credentials(ctx)
     elif tool_name == "manage_credential":
         result = await handle_manage_credential(ctx, tool_input)
+    # Messaging tools
+    elif tool_name == "send_message":
+        result = await handle_send_message(ctx, tool_input)
+    elif tool_name == "send_connection_request":
+        result = await handle_send_connection_request(ctx, tool_input)
     else:
         result = json.dumps({"error": f"Unknown tool: {tool_name}"})
 
@@ -1973,30 +3726,32 @@ You have tools:
 13. **list_timeline_entries** — See what's active, pending, or coming up in the timeline.
 14. **complete_timeline_entry** — Mark a timeline entry as done when the task is fulfilled.
 15. **check_timeline_state** — Get the heartbeat of the timeline engine (counts, signals, health).
+16. **send_message** — Send an encrypted message to someone you're already connected with or share a pool with.
+17. **send_connection_request** — Send a connection request to someone so you can message them and query their agent. Use when the user asks to connect with, add, or follow someone.
+18. **browse_web** — Browse a single website using TinyFish AI browser. Vault context is automatically applied. Results are Citadel-scanned before returning.
+19. **research_parallel** — Browse multiple websites simultaneously (up to 8) using TinyFish. Each site gets its own AI browser session. Use for comparing agencies, prices, or gathering reviews from multiple sources at once.
+20. **check_conflicts** — Check if something the user said conflicts with their vault data. Call before acting on any date, name, location, or amount the user states.
 
-## When to use tools — be PROACTIVE:
-- User asks about services, businesses, or providers → ALWAYS list_services first, then request_quotes for matching ones, then web_search for more
-- User asks "do you know any X?" where X is a type of business/provider (hospitals, clinics, tutors, cleaners, etc.) → list_services FIRST, then web_search
-- User asks about healthcare, hospitals, doctors, medical help → list_services first (TrustMesh has healthcare providers!), then web_search
-- User asks "what do I need to prepare?" → search_vault + list_connections, then query_peer relevant family members
-- User says "remember X" → search_vault (check dups) then save_capsule
-- User asks complex question → create_task to track, then research with multiple tools
-- User mentions a specific person → list_connections to check access, then query_peer
-- User asks about current events or external data → web_search
-- User asks "who can help?" or "find me a..." → list_services + request_quotes + web_search (all three!)
-- User asks about family plans → search_vault + query_peer family members for their info
-- User asks about groups, communities, social clubs → discover_networks (with interest filter if specific)
-- User asks "what can I join?" or "any groups nearby?" → discover_networks
-- User asks about schedule, calendar, meetings, appointments → check_calendar
-- User asks "what's on my calendar?" or "when is my next meeting?" → check_calendar
-- User asks to write/draft/compose an email → draft_email
-- User asks about upcoming plans → check_calendar + search_vault + list_timeline_entries
-- User asks "remind me" or "schedule" or "follow up" → create_timeline_entry with appropriate trigger
-- User asks "what's happening?" or "what's active?" → check_timeline_state + list_timeline_entries
-- User asks to track something over time → create_timeline_entry with cron trigger
-- User says "that's done" or "finished with X" → complete_timeline_entry
-- When you create a task that needs future action → create_timeline_entry with hook_prompt describing what you should do
-- When you query a peer and need to follow up → create_timeline_entry with time trigger + hook_prompt
+## When to use tools — match INTENT, not literal phrases (works in any language):
+- User wants to befriend, add, connect with, or follow someone → FIRST confirm context ("You're in [Work/Personal/All] mode — I'll add [name] as a [Work/Personal/Both] contact. Confirm, or say: work / personal / both?"), THEN call **send_connection_request** with the confirmed context
+- User wants to send a private message to someone NOW → **send_message** immediately
+- User wants to send a message IN THE FUTURE (e.g. "in 5 minutes", "later today", "remind me to message X") → **create_timeline_entry** with trigger_type="time" and trigger_at_ms=now+delay, with hook_prompt instructing the agent to call send_message at that time. ALSO call **create_task** so it appears on the dashboard as pending. Do NOT call send_message immediately.
+- User is asking about services, businesses, or providers of any kind → ALWAYS list_services first, then request_quotes for matches, then web_search
+- User wants to know what's available in some category (hospitals, tutors, cleaners, etc.) → list_services FIRST, then web_search
+- User is asking about preparations, plans, or what to bring/do → search_vault + list_connections, then query_peer relevant contacts
+- User wants to save, remember, or note something → search_vault (check for duplicates) then save_capsule
+- User has a complex multi-step question → create_task to track, then research with multiple tools
+- User mentions or asks about a specific person → list_connections to check access, then query_peer
+- User wants current information, news, or external data → web_search
+- User wants help finding someone or something → list_services + request_quotes + web_search (all three!)
+- User asks about family, friends, or shared plans → search_vault + query_peer relevant contacts
+- User is interested in groups, communities, hobbies, or social activities → discover_networks
+- User wants to know what's on their schedule or when something is happening → check_calendar
+- User wants to compose or send an email → draft_email
+- User wants a reminder, scheduled action, or recurring check → create_timeline_entry with appropriate trigger
+- User asks what is currently active or what to focus on → check_timeline_state + list_timeline_entries
+- User wants to track something recurring over time → create_timeline_entry with cron trigger
+- User signals completion of a task or goal → complete_timeline_entry
 
 ## IMPORTANT: Always check the mesh FIRST
 When the user asks about ANY type of provider, service, or business — ALWAYS call list_services before web_search.
@@ -2009,6 +3764,14 @@ When you can anticipate what the user needs, DO IT:
 - If they ask about a service, compare mesh providers AND web results
 - If they ask to remember something, also check if it affects schedules or other capsules
 - Always try to give a COMPLETE answer, not just a partial one
+
+## Vault Context for Searches (CRITICAL)
+Before doing ANY research, browsing, or apartment/service search, ALWAYS call search_vault first to find relevant personal context.
+Then compare what the user asked for vs. what your vault says about them, and proactively surface gaps:
+- Example: User asks "find 1BR apartments in SF under $4k". Vault has "I have a cat named Luna" and "I need parking for my car". → Tell the user: "I see from your vault you have a cat and a car — I'll also filter for pet-friendly units and parking. Want me to also check for in-unit laundry since you mentioned that matters to you?" Then include those criteria in the search.
+- Example: User asks "book a restaurant". Vault has "vegetarian, no shellfish allergy". → Automatically filter for vegetarian options and mention you're excluding shellfish, don't make them re-state it.
+- Always tell the user what vault context you applied so they know you're personalizing.
+- If vault context reveals a CONFLICT with what they asked (e.g., they said "no restrictions" but vault says "severe nut allergy"), flag it immediately.
 
 ## Smart Memory Rules
 
@@ -2088,12 +3851,68 @@ When federation is involved, always mention:
 - What trust level was used (network = shared pool, public = open only)
 - What shared networks enabled the trust
 
+## PROACTIVE CONFLICT DETECTION
+
+If the user states any fact (date, name, amount, location, person detail) that directly
+contradicts something in their vault or a peer response you just received:
+1. STOP your current response immediately.
+2. Say: "Wait — I need to flag something before we continue."
+3. State the specific conflict: "You mentioned [X], but [source] shows [Y]."
+4. Ask: "Which is correct?"
+Never ignore contradictions. Acting on wrong information is worse than pausing to verify.
+
+Use `check_conflicts` before acting on any date, location, or name the user states.
+
+Examples:
+- User: "Book Monday morning" → vault shows grandma has cardiology Tuesday 9am
+  → "Wait — before I book, I should mention: Grandma's calendar shows a cardiology
+     appointment Tuesday at 9am. Did you mean Tuesday coverage, or also Monday?"
+- User: "Call the Riverside clinic on 5th Street" → vault says clinic moved to Oak Ave in 2025
+  → "Wait — the clinic contact in your vault shows they relocated to Oak Avenue in 2025.
+     The 5th Street number may be disconnected. Want me to use the Oak Avenue address?"
+
 ## Response Style
 - Be conversational and warm — you're talking to your owner
 - After saving, confirm what you saved and how you classified it
 - If you found a duplicate and merged, explain that
 - You can also answer questions about the owner's knowledge (read from capsules)
-- Keep responses concise. Don't over-explain unless asked."""
+- Keep responses concise. Don't over-explain unless asked.
+{personality_instruction}"""
+
+# ── Personality modes ─────────────────────────────────────────────────────────
+
+PERSONALITY_INSTRUCTIONS: dict[str, str] = {
+    "simple": (
+        "\n## Communication Style\n"
+        "Use very plain, everyday language. Explain everything as if the user is completely new to the topic. "
+        "Use analogies and concrete real-world examples. Define any technical term you use. Be patient and thorough."
+    ),
+    "step-by-step": (
+        "\n## Communication Style\n"
+        "Provide detailed, step-by-step explanations for everything. Break complex topics into numbered steps. "
+        "Never skip context. Walk the user through each part carefully before moving on."
+    ),
+    "concise": (
+        "\n## Communication Style\n"
+        "Be brief and direct. Skip all preamble. Prefer bullet points over paragraphs. "
+        "Get to the point in the fewest words possible."
+    ),
+    "technical": (
+        "\n## Communication Style\n"
+        "Use precise technical terminology. Assume the user has domain expertise. "
+        "Be analytically rigorous. Skip basic explanations and go straight to the technical details."
+    ),
+    "friendly": (
+        "\n## Communication Style\n"
+        "Be warm, casual, and encouraging. Use a conversational tone. "
+        "Celebrate small wins. Make the user feel supported and confident."
+    ),
+}
+
+
+def _personality_note(mode: str) -> str:
+    """Return the prompt instruction for the given personality mode (empty string if unset/unknown)."""
+    return PERSONALITY_INSTRUCTIONS.get(mode or "", "")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2110,12 +3929,18 @@ SENSITIVE_KEYWORDS = {
 }
 
 
-def detect_sensitivity(capsules: list[dict], question: str = "") -> str:
+def detect_sensitivity(capsules: list[dict], question: str = "", hint: str = "standard") -> str:
     """Detect if a query involves sensitive data.
 
     Returns "sensitive" if medical/financial/legal capsules are involved
     or the question mentions sensitive topics. Otherwise "standard".
+
+    `hint` is a floor from upstream pre-flight checks (e.g., Zig channel boundary).
+    If hint == "sensitive", returns "sensitive" immediately — cannot be downgraded.
     """
+    if hint == "sensitive":
+        return "sensitive"
+
     # Check capsule categories
     for c in capsules:
         cat = (c.get("category") or "").lower()
@@ -2128,6 +3953,35 @@ def detect_sensitivity(capsules: list[dict], question: str = "") -> str:
     if any(kw in q_lower for kw in SENSITIVE_KEYWORDS):
         return "sensitive"
 
+    return "standard"
+
+
+def pre_flight_sensitivity(text: str, relationship_type: str | None = None) -> str:
+    """Pre-flight sensitivity check at channel boundary. Calls Zig for speed.
+
+    Falls back to pure Python if the Zig kernel is not compiled.
+    """
+    try:
+        from src.research_bridge import _get_lib  # reuse existing ctypes loader
+        lib = _get_lib()
+        if lib is not None and hasattr(lib, "podos_preflight_sensitivity"):
+            text_bytes = text.encode()
+            rel_bytes = (relationship_type or "").encode()
+            result = lib.podos_preflight_sensitivity(
+                text_bytes, len(text_bytes),
+                rel_bytes if rel_bytes else None, len(rel_bytes),
+            )
+            return "sensitive" if result == 1 else "standard"
+    except Exception:
+        pass
+
+    # Python fallback
+    _SENSITIVE_REL_TYPES = {"healthcare", "legal", "financial"}
+    if relationship_type and relationship_type.lower() in _SENSITIVE_REL_TYPES:
+        return "sensitive"
+    text_lower = text.lower()
+    if any(kw in text_lower for kw in SENSITIVE_KEYWORDS):
+        return "sensitive"
     return "standard"
 
 
@@ -2158,6 +4012,73 @@ def _minimize_capsules_for_public(capsules: list[dict]) -> list[dict]:
     return stripped
 
 
+# ═══════════════════════════════════════════════════════════════
+# Org-aware context injection
+# ═══════════════════════════════════════════════════════════════
+
+_ORG_SUBTYPE_CONTEXT: dict[str, str] = {
+    "healthcare": (
+        "## Healthcare Organization Context\n"
+        "This is a healthcare organization. You operate in a HIPAA-aware environment.\n"
+        "- Never include Protected Health Information (PHI) in external-facing responses\n"
+        "- Clinical or medical details should only be shared via UCAN-gated emergency access\n"
+        "- Acknowledge time-sensitivity for any clinical or emergency queries\n"
+        "- When asked about patient data, route to the emergency access flow\n"
+    ),
+    "emergency": (
+        "## Emergency Services Context\n"
+        "This is an emergency services organization (fire, ambulance, rescue).\n"
+        "- Treat all emergency queries with urgency — acknowledge time-sensitivity explicitly\n"
+        "- This organization can issue UCAN emergency access tokens for priority access\n"
+        "- Prioritize actionable, precise information over brevity\n"
+        "- For life-safety situations, err on the side of completeness\n"
+    ),
+    "government": (
+        "## Government Organization Context\n"
+        "This is a government entity operating under strict data governance rules.\n"
+        "- Classify the sensitivity of information before sharing (public / internal / restricted)\n"
+        "- Do not share information beyond the authorized scope of the requester\n"
+        "- Note data retention constraints — some information has mandatory retention periods\n"
+        "- Decline to share data classified above the requester's trust level\n"
+    ),
+    "education": (
+        "## Education Organization Context\n"
+        "This organization handles student and educational data (FERPA-adjacent constraints).\n"
+        "- Student records and personally identifiable information are protected\n"
+        "- Do not share individual student data without verified authorization\n"
+        "- Public information (curriculum, programs, admissions info) can be shared freely\n"
+    ),
+    "nonprofit": (
+        "## Nonprofit Organization Context\n"
+        "This is a nonprofit organization focused on public benefit.\n"
+        "- Mission and programs are generally public and can be shared freely\n"
+        "- Donor and beneficiary information is private — do not disclose\n"
+    ),
+    "company": "",  # Standard — no extra context needed
+}
+
+
+def _build_org_context(user_type: str, org_subtype: str | None, agent_mode: str) -> str:
+    """Build an org-specific context block to prepend to system prompts.
+
+    Returns empty string for person agents (no change).
+    """
+    if user_type != "organization":
+        return ""
+
+    mode_note = (
+        "You are operating as a **public-facing service agent** — your knowledge is accessible "
+        "to external users who query you. Share only capsules marked as public/open."
+        if agent_mode == "public"
+        else "You are operating as an **internal knowledge agent** — only verified connected staff "
+        "should be querying you. Treat queries from unknown sources with heightened caution."
+    )
+
+    subtype_block = _ORG_SUBTYPE_CONTEXT.get(org_subtype or "", "")
+
+    return f"\n## Organization Agent Mode\n{mode_note}\n\n{subtype_block}".rstrip() + "\n"
+
+
 async def agent_respond(
     agent: Agent,
     question: str,
@@ -2166,6 +4087,10 @@ async def agent_respond(
     capsules: list[dict],
     requester_name: str,
     owner_name: str,
+    entity_type: str = "person",
+    org_subtype: str | None = None,
+    agent_mode: str = "private",
+    sensitivity_hint: str = "standard",
 ) -> str:
     """Cross-query: agent reasons about what to share (read-only, no tools)."""
     trust_context = build_trust_context(trust_level, shared_networks, requester_name, owner_name)
@@ -2176,15 +4101,16 @@ async def agent_respond(
 
     formatted = format_capsules(capsules)
 
+    org_ctx = _build_org_context(entity_type, org_subtype, agent_mode)
     system_prompt = CROSS_QUERY_SYSTEM_PROMPT.format(
         owner_name=owner_name,
         requester_name=requester_name,
         trust_level=trust_level,
         trust_context=trust_context,
         formatted_capsules=formatted,
-    )
+    ) + org_ctx
 
-    sensitivity = detect_sensitivity(capsules, question)
+    sensitivity = detect_sensitivity(capsules, question, hint=sensitivity_hint)
     router = get_router()
     response = await router.complete(
         messages=[{"role": "user", "content": question}],
@@ -2203,21 +4129,28 @@ async def agent_respond_with_tools(
     capsules: list[dict],
     owner_name: str,
     tool_context: ToolContext,
-) -> tuple[str, list[dict]]:
+    personality: str = "",
+    entity_type: str = "person",
+    org_subtype: str | None = None,
+    agent_mode: str = "private",
+    sensitivity_hint: str = "standard",
+) -> tuple[str, list[dict], str]:
     """Self-query: agent responds with tool access (search, save, update).
 
-    Returns (response_text, actions_taken).
+    Returns (response_text, actions_taken, provider_used).
     """
     formatted = format_capsules(capsules)
     networks_list = format_networks(tool_context.networks)
 
+    org_ctx = _build_org_context(entity_type, org_subtype, agent_mode)
     system_prompt = SELF_QUERY_SYSTEM_PROMPT.format(
         owner_name=owner_name,
         formatted_capsules=formatted,
         networks_list=networks_list,
-    )
+        personality_instruction=_personality_note(personality),
+    ) + org_ctx
 
-    sensitivity = detect_sensitivity(capsules, question)
+    sensitivity = detect_sensitivity(capsules, question, hint=sensitivity_hint)
     router = get_router()
     messages: list[dict] = [{"role": "user", "content": question}]
 
@@ -2226,7 +4159,7 @@ async def agent_respond_with_tools(
         response = await router.complete(
             messages=messages,
             system=system_prompt,
-            model="fast",
+            model="reasoning",
             sensitivity=sensitivity,
             tools=AGENT_TOOLS,
             max_tokens=2048,
@@ -2234,7 +4167,7 @@ async def agent_respond_with_tools(
 
         # If the response is a final text (no tool use), we're done
         if response.stop_reason == "end_turn":
-            return response.text or "Done.", tool_context.actions
+            return response.text or "Done.", tool_context.actions, response.provider
 
         # Process tool calls
         if response.stop_reason == "tool_use":
@@ -2255,7 +4188,8 @@ async def agent_respond_with_tools(
             tool_results = []
             for tc in response.tool_calls:
                 result_str = await execute_tool(tc.name, tc.input, tool_context)
-                # Citadel scan on tool outputs (web_search, query_peer most important)
+                # Citadel scan on tool outputs (external sources)
+                # browse_web and research_parallel already scan internally — skip double scan
                 if tc.name in ("web_search", "query_peer", "request_quotes"):
                     from src import citadel
                     output_scan = await citadel.scan_output(result_str)
@@ -2275,13 +4209,29 @@ async def agent_respond_with_tools(
             # Send tool results back to the model
             messages.append({"role": "user", "content": tool_results})
         else:
+            # Audit self-query on final answer
+            try:
+                from src.audit import log_event
+                await log_event(
+                    tool_context.db,
+                    actor_user_id=tool_context.owner_id,
+                    target_user_id=tool_context.owner_id,
+                    action="agent_query",
+                    event_type="query",
+                    decision="allowed",
+                    details={"question_preview": question[:120], "tools_used": len(tool_context.actions)},
+                )
+                await tool_context.db.commit()
+            except Exception:
+                pass
             return (
                 response.text or "I'm not sure how to help with that.",
                 tool_context.actions,
+                response.provider,
             )
 
     # Max iterations reached
-    return "I've completed the requested actions.", tool_context.actions
+    return "I've completed the requested actions.", tool_context.actions, "anthropic"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2297,18 +4247,22 @@ async def agent_respond_streaming(
     requester_name: str,
     owner_name: str,
     conversation_history: list[dict] | None = None,
+    entity_type: str = "person",
+    org_subtype: str | None = None,
+    agent_mode: str = "private",
 ):
     """Cross-query streaming: yields text chunks as they arrive."""
     trust_context = build_trust_context(trust_level, shared_networks, requester_name, owner_name)
     formatted = format_capsules(capsules)
 
+    org_ctx = _build_org_context(entity_type, org_subtype, agent_mode)
     system_prompt = CROSS_QUERY_SYSTEM_PROMPT.format(
         owner_name=owner_name,
         requester_name=requester_name,
         trust_level=trust_level,
         trust_context=trust_context,
         formatted_capsules=formatted,
-    )
+    ) + org_ctx
 
     # Build messages with conversation history for continuity
     messages: list[dict] = []
@@ -2336,6 +4290,10 @@ async def agent_respond_with_tools_streaming(
     owner_name: str,
     tool_context: ToolContext,
     conversation_history: list[dict] | None = None,
+    personality: str = "",
+    entity_type: str = "person",
+    org_subtype: str | None = None,
+    agent_mode: str = "private",
 ):
     """Self-query streaming: runs tool loop non-streaming, then streams final response.
 
@@ -2347,11 +4305,13 @@ async def agent_respond_with_tools_streaming(
     formatted = format_capsules(capsules)
     networks_list = format_networks(tool_context.networks)
 
+    org_ctx = _build_org_context(entity_type, org_subtype, agent_mode)
     system_prompt = SELF_QUERY_SYSTEM_PROMPT.format(
         owner_name=owner_name,
         formatted_capsules=formatted,
         networks_list=networks_list,
-    )
+        personality_instruction=_personality_note(personality),
+    ) + org_ctx
 
     sensitivity = detect_sensitivity(capsules, question)
     router = get_router()
@@ -2368,7 +4328,7 @@ async def agent_respond_with_tools_streaming(
         response = await router.complete(
             messages=messages,
             system=system_prompt,
-            model="fast",
+            model="reasoning",
             sensitivity=sensitivity,
             tools=AGENT_TOOLS,
             max_tokens=2048,
@@ -2490,7 +4450,7 @@ Your goal: Have a warm, natural conversation and save key facts as encrypted cap
 ## Conversation so far
 {conversation_history}
 
-## Flow — 4 topics (follow this order, but keep it natural):
+## 4 topics to cover (in any order — adapt to what the user shares):
 
 1. **Work & Life** — Job title, company/school, location, commute, daily life. Save as "skill" capsule (category: "work").
 
@@ -2505,14 +4465,14 @@ After all 4 topics: **Wrap up** — Summarize what you learned, tell them their 
 ## Conversation driver rules (CRITICAL — follow these exactly):
 - You are the DRIVER of this conversation. Don't be passive.
 - EVERY response you give MUST end with a question to the user. No exceptions until the final wrap-up.
-- After the user answers, ALWAYS: (1) acknowledge briefly in 1 sentence, then (2) ask the NEXT specific question.
+- **ALWAYS save what the user tells you, even if it's about a different topic than what you asked.** If you asked about work and they tell you about their hobbies, IMMEDIATELY save the hobbies as a capsule, acknowledge it in one sentence, then ask your next question. NEVER ignore volunteered information.
+- After the user answers, ALWAYS: (1) save any facts they shared as capsules, (2) acknowledge briefly in 1 sentence, then (3) ask the NEXT question about an uncovered topic.
 - FORBIDDEN responses: "Done.", "Perfect!", "Great!", "Got it.", or ANY response without a follow-up question. These are conversation-killers.
-- Follow a clear progression: Work & Life → Health & Body → Family & Home → Goals & Interests.
-- Example good response: "Got it, software engineer in SF! Do you have any food allergies or dietary restrictions I should know about?"
-- Example bad response: "Done." (NEVER do this — always include a follow-up question)
+- Track which of the 4 topics have produced capsules. Prioritize asking about uncovered topics.
+- If the user says "let's talk about [topic]" or asks to jump to a specific topic, do it immediately.
+- Example: User said "I live with my partner and enjoy cooking and hiking" when asked about work → save a "contact" capsule for partner + a "preference" capsule for hobbies, acknowledge both, then ask "Got it! And what do you do for work — what's your job or field?"
 - If the user gives a very short answer, probe deeper: "Tell me more — what kind of [topic]?"
-- Track which topics you've covered. When all 4 are done, wrap up with a summary.
-- After saving a capsule, immediately transition to the next topic with a natural bridge question.
+- After saving a capsule, immediately transition to the next uncovered topic with a natural bridge question.
 - Get the user to share more if possible. Ask follow-up questions to draw out details.
 
 ## Input quality rules:
@@ -2541,7 +4501,8 @@ Start with something warm and specific: "Hey! So tell me a bit about yourself �
 - "procedure" — routines, habits, workflows
 - "memory" — stories, observations, life events
 
-Always search_vault first to avoid duplicates."""
+Always search_vault first to avoid duplicates.
+{personality_instruction}"""
 
 INTAKE_TOOLS = [
     AGENT_TOOLS[0],  # search_vault
@@ -2549,11 +4510,70 @@ INTAKE_TOOLS = [
 ]
 
 
+ORG_INTAKE_SYSTEM_PROMPT = """You are {owner_name}'s organizational AI agent, getting to know the organization for the first time.
+
+Your goal: Have a professional, focused conversation and save key facts as encrypted capsules in the org's vault.
+
+## Conversation so far
+{conversation_history}
+
+## Flow — 4 topics (follow this order, keep it natural and professional):
+
+1. **Mission & Services** — What the organization does, who it serves, core services/programs. Save as "skill" capsule (category: "work").
+
+2. **Team & Structure** — Org size, key departments, leadership, how teams operate. Save as "memory" capsule (category: "work").
+
+3. **Public Knowledge** — What information should be shareable externally, services offered to clients/patients/public. Save as "procedure" capsule (category: "work", visibility: "open").
+
+4. **Goals** — What the org wants TrustMesh to help with, key workflows to automate. Save as "preference" capsule (category: "work").
+{compliance_step}
+After all topics: **Wrap up** — Summarize what you learned, confirm their vault is set up, suggest they explore team pools and the service directory.
+
+## Conversation rules:
+- Professional but warm tone — this is an org, not a personal conversation
+- EVERY response MUST end with a question. No exceptions until wrap-up.
+- After each answer, save a capsule IMMEDIATELY then ask the next question.
+- ONE question at a time.
+- If they say "skip" or "done" — wrap up immediately.
+
+## First message:
+Start with: "Welcome! Tell me about {owner_name} — what does your organization do and who do you serve?" Don't repeat their bio back to them.
+
+## Capsule types:
+- "skill" — expertise, core competencies, certifications
+- "procedure" — services, processes, protocols
+- "memory" — org history, events, milestones
+- "contact" — key staff, partners, departments
+- "schedule" — recurring events, operating hours
+
+Default visibility: "internal" for org data, "open" only for explicitly public info.
+Always search_vault first to avoid duplicates.
+{personality_instruction}"""
+
+_ORG_COMPLIANCE_STEPS: dict[str, str] = {
+    "healthcare": """
+5. **Emergency & Compliance** — Emergency protocols, HIPAA data handling, PHI scoping, authorized emergency access roles. Save as "procedure" capsule (category: "work", emergency_accessible: true for emergency protocols).
+""",
+    "emergency": """
+5. **Emergency & Compliance** — Emergency response protocols, escalation chain, UCAN token authorization roles. Save as "procedure" capsule (category: "work", emergency_accessible: true).
+""",
+    "government": """
+5. **Compliance & Classification** — Data classification levels, retention policies, authorized access roles, compliance frameworks. Save as "procedure" capsule (category: "work").
+""",
+    "education": """
+5. **Student Data & Compliance** — FERPA-adjacent student data policies, what data is protected, authorized access roles. Save as "procedure" capsule (category: "work").
+""",
+}
+
+
 async def run_intake_step(
     owner_name: str,
     user_message: str,
     conversation_history: list[dict],
     tool_context: ToolContext,
+    personality: str = "",
+    entity_type: str = "person",
+    org_subtype: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Run one step of the intake conversation. Returns (response_text, actions)."""
     # Format conversation history for the system prompt
@@ -2562,10 +4582,20 @@ async def run_intake_step(
         role = "You" if msg["role"] == "assistant" else owner_name
         history_text += f"{role}: {msg['content']}\n"
 
-    system_prompt = INTAKE_SYSTEM_PROMPT.format(
-        owner_name=owner_name,
-        conversation_history=history_text or "(This is the start of the conversation)",
-    )
+    if entity_type == "organization":
+        compliance_step = _ORG_COMPLIANCE_STEPS.get(org_subtype or "", "")
+        system_prompt = ORG_INTAKE_SYSTEM_PROMPT.format(
+            owner_name=owner_name,
+            conversation_history=history_text or "(This is the start of the conversation)",
+            compliance_step=compliance_step,
+            personality_instruction=_personality_note(personality),
+        )
+    else:
+        system_prompt = INTAKE_SYSTEM_PROMPT.format(
+            owner_name=owner_name,
+            conversation_history=history_text or "(This is the start of the conversation)",
+            personality_instruction=_personality_note(personality),
+        )
 
     router = get_router()
     messages: list[dict] = [{"role": "user", "content": user_message}]

@@ -268,7 +268,7 @@ function ProtocolFlowDiagram() {
     { num: "1", label: "Trust\nResolve", icon: "trust", color: "text-green-400", bg: "bg-green-500/10", border: "border-green-500/30", desc: "Connection + network trust analysis" },
     { num: "2", label: "Citadel\nInput Scan", icon: "shield", color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30", desc: "Text + multimodal injection detection" },
     { num: "3", label: "Semantic\nRetrieval", icon: "search", color: "text-blue-400", bg: "bg-blue-500/10", border: "border-blue-500/30", desc: "Vector search over encrypted capsules" },
-    { num: "4", label: "Sonnet 4.5\nReasoning", icon: "brain", color: "text-purple-400", bg: "bg-purple-500/10", border: "border-purple-500/30", desc: "Trust-aware response generation" },
+    { num: "4", label: "Gemini 3.1\nReasoning", icon: "brain", color: "text-purple-400", bg: "bg-purple-500/10", border: "border-purple-500/30", desc: "Trust-aware response generation" },
     { num: "5", label: "Citadel\nOutput Scan", icon: "shield", color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30", desc: "Data exfiltration + leak detection" },
     { num: "6", label: "Audit &\nRespond", icon: "log", color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/30", desc: "Log decision + return response" },
   ];
@@ -743,7 +743,10 @@ export default function AboutPage() {
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
           {/* Nav row */}
           <div className="flex items-center justify-end gap-1.5 sm:gap-2 mb-3 sm:mb-4">
-            <a href="http://localhost:9100" target="_blank" rel="noopener noreferrer" className="text-xs text-foreground/50 hover:text-foreground transition-colors px-2 sm:px-3 py-1.5 rounded-lg hover:bg-card-hover">Registry</a>
+            <a href="http://localhost:8100" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-foreground/50 hover:text-foreground transition-colors px-2 sm:px-3 py-1.5 rounded-lg hover:bg-card-hover">
+              Registry
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-60"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </a>
             <Link href="/doc" className="text-xs text-foreground/50 hover:text-foreground transition-colors px-2 sm:px-3 py-1.5 rounded-lg hover:bg-card-hover">Docs</Link>
             <Link href="/" className="text-xs bg-accent text-accent-fg px-3 py-1.5 rounded-lg font-medium hover:bg-accent-hover transition-colors">Demo</Link>
           </div>

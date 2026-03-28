@@ -202,3 +202,9 @@ def close_fts():
         credential_bridge._initialized = False
     except (ImportError, AttributeError):
         pass
+    try:
+        from src import message_bridge
+        message_bridge._db_handle = None
+        message_bridge._initialized = False
+    except (ImportError, AttributeError):
+        pass

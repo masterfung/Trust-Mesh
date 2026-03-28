@@ -4,14 +4,14 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type PeerPod, type Network, type User } from "@/lib/api";
 import { useParams } from "next/navigation";
-import { cn } from "@/lib/utils";
+import { cn, formatRelativeTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Box, User as UserIcon, Globe, Lock, Network as NetworkIcon,
   Copy, Check, Wifi, WifiOff, Plus, X, Loader2, Users, Radio,
-  ExternalLink, Clock, Info,
+  ExternalLink, Clock, Info, ShieldCheck, Link as LinkIcon, Shield,
 } from "lucide-react";
 
 // ── Shared helpers ──
@@ -29,15 +29,6 @@ function StatusDot({ status }: { status: "active" | "unreachable" | "pending" | 
   return <span className={cn("w-2 h-2 rounded-full shrink-0", color)} />;
 }
 
-function relativeTime(ts: string | null): string | null {
-  if (!ts) return null;
-  const mins = Math.floor((Date.now() - new Date(ts).getTime()) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
 
 const ENTITY_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
   person: "secondary",
@@ -102,8 +93,16 @@ export default function PodPage() {
 
         <TabsContent value="identity" className="space-y-4">
           <PodIdentityCard podInfo={podInfo} />
-          <AgentIdentityCard userId={userId} currentUser={currentUser} agentCard={agentCard} podInfo={podInfo} />
-          <DiscoverableToggle userId={userId} currentUser={currentUser} queryClient={queryClient} />
+          <AgentIdentityCard currentUser={currentUser} agentCard={agentCard} podInfo={podInfo} />
+          {currentUser?.user_type === "organization" ? (
+            <>
+              <OrgAgentVisibility userId={userId} currentUser={currentUser} queryClient={queryClient} />
+              <OrgTeamPools pools={pools} userId={userId} />
+            </>
+          ) : (
+            <DiscoverableToggle userId={userId} currentUser={currentUser} queryClient={queryClient} />
+          )}
+          <ConnectivityModeCard userId={userId} currentUser={currentUser} queryClient={queryClient} />
         </TabsContent>
 
         <TabsContent value="pools">
@@ -157,8 +156,7 @@ function PodIdentityCard({ podInfo }: { podInfo?: { pod_name: string; pod_url: s
   );
 }
 
-function AgentIdentityCard({ userId, currentUser, agentCard, podInfo }: {
-  userId: string;
+function AgentIdentityCard({ currentUser, agentCard, podInfo }: {
   currentUser?: { display_name: string; user_type?: string; bio: string; username?: string | null };
   agentCard?: { name: string; description: string; skills: { id: string; name: string; description: string }[] } | null;
   podInfo?: { agents?: { owner_username: string; did: string }[] };
@@ -229,6 +227,132 @@ function AgentIdentityCard({ userId, currentUser, agentCard, podInfo }: {
   );
 }
 
+// ── Connectivity Mode ──
+
+type ConnectivityMode = "relay_primary" | "direct_with_fallback" | "invite_only";
+
+const CONNECTIVITY_MODES: {
+  id: ConnectivityMode;
+  label: string;
+  sublabel: string;
+  description: string;
+  Icon: React.ElementType;
+}[] = [
+  {
+    id: "relay_primary",
+    label: "Always available",
+    sublabel: "Best for staying connected",
+    description: "Anyone with your invite link can reach your agent, even when your device is off. Messages queue until you're back online.",
+    Icon: Globe,
+  },
+  {
+    id: "direct_with_fallback",
+    label: "Only when online",
+    sublabel: "Good for home labs & VPS",
+    description: "People can reach your agent while your device is running. When you're offline, they'll see you as unavailable.",
+    Icon: Wifi,
+  },
+  {
+    id: "invite_only",
+    label: "Invite only",
+    sublabel: "Recommended to start",
+    description: "You control who can connect. Share a link when you're ready. Nothing is public until you choose to share it.",
+    Icon: Shield,
+  },
+];
+
+function ConnectivityModeCard({ userId, currentUser, queryClient }: {
+  userId: string;
+  currentUser?: User;
+  queryClient: ReturnType<typeof useQueryClient>;
+}) {
+  const serverMode = (currentUser?.connectivity_mode ?? "invite_only") as ConnectivityMode;
+  const [selected, setSelected] = useState<ConnectivityMode>(serverMode);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    setSelected((currentUser?.connectivity_mode ?? "invite_only") as ConnectivityMode);
+  }, [currentUser?.connectivity_mode]);
+
+  const updateMode = useMutation({
+    mutationFn: (mode: ConnectivityMode) => api.updateConnectivityMode(userId, mode),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["user", userId] });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    },
+  });
+
+  const hasChanges = selected !== serverMode;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Shield className="size-4 text-accent" /> Reachability
+        </CardTitle>
+        <CardDescription>Choose how other agents can reach you across pods.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {CONNECTIVITY_MODES.map(({ id, label, sublabel, description, Icon }) => {
+          const isSelected = selected === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setSelected(id)}
+              className={cn(
+                "w-full flex items-start gap-3 p-3 rounded-lg border text-left transition-all",
+                isSelected ? "border-accent bg-accent/5" : "border-border hover:border-accent/40"
+              )}
+            >
+              <div className={cn(
+                "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5",
+                isSelected ? "bg-accent/20" : "bg-muted/50"
+              )}>
+                <Icon className={cn("size-4", isSelected ? "text-accent" : "text-muted-foreground")} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className={cn("text-sm font-medium", isSelected && "text-accent")}>{label}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{sublabel}</p>
+                {isSelected && <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">{description}</p>}
+              </div>
+              <div className={cn(
+                "w-4 h-4 rounded-full border-2 mt-0.5 shrink-0 flex items-center justify-center",
+                isSelected ? "border-accent bg-accent" : "border-muted-foreground/30"
+              )}>
+                {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+              </div>
+            </button>
+          );
+        })}
+        {(hasChanges || saved) && (
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={() => updateMode.mutate(selected)}
+              disabled={updateMode.isPending || !hasChanges}
+              className="px-4 py-2 text-sm font-medium rounded-md bg-accent hover:bg-accent-hover text-accent-fg transition-colors disabled:opacity-40"
+            >
+              {updateMode.isPending ? "Saving..." : saved ? "Saved!" : "Save"}
+            </button>
+            {hasChanges && !updateMode.isPending && (
+              <button
+                onClick={() => setSelected(serverMode)}
+                className="px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        )}
+        {updateMode.isError && (
+          <p className="text-xs text-danger">{(updateMode.error as Error).message}</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function DiscoverableToggle({ userId, currentUser, queryClient }: {
   userId: string;
   currentUser?: { is_discoverable?: boolean; username?: string | null; user_type?: string };
@@ -251,10 +375,10 @@ function DiscoverableToggle({ userId, currentUser, queryClient }: {
   // Debounced handle availability check
   useEffect(() => {
     if (!handle || handle.length < 2 || formatError) {
-      setHandleStatus(null);
-      return;
+      const t = setTimeout(() => setHandleStatus(null), 0);
+      return () => clearTimeout(t);
     }
-    setHandleStatus({ checking: true });
+    const tCheck = setTimeout(() => setHandleStatus({ checking: true }), 0);
     if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
     checkTimerRef.current = setTimeout(async () => {
       try {
@@ -264,7 +388,10 @@ function DiscoverableToggle({ userId, currentUser, queryClient }: {
         setHandleStatus({ available: false, reason: "Could not check availability" });
       }
     }, 400);
-    return () => { if (checkTimerRef.current) clearTimeout(checkTimerRef.current); };
+    return () => {
+      clearTimeout(tCheck);
+      if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
+    };
   }, [handle, userId, formatError]);
 
   // Go private mutation
@@ -290,8 +417,8 @@ function DiscoverableToggle({ userId, currentUser, queryClient }: {
   const isPending = goPrivate.isPending || claimHandle.isPending;
 
   const registryUrl = typeof window !== "undefined"
-    ? (localStorage.getItem("trustmesh_registry_url") || "http://localhost:9100")
-    : "http://localhost:9100";
+    ? (localStorage.getItem("trustmesh_registry_url") || "http://localhost:8100")
+    : "http://localhost:8100";
 
   return (
     <Card>
@@ -496,6 +623,164 @@ function DiscoverableToggle({ userId, currentUser, queryClient }: {
   );
 }
 
+// ── Org: Agent Visibility ──
+
+const ORG_SUBTYPE_LABELS: Record<string, string> = {
+  company: "Company", nonprofit: "Nonprofit", healthcare: "Healthcare",
+  education: "Education", emergency: "Emergency Services", government: "Government",
+};
+
+function OrgAgentVisibility({ userId, currentUser, queryClient }: {
+  userId: string;
+  currentUser?: { agent_mode?: string; org_subtype?: string | null; username?: string | null; user_type?: string };
+  queryClient: ReturnType<typeof useQueryClient>;
+}) {
+  const isPublic = currentUser?.agent_mode === "public";
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  const toggleMode = useMutation({
+    mutationFn: (mode: "public" | "internal") => api.patchAgentMode(userId, mode),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["user", userId] });
+      setShowConfirm(false);
+    },
+  });
+
+  const subtypeLabel = currentUser?.org_subtype ? ORG_SUBTYPE_LABELS[currentUser.org_subtype] ?? currentUser.org_subtype : "Organization";
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <ShieldCheck className="size-4 text-accent" /> Agent Visibility
+        </CardTitle>
+        <CardDescription>Control whether your {subtypeLabel} agent appears in the service directory.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Radio buttons */}
+        <div className="space-y-2">
+          {(["internal", "public"] as const).map((mode) => {
+            const selected = (currentUser?.agent_mode ?? "internal") === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => { if (!selected) setShowConfirm(true); }}
+                className={cn(
+                  "w-full flex items-start gap-3 p-3 rounded-lg border text-left transition-all",
+                  selected ? "border-accent bg-accent/5" : "border-border hover:border-accent/40"
+                )}
+              >
+                <div className={cn(
+                  "w-4 h-4 rounded-full border-2 mt-0.5 shrink-0 flex items-center justify-center",
+                  selected ? "border-accent bg-accent" : "border-muted-foreground/30"
+                )}>
+                  {selected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                </div>
+                <div>
+                  <p className={cn("text-sm font-medium", selected && "text-accent")}>
+                    {mode === "internal" ? "Internal only" : "Public"}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {mode === "internal"
+                      ? "Your agent is only accessible to connected staff and trusted connections."
+                      : "Listed in the service directory; queryable by any agent on the network."}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Confirm dialog */}
+        {showConfirm && (
+          <div className={cn(
+            "rounded-lg border p-4 space-y-3",
+            isPublic ? "border-warning/30 bg-warning/5" : "border-accent/30 bg-accent/5"
+          )}>
+            <p className="text-sm font-medium">
+              {isPublic ? "Go Internal?" : "Go Public?"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {isPublic
+                ? "Your agent will be removed from the service directory. Existing connections are not affected."
+                : "Your agent will appear in the public service directory and become queryable by any agent."}
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => toggleMode.mutate(isPublic ? "internal" : "public")}
+                disabled={toggleMode.isPending}
+                className="px-3 py-1.5 text-sm font-medium rounded-md bg-accent hover:bg-accent-hover text-accent-fg transition-colors disabled:opacity-40"
+              >
+                {toggleMode.isPending ? "Updating..." : "Confirm"}
+              </button>
+              <button onClick={() => setShowConfirm(false)} className="px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                Cancel
+              </button>
+            </div>
+            {toggleMode.isError && <p className="text-xs text-danger">{(toggleMode.error as Error).message}</p>}
+          </div>
+        )}
+
+        {/* Status pill */}
+        <div className={cn(
+          "rounded-lg p-3 flex items-center gap-2",
+          isPublic ? "bg-success/5 border border-success/20" : "bg-muted/30 border border-border"
+        )}>
+          {isPublic
+            ? <><span className="w-2 h-2 rounded-full bg-success animate-pulse" /><span className="text-xs text-success font-medium">Live — visible in service directory</span></>
+            : <><Lock className="size-3 text-muted-foreground" /><span className="text-xs text-muted-foreground">Internal — not discoverable publicly</span></>
+          }
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Org: Team Pools ──
+
+const POOL_META: Record<string, { label: string; icon: React.ReactNode }> = {
+  org_all_staff: { label: "All Staff", icon: <Users className="size-4 text-accent" /> },
+  org_executives: { label: "Leadership", icon: <ShieldCheck className="size-4 text-accent" /> },
+};
+
+function OrgTeamPools({ pools, userId }: { pools: Network[]; userId: string }) {
+  const orgPools = pools.filter((p) => p.pool_type === "org_all_staff" || p.pool_type === "org_executives");
+  if (!orgPools.length) return null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Users className="size-4 text-accent" /> Team Pools
+        </CardTitle>
+        <CardDescription>Default pools for managing staff access to your agent&apos;s knowledge.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {orgPools.map((pool) => {
+          const meta = POOL_META[pool.pool_type ?? ""] ?? { label: pool.name, icon: <NetworkIcon className="size-4 text-muted-foreground" /> };
+          const memberCount = pool.members?.length ?? 0;
+          return (
+            <div key={pool.id} className="flex items-center gap-3 p-3 rounded-lg bg-muted/20 border border-border">
+              {meta.icon}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium">{meta.label}</p>
+                <p className="text-xs text-muted-foreground">{memberCount} member{memberCount !== 1 ? "s" : ""}</p>
+              </div>
+              <a
+                href={`/${userId}/networks`}
+                className="flex items-center gap-1 text-xs text-accent hover:text-accent-hover transition-colors"
+              >
+                Manage <LinkIcon className="size-3" />
+              </a>
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Pools Tab ──
 
 function TrustPools({ pools, userId }: { pools: Network[]; userId: string }) {
@@ -662,7 +947,7 @@ function PeerManagement({ peers, queryClient }: { peers: PeerPod[]; queryClient:
         </Card>
       ) : (
         peers.map((peer) => {
-          const lastSeen = relativeTime(peer.last_seen_at);
+          const lastSeen = peer.last_seen_at ? formatRelativeTime(null, peer.last_seen_at) || null : null;
           return (
             <Card key={peer.id} className="gap-0 py-0">
               <CardContent className="py-3 flex items-center gap-3">

@@ -25,6 +25,10 @@ const pin_handler = @import("handlers/pin.zig");
 const users_handler = @import("handlers/users.zig");
 const connections_handler = @import("handlers/connections.zig");
 const capsules_handler = @import("handlers/capsules.zig");
+const emergency_handler = @import("handlers/emergency.zig");
+const pod_federation_handler = @import("handlers/pod_federation.zig");
+const channel_tokens_handler = @import("handlers/channel_tokens.zig");
+const channels_handler = @import("handlers/channels.zig");
 
 // ── Globals ──
 var _gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -128,18 +132,43 @@ pub fn main() !void {
     pin_handler.setRateLimiter(&rate_limiter);
     pin_handler.registerRoutes();
 
-    // User reads (page load hot path)
+    // User reads + connectivity mutation
     users_handler.setDatabase(&database);
+    users_handler.setSessionStore(&sess_store);
     users_handler.registerRoutes();
 
-    // Connection reads (dashboard hot path)
+    // Channel token CRUD — registered BEFORE connections/capsules/notifications
+    // so that /api/users/*/channel-tokens is matched before those prefix handlers
+    // call proxyFromHandler() for unrecognised sub-paths.
+    channel_tokens_handler.setDatabase(&database);
+    channel_tokens_handler.registerRoutes();
+
+    // Connection reads + accept/decline mutations
     connections_handler.setDatabase(&database);
+    connections_handler.setSessionStore(&sess_store);
+    connections_handler.setTransitEngine(&transit_engine);
     connections_handler.registerRoutes();
+
+    // Inbound federation routes (DID-signed, no session auth)
+    pod_federation_handler.setDatabase(&database);
+    pod_federation_handler.setRateLimiter(&rate_limiter);
+    pod_federation_handler.registerRoutes();
 
     // Capsule CRUD (vault hot path)
     capsules_handler.setDatabase(&database);
     capsules_handler.setTransitEngine(&transit_engine);
     capsules_handler.registerRoutes();
+
+    // Emergency beacon + QR scan (self-issued UCAN)
+    emergency_handler.setDatabase(&database);
+    emergency_handler.setTransitEngine(&transit_engine);
+    emergency_handler.setRateLimiter(&rate_limiter);
+    emergency_handler.registerRoutes();
+
+    // Channel bridge (Bearer auth → pre-flight sensitivity → proxy to Python LLM)
+    channels_handler.setDatabase(&database);
+    channels_handler.setRateLimiter(&rate_limiter);
+    channels_handler.registerRoutes();
 
     // ── Start HTTP server ──
     // C2: Read proxy shared secret from environment

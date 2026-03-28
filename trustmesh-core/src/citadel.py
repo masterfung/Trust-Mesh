@@ -18,6 +18,25 @@ logger = logging.getLogger(__name__)
 CITADEL_URL = os.getenv("CITADEL_URL", "http://localhost:3001")
 CITADEL_TIMEOUT = 2.0
 
+# Singleton httpx client — avoids connection-pool churn on every scan call.
+# Closed at application shutdown via close_citadel_client().
+_citadel_client: httpx.AsyncClient | None = None
+
+
+def _get_citadel_client() -> httpx.AsyncClient:
+    global _citadel_client
+    if _citadel_client is None or _citadel_client.is_closed:
+        _citadel_client = httpx.AsyncClient(timeout=CITADEL_TIMEOUT)
+    return _citadel_client
+
+
+async def close_citadel_client() -> None:
+    """Close the shared httpx client. Call during application shutdown."""
+    global _citadel_client
+    if _citadel_client is not None:
+        await _citadel_client.aclose()
+        _citadel_client = None
+
 # Circuit breaker: if 3 failures in 60s, skip Citadel for next 60s
 _citadel_failures: list[float] = []
 CIRCUIT_BREAKER_THRESHOLD = 3
@@ -262,19 +281,19 @@ async def scan_input(text: str) -> InputScanResult:
         return _heuristic_input_scan(text)
 
     try:
-        async with httpx.AsyncClient(timeout=CITADEL_TIMEOUT) as client:
-            resp = await client.post(
-                f"{CITADEL_URL}/scan/input",
-                json={"text": text, "mode": "input"},
+        client = _get_citadel_client()
+        resp = await client.post(
+            f"{CITADEL_URL}/scan/input",
+            json={"text": text, "mode": "input"},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return InputScanResult(
+                decision=data.get("decision", "ALLOW"),
+                heuristic_score=data.get("heuristic_score", 0.0),
+                reason=data.get("reason", ""),
+                latency_ms=data.get("latency_ms", 0),
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                return InputScanResult(
-                    decision=data.get("decision", "ALLOW"),
-                    heuristic_score=data.get("heuristic_score", 0.0),
-                    reason=data.get("reason", ""),
-                    latency_ms=data.get("latency_ms", 0),
-                )
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         logger.warning(f"Citadel unavailable for input scan: {e}")
         _record_citadel_failure()
@@ -294,31 +313,31 @@ async def scan_output(text: str, trust_level: str = "public") -> OutputScanResul
         return result
 
     try:
-        async with httpx.AsyncClient(timeout=CITADEL_TIMEOUT) as client:
-            resp = await client.post(
-                f"{CITADEL_URL}/scan/output",
-                json={"text": text, "mode": "output", "trust_level": trust_level},
+        client = _get_citadel_client()
+        resp = await client.post(
+            f"{CITADEL_URL}/scan/output",
+            json={"text": text, "mode": "output", "trust_level": trust_level},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            result = OutputScanResult(
+                is_safe=data.get("is_safe", True),
+                risk_score=data.get("risk_score", 0),
+                risk_level=data.get("risk_level", "NONE"),
+                findings=data.get("findings", []),
+                threat_categories=data.get("threat_categories", []),
+                scan_mode="citadel",
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                result = OutputScanResult(
-                    is_safe=data.get("is_safe", True),
-                    risk_score=data.get("risk_score", 0),
-                    risk_level=data.get("risk_level", "NONE"),
-                    findings=data.get("findings", []),
-                    threat_categories=data.get("threat_categories", []),
-                    scan_mode="citadel",
-                )
-                # Citadel sidecar doesn't know about soft-leak patterns yet,
-                # so also run heuristic for soft-leak detection at public trust
-                if trust_level == "public":
-                    heuristic = _heuristic_output_scan(text, trust_level)
-                    if not heuristic.is_safe:
-                        result.findings.extend(heuristic.findings)
-                        result.threat_categories.extend(heuristic.threat_categories)
-                        result.is_safe = False
-                        result.risk_score = max(result.risk_score, heuristic.risk_score)
-                return result
+            # Citadel sidecar doesn't know about soft-leak patterns yet,
+            # so also run heuristic for soft-leak detection at public trust
+            if trust_level == "public":
+                heuristic = _heuristic_output_scan(text, trust_level)
+                if not heuristic.is_safe:
+                    result.findings.extend(heuristic.findings)
+                    result.threat_categories.extend(heuristic.threat_categories)
+                    result.is_safe = False
+                    result.risk_score = max(result.risk_score, heuristic.risk_score)
+            return result
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         logger.warning(f"Citadel unavailable for output scan: {e}")
         _record_citadel_failure()
@@ -427,8 +446,8 @@ def scrub_tool_output(text: str) -> str:
 async def is_citadel_available() -> bool:
     """Check if Citadel is running."""
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            resp = await client.get(f"{CITADEL_URL}/health")
-            return resp.status_code == 200
+        client = _get_citadel_client()
+        resp = await client.get(f"{CITADEL_URL}/health")
+        return resp.status_code == 200
     except (httpx.ConnectError, httpx.TimeoutException):
         return False

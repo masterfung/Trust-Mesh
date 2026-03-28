@@ -30,7 +30,7 @@ pub fn registerRoutes() void {
 fn handleGetPinStatus(ctx: *http.RequestContext) !void {
     // Only handle /api/users/{id}/pin/status
     if (std.mem.indexOf(u8, ctx.path, "/pin/status") == null) {
-        return ctx.sendError(.not_found, "Not found");
+        return http.proxyFromHandler(ctx);
     }
 
     const database = _db orelse return ctx.sendError(.service_unavailable, "DB not ready");

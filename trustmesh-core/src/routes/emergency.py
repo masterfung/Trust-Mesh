@@ -21,6 +21,7 @@ from src.models import Agent, KnowledgeCapsule, Network, NetworkMembership, Noti
 from src.schemas import (
     EmergencyAccessRequest,
     EmergencyAccessResponse,
+    EmergencyBeaconResponse,
     EmergencyRoleInfo,
     EmergencyTokenRequest,
     EmergencyTokenResponse,
@@ -28,6 +29,9 @@ from src.schemas import (
 from src.ucan import ROLE_SCOPES, capsule_matches_scope, create_ucan_token, token_hash, validate_ucan_token
 
 router = APIRouter(prefix="/api/emergency", tags=["emergency"])
+
+# Separate router for user-scoped beacon endpoint (/api/users/{user_id}/emergency/beacon)
+beacon_router = APIRouter(prefix="/api/users", tags=["emergency"])
 
 
 @router.get("/roles", response_model=list[EmergencyRoleInfo])
@@ -492,3 +496,337 @@ async def _log_denied(
         notification_body=f"An emergency access attempt was denied: {reason}",
     )
     await db.commit()
+
+
+async def _verify_org_did(db: AsyncSession, org_did: str) -> bool:
+    """Return True if org_did belongs to a registered medical organization.
+
+    Checks local DB first (ghost users / local org users), then the public registry.
+    """
+    _MEDICAL_KEYWORDS = {"hospital", "medical", "health", "clinic", "ems", "emergency", "paramedic", "rescue", "urgent"}
+
+    # 1. Local DB: ghost users or locally-registered org users with this DID
+    local_result = await db.execute(
+        select(Agent.did)
+        .join(User, User.id == Agent.owner_id)
+        .where(User.user_type.in_(["organization", "service"]))
+        .where(Agent.did == org_did)
+    )
+    if local_result.scalar_one_or_none():
+        return True  # In our federation — trust it
+
+    # 2. Registry lookup by DID
+    from src.federation import REGISTRY_URL
+    if not REGISTRY_URL:
+        return False
+
+    import urllib.parse
+    import httpx
+    encoded = urllib.parse.quote(org_did, safe="")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{REGISTRY_URL.rstrip('/')}/api/agents/{encoded}")
+            if resp.status_code == 200:
+                entry = resp.json()
+                name_lower = entry.get("name", "").lower()
+                bio_lower = entry.get("bio", "").lower()
+                return any(kw in name_lower or kw in bio_lower for kw in _MEDICAL_KEYWORDS)
+    except Exception:
+        pass
+    return False
+
+
+# ── Self-issued UCAN beacon endpoints ────────────────────────────────────────
+
+_BEACON_ROLES: list[str] = ["paramedic", "er_nurse", "attending_physician"]
+_BEACON_DURATION = 1800  # 30 minutes
+
+
+@beacon_router.post("/{user_id}/emergency/beacon", response_model=EmergencyBeaconResponse)
+async def generate_emergency_beacon(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
+    """Patient self-generates signed UCAN tokens for first-responder QR access.
+
+    Returns one token per role (paramedic / er_nurse / attending_physician),
+    each signed with the patient's own ed25519 key.  No issuing organisation required.
+    """
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
+
+    # Rate limit: 3 beacon generations per hour
+    from src.rate_limit import check_emergency_issue_rate, record_emergency_issue
+    rate_ok, rate_msg = check_emergency_issue_rate(user_id)
+    if not rate_ok:
+        raise HTTPException(429, rate_msg)
+
+    # Load agent + user info
+    agent_result = await db.execute(
+        select(Agent, User)
+        .join(User, User.id == Agent.owner_id)
+        .where(Agent.owner_id == user_id)
+    )
+    row = agent_result.first()
+    if not row:
+        raise HTTPException(404, "Agent not found for user")
+    agent, user = row
+
+    if not agent.did or not agent.encrypted_private_key:
+        raise HTTPException(500, "Agent has no cryptographic identity")
+
+    # Decrypt private key
+    if not transit_bridge.has_key(user_id):
+        raise HTTPException(503, "Vault key not loaded — log in first")
+
+    try:
+        private_key = transit_bridge.decrypt(user_id, agent.encrypted_private_key)
+    except Exception:
+        raise HTTPException(500, "Failed to decrypt agent private key")
+
+    # Sign one token per role
+    import uuid
+    from datetime import datetime as _dt
+    import os as _os
+    from src.federation import POD_URL
+
+    # TRUSTMESH_FRONTEND_URL lets multi-pod setups point QR codes at the shared
+    # frontend (e.g. :3050) rather than the pod's own API port.  The &pod= param
+    # tells the scanner which backend to call for token verification.
+    _frontend_url = _os.getenv("TRUSTMESH_FRONTEND_URL", "http://localhost:3050").rstrip("/")
+
+    patient_username = user.username or user_id
+    tokens: dict[str, str] = {}
+    qr_urls: dict[str, str] = {}
+
+    for role in _BEACON_ROLES:
+        token = create_ucan_token(
+            issuer_did=agent.did,
+            issuer_private_key=private_key,
+            audience_did="did:emergency:any",
+            role=role,
+            duration_seconds=_BEACON_DURATION,
+            facts={"emergency_beacon": True, "issued_by": user.display_name},
+        )
+        tokens[role] = token
+        qr_urls[role] = (
+            f"{_frontend_url}/emergency/scan"
+            f"?t={token}&p={patient_username}&pod={POD_URL}"
+        )
+
+    # Zero private key bytes immediately
+    private_key = b"\x00" * len(private_key)
+
+    # Audit log (fail-safe)
+    audit_id = str(uuid.uuid4())
+    try:
+        from src.models import AuditLog
+        audit_row = AuditLog(
+            id=audit_id,
+            actor_user_id=user_id,
+            target_user_id=user_id,
+            action="emergency_beacon_generated",
+            event_type="emergency",
+            token_role="all_roles",
+            decision="allowed",
+        )
+        db.add(audit_row)
+        await db.commit()
+    except Exception:
+        pass  # Audit failure must not block beacon generation
+
+    record_emergency_issue(user_id)
+
+    # Count emergency-accessible capsules so the UI can show intake wizard if empty
+    from sqlalchemy import func as _func
+    from src.models import KnowledgeCapsule as _CapsuleModel
+    capsule_count_result = await db.execute(
+        select(_func.count(_CapsuleModel.id))
+        .where(_CapsuleModel.owner_id == user_id)
+        .where(_CapsuleModel.emergency_accessible == True)
+    )
+    capsule_count = capsule_count_result.scalar() or 0
+
+    return EmergencyBeaconResponse(
+        tokens=tokens,
+        qr_urls=qr_urls,
+        patient_did=agent.did,
+        patient_name=user.display_name,
+        pod_url=POD_URL,
+        expires_in=_BEACON_DURATION,
+        generated_at=_dt.now(tz=timezone.utc).isoformat(),
+        audit_id=audit_id,
+        capsule_count=capsule_count,
+    )
+
+
+@router.get("/qr", response_model=EmergencyAccessResponse)
+async def scan_emergency_qr(
+    t: str,
+    p: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """First-responder endpoint: validate a self-issued beacon token and return scoped records.
+
+    No login required. Token is validated via ed25519 signature against the patient's public key.
+    """
+    import base64
+    import json as _json
+
+    if len(t) > 4096 or len(p) > 50:
+        raise HTTPException(400, "Invalid parameters")
+
+    # Parse token
+    parts = t.split(".")
+    if len(parts) != 2:
+        raise HTTPException(403, "Invalid token format")
+
+    payload_b64, sig_b64 = parts
+    try:
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        payload_bytes = base64.urlsafe_b64decode(payload_b64)
+        payload_data = _json.loads(payload_bytes)
+    except Exception:
+        raise HTTPException(403, "Cannot parse token payload")
+
+    # Check expiry and beacon sentinel
+    exp = payload_data.get("exp", 0)
+    if exp < int(datetime.now(tz=timezone.utc).timestamp()):
+        raise HTTPException(403, "Token expired")
+
+    aud = payload_data.get("aud", "")
+    if aud != "did:emergency:any" and not aud.startswith("did:"):
+        raise HTTPException(403, "Not a beacon token")
+    org_targeted = aud != "did:emergency:any"  # True → must verify org at scan time
+
+    if not payload_data.get("fct", {}).get("emergency_beacon"):
+        raise HTTPException(403, "Not a beacon token")
+
+    role = payload_data.get("att", {}).get("role", "")
+    if role not in ROLE_SCOPES:
+        raise HTTPException(403, f"Unknown role: {role}")
+
+    # Find patient by username
+    patient_result = await db.execute(select(User).where(User.username == p))
+    patient = patient_result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(403, "Patient not found")
+
+    patient_agent_result = await db.execute(select(Agent).where(Agent.owner_id == patient.id))
+    patient_agent = patient_agent_result.scalar_one_or_none()
+    if not patient_agent or not patient_agent.public_key or not patient_agent.did:
+        raise HTTPException(500, "Patient has no cryptographic identity")
+
+    # Verify self-issued: iss must equal patient's DID
+    iss = payload_data.get("iss", "")
+    if iss != patient_agent.did:
+        await _log_denied(db, None, patient.id, t, "Issuer DID does not match patient")
+        raise HTTPException(403, "Issuer mismatch")
+
+    # For org-targeted tokens: verify the audience DID is a registered medical provider
+    if org_targeted:
+        org_ok = await _verify_org_did(db, aud)
+        if not org_ok:
+            await _log_denied(
+                db, patient.id, patient.id, t,
+                f"Org DID not registered as medical provider: {aud}",
+            )
+            raise HTTPException(403, "Organization not verified as medical provider")
+
+    # Verify signature
+    try:
+        padding = 4 - len(sig_b64) % 4
+        if padding != 4:
+            sig_b64 += "=" * padding
+        signature = base64.urlsafe_b64decode(sig_b64)
+    except Exception:
+        await _log_denied(db, patient.id, patient.id, t, "Invalid signature encoding")
+        raise HTTPException(403, "Invalid token signature")
+
+    from src.crypto import verify_ed25519
+    if not verify_ed25519(payload_bytes, signature, patient_agent.public_key):
+        await _log_denied(db, patient.id, patient.id, t, "Signature verification failed")
+        raise HTTPException(403, "Invalid token signature")
+
+    # Check revocation
+    from src.ucan import is_token_revoked
+    if await is_token_revoked(db, t):
+        await _log_denied(db, patient.id, patient.id, t, "Token revoked")
+        raise HTTPException(403, "Token has been revoked")
+
+    # Rate limit per token hash
+    from src.rate_limit import check_emergency_present_rate, record_emergency_present
+    t_hash = token_hash(t)
+    rate_ok, rate_msg = check_emergency_present_rate(t_hash)
+    if not rate_ok:
+        raise HTTPException(429, rate_msg)
+
+    # Vault must be loaded
+    if not transit_bridge.has_key(patient.id):
+        raise HTTPException(503, "Patient vault not available")
+
+    # Fetch emergency-accessible capsules
+    capsule_result = await db.execute(
+        select(KnowledgeCapsule.id).where(
+            KnowledgeCapsule.owner_id == patient.id,
+            KnowledgeCapsule.is_archived.is_(False),
+            KnowledgeCapsule.emergency_accessible.is_(True),
+        )
+    )
+    all_capsule_ids = list(capsule_result.scalars().all())
+    all_capsules = await load_capsules_decrypted(db, all_capsule_ids, patient.id)
+
+    scoped = [c for c in all_capsules if capsule_matches_scope(c, role)]
+    categories = list({c.get("category", "") for c in scoped if c.get("category")})
+    capsule_ids = [c["id"] for c in scoped]
+
+    # Audit (fail-safe)
+    import uuid
+    exp_dt = datetime.fromtimestamp(exp, tz=timezone.utc)
+    audit_entry = await log_event_strict(
+        db,
+        actor_user_id=patient.id,
+        actor_did=iss,
+        actor_role=role,
+        target_user_id=patient.id,
+        action="emergency_data_access",
+        event_type="emergency",
+        token_hash=t_hash,
+        token_role=role,
+        token_expires_at=exp_dt,
+        capsule_ids_accessed=capsule_ids,
+        categories_accessed=categories,
+        decision="allowed",
+        details={"beacon": True, "capsules_returned": len(scoped)},
+        notify_target=True,
+        notification_title="Emergency beacon scanned",
+        notification_body=f"Role: {role}. {len(scoped)} record(s) accessed.",
+    )
+
+    family_notified = await _notify_family_network(
+        db,
+        patient=patient,
+        issuer_name=payload_data.get("fct", {}).get("issued_by", patient.display_name),
+        role=role,
+        practitioner_name="(first responder)",
+        reason="emergency beacon scan",
+        capsule_count=len(scoped),
+    )
+
+    await db.commit()
+    record_emergency_present(t_hash)
+
+    return EmergencyAccessResponse(
+        patient_name=patient.display_name,
+        role=role,
+        capsules=scoped,
+        capsule_count=len(scoped),
+        total_capsules=len(all_capsules),
+        categories=categories,
+        audit_id=audit_entry.id,
+        expires_at=exp_dt,
+        family_notified=family_notified,
+    )

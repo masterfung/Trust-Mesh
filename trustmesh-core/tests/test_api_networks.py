@@ -112,8 +112,14 @@ async def create_connection(
 ) -> None:
     """Create an accepted connection between two users.
 
-    Uses throwaway clients to avoid cookie leakage.
+    Sends the request via HTTP (still Python), then accepts directly via DB
+    since PUT /api/connection-requests/{id} is now handled by the Zig kernel.
     """
+    import uuid
+    from datetime import datetime, timezone
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from src.models import Connection, ConnectionRequest
+
     transport = _make_transport()
 
     # A sends request to B
@@ -127,15 +133,22 @@ async def create_connection(
         assert req_resp.status_code == 200, f"Connection request failed: {req_resp.text}"
         request_id = req_resp.json()["id"]
 
-    # B accepts
-    async with AsyncClient(transport=transport, base_url="http://test") as tmp:
-        tmp.cookies.clear()
-        tmp.cookies.update(cookies_b)
-        accept_resp = await tmp.put(
-            f"/api/connection-requests/{request_id}",
-            json={"status": "accepted"},
+    # Accept directly via DB (PUT handler is now native Zig)
+    now = datetime.now(timezone.utc)
+    async with AsyncSession(engine) as db:
+        req = await db.get(ConnectionRequest, request_id)
+        assert req is not None, "Connection request not found in DB"
+        req.status = "accepted"
+        req.reviewed_at = now
+        conn = Connection(
+            id=str(uuid.uuid4()),
+            from_user_id=user_a_id,
+            to_user_id=user_b_id,
+            status="accepted",
+            accepted_at=now,
         )
-        assert accept_resp.status_code == 200, f"Accept connection failed: {accept_resp.text}"
+        db.add(conn)
+        await db.commit()
 
 
 async def create_network_helper(
