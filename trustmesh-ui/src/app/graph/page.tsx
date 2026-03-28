@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { api, type QueryResult, type User } from "@/lib/api";
+import { useState, useCallback, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api, getPodUrl, getCsrfToken, type QueryResult, type User, type GraphData } from "@/lib/api";
 import { TrustGraph } from "@/components/TrustGraph";
+import { fetchSiblingPodUsers } from "@/lib/pods";
 import Link from "next/link";
 
 const DEMO_SCENARIOS = [
@@ -65,15 +66,39 @@ const DEMO_SCENARIOS = [
 
 type GraphView = "my" | "all";
 
+/** Local fetch using a specific pod URL (bypasses localStorage). */
+async function podApiFetch<T>(podUrl: string, path: string): Promise<T> {
+  const res = await fetch(`${podUrl}${path}`, {
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json() as Promise<T>;
+}
+
+const KNOWN_PODS = [
+  { label: "Pod :9000 (demo)", url: "http://localhost:9000" },
+  { label: "Pod :9001 (Molly)", url: "http://localhost:9001" },
+  { label: "Pod :9002", url: "http://localhost:9002" },
+  { label: "Pod :9003", url: "http://localhost:9003" },
+  { label: "Pod :9004 (Rose)", url: "http://localhost:9004" },
+];
+
+
 export default function GraphPage() {
   const [recentQueries, setRecentQueries] = useState<QueryResult[]>([]);
   const [isRunningAll, setIsRunningAll] = useState(false);
+  const [runningScenarioIdx, setRunningScenarioIdx] = useState<number | null>(null);
   const [graphView, setGraphView] = useState<GraphView>("all");
   const [selectedUserId, setSelectedUserId] = useState<string>("");
+  const [podOverride, setPodOverride] = useState<string>(() =>
+    typeof window !== "undefined" ? getPodUrl() : "http://localhost:9000"
+  );
+  const [siblingPods, setSiblingPods] = useState<User[]>([]);
 
   const { data: users } = useQuery({
-    queryKey: ["users"],
-    queryFn: api.listUsers,
+    queryKey: ["users", podOverride],
+    queryFn: () => podApiFetch<User[]>(podOverride, "/api/users"),
   });
 
   // Auto-select first person user when users load
@@ -81,55 +106,107 @@ export default function GraphPage() {
   const effectiveUserId = selectedUserId || personUsers[0]?.id || "";
 
   const { data: fullGraph, isLoading: fullLoading } = useQuery({
-    queryKey: ["graph"],
-    queryFn: api.getGraph,
+    queryKey: ["graph", podOverride],
+    queryFn: () => podApiFetch<GraphData>(podOverride, "/api/graph"),
     enabled: graphView === "all",
   });
 
   const { data: userGraph, isLoading: userLoading } = useQuery({
-    queryKey: ["graph", effectiveUserId],
-    queryFn: () => api.getUserGraph(effectiveUserId),
+    queryKey: ["graph", podOverride, effectiveUserId],
+    queryFn: () => podApiFetch<GraphData>(podOverride, `/api/graph/${effectiveUserId}`),
     enabled: graphView === "my" && !!effectiveUserId,
   });
 
-  const graph = graphView === "my" ? userGraph : fullGraph;
+  // Probe sibling pods (9001-9008) and collect their primary owner info.
+  useEffect(() => {
+    fetchSiblingPodUsers(podOverride).then(setSiblingPods);
+  }, [podOverride]);
+
+  const rawGraph = graphView === "my" ? userGraph : fullGraph;
   const isLoading = graphView === "my" ? userLoading : fullLoading;
+
+  // Merge sibling pod nodes + dashed cross-pod edges into the graph data.
+  // We use the center node (current user in "my" view, or first person node in "all" view)
+  // as the anchor for the cross-pod edges.
+  const graph: GraphData | undefined = (() => {
+    if (!rawGraph) return undefined;
+
+    if (siblingPods.length === 0) return rawGraph;
+
+    // Determine the anchor node id: for "my" view it's effectiveUserId,
+    // for "all" view use the first person node or fall back to the first node.
+    const anchorId =
+      graphView === "my"
+        ? effectiveUserId
+        : (rawGraph.nodes.find((n) => n.user_type === "person")?.id ?? rawGraph.nodes[0]?.id ?? "");
+
+    if (!anchorId) return rawGraph;
+
+    // Filter out siblings whose id is already in the graph (e.g. formally connected)
+    const existingIds = new Set(rawGraph.nodes.map((n) => n.id));
+    const newNeighbors = siblingPods.filter((p) => !existingIds.has(p.id));
+
+    if (newNeighbors.length === 0) return rawGraph;
+
+    const extraNodes: GraphData["nodes"] = newNeighbors.map((p) => ({
+      id: p.id,
+      username: p.username ?? "",
+      display_name: p.display_name,
+      bio: `${p.bio} — :${p.pod_url?.match(/:(\d+)/)?.[1] ?? ""}`,
+      user_type: "pod_neighbor",
+    }));
+
+    const extraEdges: GraphData["edges"] = newNeighbors.map((p) => ({
+      source: anchorId,
+      target: p.id,
+      type: "cross_pod",
+    }));
+
+    return {
+      ...rawGraph,
+      nodes: [...rawGraph.nodes, ...extraNodes],
+      edges: [...rawGraph.edges, ...extraEdges],
+    };
+  })();
 
   const getUserId = (username: string) =>
     users?.find((u) => u.username === username)?.id;
 
-  const queryMutation = useMutation({
-    mutationFn: ({
-      fromId,
-      toId,
-      question,
-    }: {
-      fromId: string;
-      toId: string;
-      question: string;
-    }) => api.query(fromId, toId, question),
-    onSuccess: (result) => {
-      setRecentQueries((prev) => [result, ...prev].slice(0, 20));
-    },
-  });
+  const podQuery = useCallback(async (fromId: string, toId: string, question: string): Promise<QueryResult> => {
+    const csrfCookie = getCsrfToken();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (csrfCookie) headers["x-csrf-token"] = csrfCookie;
+    const res = await fetch(`${podOverride}/api/query`, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: JSON.stringify({ from_user_id: fromId, to_user_id: toId, question }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json() as Promise<QueryResult>;
+  }, [podOverride]);
 
-  const runScenario = async (scenario: (typeof DEMO_SCENARIOS)[number]) => {
+  const runScenario = async (scenario: (typeof DEMO_SCENARIOS)[number], idx: number) => {
     const fromId = getUserId(scenario.from);
     const toId = getUserId(scenario.to);
     if (!fromId || !toId) return;
-    try { await api.demoWarmup(); } catch { /* non-fatal */ }
-    queryMutation.mutate({ fromId, toId, question: scenario.question });
+    setRunningScenarioIdx(idx);
+    try {
+      const result = await podQuery(fromId, toId, scenario.question);
+      setRecentQueries((prev) => [result, ...prev].slice(0, 20));
+    } finally {
+      setRunningScenarioIdx(null);
+    }
   };
 
   const runAllScenarios = async () => {
     setIsRunningAll(true);
-    try { await api.demoWarmup(); } catch { /* non-fatal */ }
     for (const scenario of DEMO_SCENARIOS) {
       const fromId = getUserId(scenario.from);
       const toId = getUserId(scenario.to);
       if (!fromId || !toId) continue;
       try {
-        const result = await api.query(fromId, toId, scenario.question);
+        const result = await podQuery(fromId, toId, scenario.question);
         setRecentQueries((prev) => [result, ...prev].slice(0, 20));
       } catch {
         // continue with next scenario
@@ -159,6 +236,16 @@ export default function GraphPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* Pod selector */}
+          <select
+            value={podOverride}
+            onChange={(e) => { setPodOverride(e.target.value); setSelectedUserId(""); setRecentQueries([]); }}
+            className="bg-card border border-card-border rounded-xl px-3 py-1.5 text-xs text-foreground"
+          >
+            {KNOWN_PODS.map((p) => (
+              <option key={p.url} value={p.url}>{p.label}</option>
+            ))}
+          </select>
           {/* Graph view toggle */}
           <div className="flex rounded-xl overflow-hidden border border-card-border">
             <button
@@ -252,7 +339,8 @@ export default function GraphPage() {
           <DemoScenarios
             scenarios={DEMO_SCENARIOS}
             onRun={runScenario}
-            disabled={queryMutation.isPending || isRunningAll}
+            disabled={isRunningAll}
+            runningIdx={runningScenarioIdx}
           />
           <LiveQueryFeed queries={recentQueries} users={users} />
         </div>
@@ -267,10 +355,12 @@ function DemoScenarios({
   scenarios,
   onRun,
   disabled,
+  runningIdx,
 }: {
   scenarios: typeof DEMO_SCENARIOS;
-  onRun: (s: (typeof DEMO_SCENARIOS)[number]) => void;
+  onRun: (s: (typeof DEMO_SCENARIOS)[number], idx: number) => void;
   disabled: boolean;
+  runningIdx: number | null;
 }) {
   return (
     <div className="p-4 border-b border-card-border">
@@ -278,37 +368,54 @@ function DemoScenarios({
         Demo Scenarios
       </h2>
       <div className="space-y-2">
-        {scenarios.map((s, i) => (
-          <button
-            key={i}
-            onClick={() => onRun(s)}
-            disabled={disabled}
-            className="w-full text-left p-3 rounded-xl bg-card border border-card-border hover:border-accent/30 hover:bg-card-hover transition-all disabled:opacity-40"
-          >
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-xs font-medium">{s.label}</span>
-              <span
-                className={`text-[10px] font-semibold uppercase ${
-                  s.expected === "shared"
-                    ? "text-green-400"
-                    : s.expected === "blocked"
-                      ? "text-red-400"
-                      : "text-yellow-400"
-                }`}
-              >
-                {s.expected === "shared" ? "shares" : s.expected === "blocked" ? "blocked" : "limited"}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                s.trust === "network" ? "bg-accent/15 text-accent" : "bg-warning/15 text-warning"
-              }`}>
-                {s.trust}
-              </span>
-              <p className="text-[11px] text-muted-foreground truncate">{s.description}</p>
-            </div>
-          </button>
-        ))}
+        {scenarios.map((s, i) => {
+          const isRunning = runningIdx === i;
+          const isOtherRunning = runningIdx !== null && runningIdx !== i;
+          return (
+            <button
+              key={i}
+              onClick={() => onRun(s, i)}
+              disabled={disabled || runningIdx !== null}
+              className={`w-full text-left p-3 rounded-xl border transition-all ${
+                isRunning
+                  ? "bg-accent/5 border-accent/40"
+                  : "bg-card border-card-border hover:border-accent/30 hover:bg-card-hover"
+              } ${isOtherRunning ? "opacity-40" : ""}`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-medium">{s.label}</span>
+                {isRunning ? (
+                  <svg className="animate-spin w-3.5 h-3.5 text-accent shrink-0" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                ) : (
+                  <span
+                    className={`text-[10px] font-semibold uppercase ${
+                      s.expected === "shared"
+                        ? "text-green-400"
+                        : s.expected === "blocked"
+                          ? "text-red-400"
+                          : "text-yellow-400"
+                    }`}
+                  >
+                    {s.expected === "shared" ? "shares" : s.expected === "blocked" ? "blocked" : "limited"}
+                  </span>
+                )}
+              </div>
+              {/* Question text */}
+              <p className="text-[11px] text-accent/80 italic mb-1.5 truncate">&ldquo;{s.question}&rdquo;</p>
+              <div className="flex items-center gap-2">
+                <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                  s.trust === "network" ? "bg-accent/15 text-accent" : "bg-warning/15 text-warning"
+                }`}>
+                  {s.trust}
+                </span>
+                <p className="text-[11px] text-muted-foreground truncate">{s.description}</p>
+              </div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -322,6 +429,7 @@ const DECISION_COLORS: Record<string, { text: string; bg: string }> = {
 const DEFAULT_DECISION = { text: "text-muted-foreground", bg: "bg-card border-card-border" };
 
 function LiveQueryFeed({ queries, users }: { queries: QueryResult[]; users?: User[] }) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const getUserName = (id: string) =>
     users?.find((u) => u.id === id)?.display_name || "Unknown";
 
@@ -338,32 +446,80 @@ function LiveQueryFeed({ queries, users }: { queries: QueryResult[]; users?: Use
         <div className="space-y-2">
           {queries.map((q, idx) => {
             const colors = DECISION_COLORS[q.decision] ?? DEFAULT_DECISION;
+            const cardId = q.id || `query-${idx}`;
+            const isExpanded = expandedId === cardId;
             return (
-              <div key={q.id || `query-${idx}`} className={`p-3 rounded-xl border transition-all ${colors.bg}`}>
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <span className="text-xs font-medium">{getUserName(q.from_user_id)}</span>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="5" y1="12" x2="19" y2="12" />
-                    <polyline points="12 5 19 12 12 19" />
-                  </svg>
-                  <span className="text-xs font-medium">{getUserName(q.to_user_id)}</span>
-                  <span className={`ml-auto text-[10px] font-bold uppercase ${colors.text}`}>
-                    {q.decision}
-                  </span>
-                </div>
-                <p className="text-[11px] text-muted-foreground truncate">{q.question}</p>
-                {q.response && (
-                  <p className="text-[11px] text-foreground/80 mt-1.5 line-clamp-2 leading-relaxed">
-                    {q.response}
+              <div
+                key={cardId}
+                className={`rounded-xl border transition-all cursor-pointer ${colors.bg} ${isExpanded ? "ring-1 ring-white/10" : "hover:brightness-110"}`}
+                onClick={() => setExpandedId(isExpanded ? null : cardId)}
+              >
+                {/* Header — always visible */}
+                <div className="p-3">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <span className="text-xs font-medium">{getUserName(q.from_user_id)}</span>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                      <polyline points="12 5 19 12 12 19" />
+                    </svg>
+                    <span className="text-xs font-medium">{getUserName(q.to_user_id)}</span>
+                    <span className={`ml-auto text-[10px] font-bold uppercase ${colors.text}`}>
+                      {q.decision}
+                    </span>
+                    <svg
+                      width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                      strokeLinecap="round" strokeLinejoin="round"
+                      className={`text-muted-foreground transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                    >
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                  </div>
+                  <p className={`text-[11px] text-muted-foreground italic ${isExpanded ? "" : "truncate"}`}>
+                    &ldquo;{q.question}&rdquo;
                   </p>
-                )}
-                <div className="flex items-center gap-3 mt-1.5 text-[10px] text-muted-foreground">
-                  <span className="capitalize">{q.trust_level}</span>
-                  <span>{q.latency_ms}ms</span>
-                  {q.shared_networks?.length > 0 && (
-                    <span>{q.shared_networks.join(", ")}</span>
+                  {!isExpanded && q.response && (
+                    <p className="text-[11px] text-foreground/80 mt-1.5 line-clamp-2 leading-relaxed">
+                      {q.response}
+                    </p>
                   )}
+                  <div className="flex items-center gap-3 mt-1.5 text-[10px] text-muted-foreground">
+                    <span className="capitalize">{q.trust_level}</span>
+                    <span>{q.latency_ms}ms</span>
+                    {q.shared_networks?.length > 0 && (
+                      <span className="truncate">{q.shared_networks.join(", ")}</span>
+                    )}
+                  </div>
                 </div>
+
+                {/* Expanded detail */}
+                {isExpanded && (
+                  <div className="border-t border-white/[0.06] px-3 py-3 space-y-2.5">
+                    {q.response && (
+                      <div>
+                        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                          Agent Response
+                        </p>
+                        <p className="text-[11px] text-foreground/90 leading-relaxed whitespace-pre-wrap">
+                          {q.response}
+                        </p>
+                      </div>
+                    )}
+                    {q.shared_networks?.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                          Shared Networks
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          {q.shared_networks.map((n) => (
+                            <span key={n} className="text-[10px] px-2 py-0.5 rounded bg-accent/10 text-accent">
+                              {n}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}

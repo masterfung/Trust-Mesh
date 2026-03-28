@@ -1,5 +1,5 @@
 const DEFAULT_API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:9000";
-const REGISTRY_URL = process.env.NEXT_PUBLIC_REGISTRY_URL || "http://localhost:9100";
+const REGISTRY_URL = process.env.NEXT_PUBLIC_REGISTRY_URL || "http://localhost:8100";
 
 /** Get the active pod URL (from localStorage or default). */
 export function getPodUrl(): string {
@@ -16,13 +16,22 @@ export function setPodUrl(url: string) {
   }
 }
 
-/** Get the current API base (dynamic based on selected pod). */
+/** Get the current API base (dynamic based on selected pod).
+ *
+ * When running on a tunnel / non-localhost origin (e.g. phone scanning QR,
+ * cloudflare/ngrok), the Next.js server proxies /api/* to the backend via
+ * rewrites (next.config.ts + TRUSTMESH_PROXY_POD). In that case we return ""
+ * so all fetch calls use relative URLs and avoid CORS issues.
+ */
 function getApiBase(): string {
+  if (typeof window !== "undefined" && window.location.hostname !== "localhost") {
+    return ""; // Use relative URL — Next.js server-side rewrite handles it
+  }
   return getPodUrl();
 }
 
 /** Read the CSRF cookie value (set by backend, httpOnly=false so JS can read it). */
-function getCsrfToken(): string | null {
+export function getCsrfToken(): string | null {
   if (typeof document === "undefined") return null;
   const match = document.cookie.match(/(?:^|;\s*)trustmesh_csrf=([^;]+)/);
   return match ? decodeURIComponent(match[1]) : null;
@@ -60,6 +69,15 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+/**
+ * Create an EventSource for the research feed of a specific pod.
+ * The EventSource streams research events as the pod's agents browse the web.
+ * Caller is responsible for closing the EventSource when done.
+ */
+export function createResearchFeedSource(podBaseUrl: string): EventSource {
+  return new EventSource(`${podBaseUrl}/api/research/feed`, { withCredentials: true });
+}
+
 // ── Types ──
 
 export interface ProfileData {
@@ -80,11 +98,16 @@ export interface User {
   display_name: string;
   bio: string;
   user_type?: string;
+  org_subtype?: string | null;
+  agent_mode?: string;
   profile_data?: ProfileData | null;
   is_discoverable?: boolean;
   is_demo?: boolean;
+  is_remote?: boolean;
+  pod_url?: string;
   active_context?: ContextMode;
   avatar_url?: string | null;
+  connectivity_mode?: "relay_primary" | "direct_with_fallback" | "invite_only";
   created_at?: string;
 }
 
@@ -133,6 +156,7 @@ export interface ConnectionRequest {
   to_user_id: string;
   message: string;
   status: string;
+  context?: string;
   relationship_type?: string;
   from_label?: string;
   mutual_connections?: number;
@@ -231,6 +255,7 @@ export interface QueryResult {
   citadel_input?: CitadelResult;
   citadel_output?: CitadelResult;
   agent_actions?: AgentAction[];
+  routing?: { provider: string; model?: string };
   latency_ms: number;
   created_at: string;
 }
@@ -279,6 +304,7 @@ export interface Briefing {
 export interface HealthStatus {
   status: string;
   providers: {
+    gemini?: boolean;
     anthropic: boolean;
     tee: { enabled: boolean; provider: string | null };
     tavily: boolean;
@@ -308,6 +334,7 @@ export interface RegistryAgent {
   display_name: string;
   bio: string;
   user_type: string;
+  org_subtype?: string | null;
   profile_data?: ProfileData | null;
   skills: { name: string; category: string }[];
   pools: string[];
@@ -429,7 +456,7 @@ export const api = {
     apiFetch<{ status: string }>("/api/auth/logout", { method: "POST" }),
   getMe: () => apiFetch<User>("/api/auth/me"),
   // Signup: name + password + optional email/avatar. Username (public handle) is optional.
-  createUser: (data: { display_name: string; bio: string; password: string; email?: string; avatar_url?: string; user_type?: string; username?: string }) =>
+  createUser: (data: { display_name: string; bio: string; password: string; email?: string; avatar_url?: string; user_type?: string; org_subtype?: string; username?: string }) =>
     apiFetch<User>("/api/users", { method: "POST", body: JSON.stringify(data) }),
   // Claim a public handle (Go Live)
   claimHandle: (userId: string, handle: string) =>
@@ -444,6 +471,11 @@ export const api = {
   listUsers: () => apiFetch<User[]>("/api/users"),
   getUser: (id: string) => apiFetch<User>(`/api/users/${id}`),
   getAgent: (id: string) => apiFetch<Agent>(`/api/users/${id}/agent`),
+  updateAgent: (id: string, data: { personality: string }) =>
+    apiFetch<Agent>(`/api/users/${id}/agent`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
   getAgentCard: (id: string) => apiFetch<AgentCard>(`/api/users/${id}/agent/card`),
   switchContext: (userId: string, context: ContextMode) =>
     apiFetch<{ context: string }>(`/api/users/${userId}/context`, {
@@ -456,7 +488,7 @@ export const api = {
     apiFetch<Connection[]>(`/api/users/${userId}/connections`),
   listConnectionRequests: (userId: string) =>
     apiFetch<ConnectionRequest[]>(`/api/users/${userId}/connection-requests`),
-  sendConnectionRequest: (fromUserId: string, toUserId: string, message: string, relationshipType?: string, fromLabel?: string) =>
+  sendConnectionRequest: (fromUserId: string, toUserId: string, message: string, relationshipType?: string, fromLabel?: string, context?: string) =>
     apiFetch<ConnectionRequest>("/api/connections/request", {
       method: "POST",
       body: JSON.stringify({
@@ -465,6 +497,7 @@ export const api = {
         message,
         relationship_type: relationshipType || undefined,
         from_label: fromLabel || undefined,
+        context: context || "personal",
       }),
     }),
   updateConnectionRequest: (requestId: string, status: "accepted" | "declined", toLabel?: string) =>
@@ -474,12 +507,13 @@ export const api = {
     }),
   deleteConnection: (connectionId: string) =>
     apiFetch<{ status: string }>(`/api/connections/${connectionId}`, { method: "DELETE" }),
-  updateConnectionLabel: (connectionId: string, myLabel?: string, relationshipType?: string) =>
+  updateConnectionLabel: (connectionId: string, myLabel?: string, relationshipType?: string, context?: string) =>
     apiFetch<Connection>(`/api/connections/${connectionId}/label`, {
       method: "PATCH",
       body: JSON.stringify({
         my_label: myLabel ?? undefined,
         relationship_type: relationshipType ?? undefined,
+        context: context ?? undefined,
       }),
     }),
 
@@ -665,11 +699,19 @@ export const api = {
   updateUser: (userId: string, data: { is_discoverable?: boolean; bio?: string; display_name?: string; email?: string; avatar_url?: string }) =>
     apiFetch<User>(`/api/users/${userId}`, { method: "PUT", body: JSON.stringify(data) }),
 
+  // Agent mode toggle (org pods only)
+  patchAgentMode: (userId: string, mode: "public" | "internal") =>
+    apiFetch<User>(`/api/users/${userId}/agent-mode`, { method: "PATCH", body: JSON.stringify({ mode }) }),
+
+  // Connectivity mode — controls how this user's pod is reachable
+  updateConnectivityMode: (userId: string, mode: "relay_primary" | "direct_with_fallback" | "invite_only") =>
+    apiFetch<User>(`/api/users/${userId}/connectivity`, { method: "PATCH", body: JSON.stringify({ connectivity_mode: mode }) }),
+
   // Demo
   demoWarmup: () =>
     apiFetch<{ status: string; keys_loaded: number }>("/api/demo/warmup", { method: "POST" }),
 
-  // Public Registry (separate service on port 9100)
+  // Public Registry (separate service on port 8100)
   registryListAll: () =>
     fetch(`${REGISTRY_URL}/api/agents`, { headers: { "Content-Type": "application/json" } })
       .then(r => r.json()) as Promise<{ agents: RegistryPodAgent[]; count: number }>,
@@ -696,7 +738,83 @@ export const api = {
     apiFetch<{ status: string }>("/api/timeline/start", { method: "POST" }),
   stopTimeline: () =>
     apiFetch<{ status: string }>("/api/timeline/stop", { method: "POST" }),
+
+  // Emergency beacon + QR scan
+  generateEmergencyBeacon: (userId: string) =>
+    apiFetch<EmergencyBeaconResponse>(`/api/users/${userId}/emergency/beacon`, {
+      method: "POST",
+    }),
+  getEmergencyQrData: (token: string, patientUsername: string, podUrl?: string) => {
+    // Always route through the Next.js server-side proxy so cross-origin pod calls
+    // work even when the browser is on a public tunnel (phone scanning the QR).
+    // The proxy fetches the pod API server-side, avoiding CORS and localhost issues.
+    // IMPORTANT: use plain fetch() with a relative URL — NOT apiFetch() — because
+    // apiFetch() prepends the pod URL (e.g. http://localhost:9004) and this route
+    // only exists on the Next.js server (localhost:3050).
+    const proxyPath =
+      `/api/emergency-proxy` +
+      `?t=${encodeURIComponent(token)}` +
+      `&p=${encodeURIComponent(patientUsername)}` +
+      (podUrl ? `&pod=${encodeURIComponent(podUrl)}` : "");
+    return fetch(proxyPath, { credentials: "include" }).then(async (res) => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { detail?: string }).detail ?? res.statusText);
+      }
+      return res.json() as Promise<EmergencyAccessResponse>;
+    });
+  },
+  sendEmergencyAlert: (token: string, patient: string, message: string, podUrl?: string) =>
+    fetch("/api/emergency-proxy", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t: token, p: patient, message, pod: podUrl }),
+    }).then(async (res) => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { detail?: string }).detail ?? res.statusText);
+      }
+      return res.json() as Promise<EmergencyAlertResponse>;
+    }),
 };
+
+// ── Emergency Types ──
+
+export interface EmergencyBeaconResponse {
+  tokens: Record<string, string>;  // {"paramedic": "<token>", "er_nurse": "...", "attending_physician": "..."}
+  qr_urls: Record<string, string>; // {"paramedic": "<url>", ...}
+  patient_did: string;
+  patient_name: string;
+  pod_url: string;
+  expires_in: number;  // 1800 seconds
+  generated_at: string;
+  audit_id: string;
+  capsule_count: number;
+}
+
+export interface EmergencyCapsule {
+  id: string;
+  title: string;
+  content: string;
+  category: string;
+}
+
+export interface EmergencyAccessResponse {
+  patient_name: string;
+  role: string;
+  capsules: EmergencyCapsule[];
+  capsule_count: number;
+  total_capsules?: number;
+  audit_id: string;
+  expires_at: string;
+  family_notified: boolean | number;
+}
+
+export interface EmergencyAlertResponse {
+  notified: number;
+  members: string[];
+}
 
 // ── Timeline Types ──
 
@@ -737,4 +855,59 @@ export interface TimelineEntry {
   trigger_detail: string | null;
   hook_summary: string | null;
   dep_count: number;
+}
+
+// ── Message API helpers ──
+
+export interface MessageItem {
+  id: string;
+  sender_id: string;
+  sender_username: string;
+  sender_display_name: string;
+  sender_pod_url: string | null;
+  recipient_id: string;
+  subject: string;
+  body: string | null;
+  scope: string;
+  trust_level_at_send: string;
+  expires_at: string | null;
+  rekey_needed: boolean;
+  is_read: boolean;
+  read_at: string | null;
+  created_at: string;
+}
+
+export async function getInbox(
+  userId: string,
+  opts?: { unread_only?: boolean; limit?: number; offset?: number }
+): Promise<MessageItem[]> {
+  const params = new URLSearchParams();
+  if (opts?.unread_only) params.set("unread_only", "true");
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  if (opts?.offset != null) params.set("offset", String(opts.offset));
+  const qs = params.toString() ? `?${params}` : "";
+  return apiFetch<MessageItem[]>(`/api/users/${userId}/messages/inbox${qs}`);
+}
+
+export async function getSent(userId: string): Promise<MessageItem[]> {
+  return apiFetch<MessageItem[]>(`/api/users/${userId}/messages/sent`);
+}
+
+export async function getUnreadCount(userId: string): Promise<number> {
+  const data = await apiFetch<{ count: number }>(
+    `/api/users/${userId}/messages/unread-count`
+  );
+  return data.count;
+}
+
+export async function markMessageRead(messageId: string): Promise<void> {
+  await apiFetch<{ status: string }>(`/api/messages/${messageId}/read`, {
+    method: "PUT",
+  });
+}
+
+export async function deleteMessage(messageId: string): Promise<void> {
+  await apiFetch<{ status: string }>(`/api/messages/${messageId}`, {
+    method: "DELETE",
+  });
 }

@@ -45,7 +45,8 @@ export function PodSwitcher({ userName }: { userName?: string }) {
   const [statuses, setStatuses] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
-    setCurrent(getPodUrl());
+    const t = setTimeout(() => setCurrent(getPodUrl()), 0);
+    return () => clearTimeout(t);
   }, []);
 
   const currentPort = current.match(/:(\d+)/)?.[1] || "9000";
@@ -71,7 +72,10 @@ export function PodSwitcher({ userName }: { userName?: string }) {
   }, []);
 
   useEffect(() => {
-    if (open && isMultiPod) checkStatuses();
+    if (open && isMultiPod) {
+      const t = setTimeout(() => checkStatuses(), 0);
+      return () => clearTimeout(t);
+    }
   }, [open, isMultiPod, checkStatuses]);
 
   const [switching, setSwitching] = useState<number | null>(null);
@@ -89,7 +93,7 @@ export function PodSwitcher({ userName }: { userName?: string }) {
     // Auto-login with demo credentials and redirect to dashboard
     try {
       const user = await api.login(pod.username, DEMO_PASSWORD);
-      window.location.href = `/${user.id}`;
+      window.location.assign(`/${user.id}`);
     } catch {
       // Login failed — fall back to reload (lands on home/login page)
       window.location.reload();

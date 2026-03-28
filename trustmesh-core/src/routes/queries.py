@@ -22,9 +22,7 @@ async def create_query(data: QueryCreate, db: AsyncSession = Depends(get_db),
                        auth_user_id: str = Depends(get_current_user_id)):
     """Query another user's agent. The core TrustMesh operation."""
     if auth_user_id != data.from_user_id:
-        from_user = await db.get(User, data.from_user_id)
-        if not from_user or not from_user.is_demo:
-            raise HTTPException(403, "Access denied")
+        raise HTTPException(403, "Access denied")
 
     result = await query_agent(
         db=db,
@@ -40,10 +38,7 @@ async def create_query_stream(data: QueryCreate,
                               auth_user_id: str = Depends(get_current_user_id)):
     """Streaming query endpoint — returns SSE events as the agent responds."""
     if auth_user_id != data.from_user_id:
-        async with async_session() as check_db:
-            from_user = await check_db.get(User, data.from_user_id)
-            if not from_user or not from_user.is_demo:
-                raise HTTPException(403, "Access denied")
+        raise HTTPException(403, "Access denied")
     from src import citadel, embeddings, transit_bridge
     from src.agents import (
         ToolContext, agent_respond_streaming, agent_respond_with_tools_streaming,
@@ -135,6 +130,10 @@ async def create_query_stream(data: QueryCreate,
                         owner_name=to_user.display_name,
                         tool_context=tool_context,
                         conversation_history=history,
+                        personality=agent.personality or "",
+                        entity_type=to_user.user_type or "person",
+                        org_subtype=getattr(to_user, "org_subtype", None),
+                        agent_mode=getattr(to_user, "agent_mode", "private"),
                     ):
                         if event_type == "text":
                             full_text += event_data
@@ -154,6 +153,9 @@ async def create_query_stream(data: QueryCreate,
                         requester_name=from_user.display_name,
                         owner_name=to_user.display_name,
                         conversation_history=history,
+                        entity_type=to_user.user_type or "person",
+                        org_subtype=getattr(to_user, "org_subtype", None),
+                        agent_mode=getattr(to_user, "agent_mode", "private"),
                     ):
                         full_text += chunk
                         yield f"data: {json.dumps({'type': 'text', 'data': chunk})}\n\n"

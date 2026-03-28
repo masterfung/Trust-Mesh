@@ -8,7 +8,7 @@ interface AuthContextValue {
   isLoading: boolean;
   login: (name: string, password: string) => Promise<User>;
   loginAsDemo: (username: string, password: string) => Promise<User>;
-  signup: (data: { display_name: string; bio: string; password: string; email?: string; avatar_url?: string }) => Promise<User>;
+  signup: (data: { display_name: string; bio: string; password: string; email?: string; avatar_url?: string; user_type?: string; org_subtype?: string }) => Promise<User>;
   logout: () => Promise<void>;
 }
 
@@ -39,10 +39,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return loggedIn;
   }, []);
 
-  const signup = useCallback(async (data: { display_name: string; bio: string; password: string; email?: string; avatar_url?: string }): Promise<User> => {
-    const newUser = await api.createUser(data);
-    setUser(newUser);
-    return newUser;
+  const signup = useCallback(async (data: { display_name: string; bio: string; password: string; email?: string; avatar_url?: string; user_type?: string; org_subtype?: string }): Promise<User> => {
+    await api.createUser(data);
+    // After user creation, log in via Zig's session store so GET /api/auth/me works in Zig mode.
+    // (POST /api/users is handled by Python which creates a Python-side session;
+    //  POST /api/auth/login is handled natively by Zig and creates a Zig-side session.)
+    const loggedIn = await api.login(data.display_name, data.password);
+    setUser(loggedIn);
+    return loggedIn;
   }, []);
 
   const logout = useCallback(async () => {

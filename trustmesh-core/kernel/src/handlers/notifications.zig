@@ -42,15 +42,16 @@ fn handleGetNotifications(ctx: *http.RequestContext) !void {
     if (std.mem.indexOf(u8, ctx.path, "/notifications")) |_| {
         return handleList(ctx);
     }
-    // Not a notification route — will be caught by other prefix handlers or proxy
-    return ctx.sendError(.not_found, "Not found");
+    // Not a notification route — forward to Python proxy (e.g. GET /api/users/{id})
+    return http.proxyFromHandler(ctx);
 }
 
 fn handlePutNotifications(ctx: *http.RequestContext) !void {
     if (std.mem.indexOf(u8, ctx.path, "/notifications/read-all")) |_| {
         return handleMarkAllRead(ctx);
     }
-    return ctx.sendError(.not_found, "Not found");
+    // Not a notification PUT route — forward to Python proxy
+    return http.proxyFromHandler(ctx);
 }
 
 // ═══════════════════════════════════════════

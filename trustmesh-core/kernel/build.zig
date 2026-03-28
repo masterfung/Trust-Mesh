@@ -1,9 +1,13 @@
 const std = @import("std");
 
 fn addSqlite(mod: *std.Build.Module) void {
-    // macOS Homebrew keg-only sqlite paths
-    mod.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/include" });
-    mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/lib" });
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .macos) {
+        // macOS Homebrew keg-only sqlite paths (both x86_64 and arm64)
+        mod.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/include" });
+        mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/lib" });
+    }
+    // On Linux, sqlite3 headers come from the system (libsqlite3-dev)
     mod.linkSystemLibrary("sqlite3", .{});
 }
 

@@ -1,0 +1,28 @@
+FROM oven/bun:1 AS builder
+
+WORKDIR /app
+
+COPY trustmesh-ui/package.json trustmesh-ui/bun.lock* ./
+RUN bun install --frozen-lockfile
+
+COPY trustmesh-ui/ .
+
+# NEXT_PUBLIC_API_URL is baked in at build time
+ARG NEXT_PUBLIC_API_URL=http://localhost:9000
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+
+RUN bun run build
+
+# ── Runtime stage ──
+FROM oven/bun:1
+
+WORKDIR /app
+
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/package.json .
+COPY --from=builder /app/node_modules ./node_modules
+
+EXPOSE 8080
+
+CMD ["bun", "run", "start", "--", "--port", "8080"]

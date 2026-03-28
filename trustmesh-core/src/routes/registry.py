@@ -49,6 +49,7 @@ async def list_agents(
                 "display_name": user.display_name,
                 "bio": user.bio,
                 "user_type": user.user_type,
+                "org_subtype": user.org_subtype,
                 "profile_data": profile,
                 "pools": pools,
                 "skills": profile.get("skills", []),
@@ -120,6 +121,7 @@ async def search_agents(
                 "display_name": user.display_name,
                 "bio": user.bio,
                 "user_type": user.user_type,
+                "org_subtype": user.org_subtype,
                 "skills": skills,
                 "pools": pools,
             })
@@ -163,6 +165,7 @@ async def lookup_agent(did: str):
             "display_name": user.display_name,
             "bio": user.bio,
             "user_type": user.user_type,
+            "org_subtype": user.org_subtype,
             "profile_data": profile,
             "skills": profile.get("skills", []),
             "pools": pools,

@@ -19,6 +19,53 @@ from src.schemas import CapsuleCreate, CapsuleResponse, CapsuleShareRequest, Cap
 router = APIRouter(prefix="/api", tags=["capsules"])
 
 
+async def _notify_pending_requesters(db: AsyncSession, user_id: str) -> None:
+    """After a user saves shared data, notify any pods waiting for it.
+
+    Looks up pending DataRequest records for this user and POSTs
+    /api/pod/peer_data_ready to each requester's pod so their timeline
+    follow-up task can fire.
+    """
+    import logging
+    import httpx
+    from datetime import datetime, timezone
+    from src.models import DataRequest
+
+    log = logging.getLogger(__name__)
+    try:
+        result = await db.execute(
+            select(DataRequest).where(
+                DataRequest.recipient_user_id == user_id,
+                DataRequest.status == "pending",
+            )
+        )
+        requests = result.scalars().all()
+        if not requests:
+            return
+
+        async with httpx.AsyncClient(timeout=8) as client:
+            for req in requests:
+                try:
+                    await client.post(
+                        f"{req.requester_pod_url.rstrip('/')}/api/pod/peer_data_ready",
+                        json={
+                            "from_did": "local",
+                            "for_user_id": req.requester_user_id,
+                            "target_user_id": user_id,
+                            "category": "general",
+                        },
+                    )
+                    req.status = "fulfilled"
+                    req.fulfilled_at = datetime.now(timezone.utc)
+                    log.info("peer_data_ready sent to %s for user %s", req.requester_pod_url, req.requester_user_id)
+                except Exception as e:
+                    log.warning("Failed to notify requester pod %s: %s", req.requester_pod_url, e)
+
+        await db.commit()
+    except Exception as e:
+        log.warning("_notify_pending_requesters failed: %s", e)
+
+
 def _push_timeline_event(event_type: str):
     """Push a capsule event to the timeline engine (best-effort, no-op if unavailable)."""
     try:
@@ -174,6 +221,11 @@ async def create_capsule(
 
     # Push timeline event (fires any event-triggered entries watching for capsule changes)
     _push_timeline_event(f"capsule.created.{data.category or 'general'}")
+
+    # Notify requesters who asked for data from this user (async, best-effort)
+    if capsule.visibility in ("open", "internal"):
+        import asyncio as _asyncio
+        _asyncio.ensure_future(_notify_pending_requesters(db, user_id))
 
     # Resolve network names
     network_names = []

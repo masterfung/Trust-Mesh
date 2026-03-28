@@ -149,6 +149,7 @@ pub const Entry = struct {
 
     // Sync & ordering
     logical_clock: u64 = 0,
+    next_cron_at: i64 = 0, // cached next cron fire time (ms); 0 = unset
 
     // Metadata
     created_at: types.Timestamp = 0,

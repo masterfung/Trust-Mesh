@@ -232,7 +232,7 @@ export default function Dashboard() {
               <div className="flex items-center gap-2 mt-2">
                 <span className="inline-flex items-center gap-1 text-[10px] text-accent bg-accent/10 px-2 py-0.5 rounded-full font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-                  Claude Sonnet 4.5
+                  Gemini 3.1 Pro
                 </span>
                 <span className="text-[10px] text-muted-foreground">
                   {capsules?.length ?? 0} memories loaded
@@ -252,8 +252,8 @@ export default function Dashboard() {
       {!isNewUser && health && (
         <div className="flex flex-wrap items-center gap-3 mb-6 px-1">
           {[
-            { label: "Anthropic", ok: health.providers.anthropic, detail: "Claude Sonnet 4.5" },
-            { label: "TEE", ok: health.providers.tee.enabled, detail: health.providers.tee.provider ? `via ${health.providers.tee.provider}` : "not configured" },
+            { label: "Gemini", ok: health.providers.gemini ?? health.providers.anthropic, detail: "Gemini 3.1 Pro" },
+            { label: "TEE (Secure Enclave)", ok: health.providers.tee.enabled, detail: health.providers.tee.provider ? `Trusted Execution Environment via ${health.providers.tee.provider}` : "Trusted Execution Environment — not configured" },
             { label: "Web Search", ok: health.providers.tavily, detail: "Tavily" },
             { label: "Citadel", ok: (health.providers.citadel as Record<string, unknown>).active ?? health.providers.citadel.reachable, detail: health.providers.citadel.reachable ? "sidecar active" : (health.providers.citadel as Record<string, unknown>).heuristic_active ? "heuristic active" : health.providers.citadel.configured ? "configured, offline" : "not configured" },
           ].map((p) => (

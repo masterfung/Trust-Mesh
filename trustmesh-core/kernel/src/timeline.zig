@@ -13,6 +13,7 @@ const state_mod = @import("state.zig");
 const log_mod = @import("log.zig");
 const db_mod = @import("db.zig");
 const persist_mod = @import("timeline_persist.zig");
+const message_mod = @import("message.zig");
 
 const Entry = entry_mod.Entry;
 const Event = event_mod.Event;
@@ -42,6 +43,7 @@ pub const EngineConfig = struct {
     max_hooks_per_tick: u32 = 32, // hook fire limit per tick (EC-5)
     log_path: [256]u8 = .{0} ** 256,
     log_path_len: u16 = 0,
+    sweep_messages: bool = true, // call message.sweepExpired() natively each TOCK
 };
 
 // ── Callbacks (Python host registers these) ──
@@ -274,6 +276,17 @@ pub const Engine = struct {
         // 11. Compute next wake time
         self.next_wake_at = self.computeNextWake(now);
         self.last_tick_at = now;
+
+        // 12. TTL maintenance — sweep expired messages natively (zero Python roundtrip)
+        if (self.config.sweep_messages and self.persist_db != null) {
+            _ = message_mod.sweepExpired(self.persist_db.?);
+        }
+
+        // Release excess transition_plan capacity if unusually large
+        if (self.transition_plan.capacity > self.config.max_entries / 4) {
+            self.transition_plan.deinit(self.allocator);
+            self.transition_plan = .{};
+        }
     }
 
     // ── TICK phase helpers ──
@@ -311,10 +324,19 @@ pub const Engine = struct {
                 }
                 // Check cron
                 if (e.activation_trigger.time.cron_len > 0) {
+                    // Fast path: skip if we haven't reached the cached next-fire time
+                    if (entry_ptr.*.next_cron_at > 0 and now < entry_ptr.*.next_cron_at) continue;
+
                     const pattern = e.activation_trigger.time.cron_pattern[0..e.activation_trigger.time.cron_len];
                     const expr = cron_mod.parse(pattern) catch continue;
+
                     if (cron_mod.cronMatches(&expr, now)) {
                         self.enqueueTransition(e.id, .dormant, .pending, .time);
+                        // Cache next fire time so we skip ticks until next firing
+                        entry_ptr.*.next_cron_at = cron_mod.cronNext(&expr, now);
+                    } else if (entry_ptr.*.next_cron_at == 0) {
+                        // First tick — warm the cache so future ticks can skip
+                        entry_ptr.*.next_cron_at = cron_mod.cronNext(&expr, now);
                     }
                 }
             }
@@ -465,12 +487,11 @@ pub const Engine = struct {
                 const ws = e.window_start;
                 if (ws > now and ws < earliest) earliest = ws;
 
-                // Cron: find next match
+                // Cron: use cached next-fire time instead of recomputing
                 if (e.activation_trigger.time.cron_len > 0) {
-                    const pattern = e.activation_trigger.time.cron_pattern[0..e.activation_trigger.time.cron_len];
-                    const expr = cron_mod.parse(pattern) catch continue;
-                    const next = cron_mod.cronNext(&expr, now);
-                    if (next > 0 and next < earliest) earliest = next;
+                    if (e.next_cron_at > 0 and e.next_cron_at < earliest) {
+                        earliest = e.next_cron_at;
+                    }
                 }
             }
 

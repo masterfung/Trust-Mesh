@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, getPodUrl, Notification as NotificationType, ContextMode } from "@/lib/api";
+import { api, getPodUrl, getUnreadCount, Notification as NotificationType, ContextMode } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Sidebar } from "@/components/Sidebar";
 import { useParams, useRouter } from "next/navigation";
+import { timeAgo } from "@/lib/utils";
+import { EmptyState } from "@/components/ui/empty-state";
 
 // -- Notification type icon mapping --
 
@@ -72,25 +74,6 @@ function NotificationIcon({ type }: { type: string }) {
         </svg>
       );
   }
-}
-
-// -- Time ago helper --
-
-function timeAgo(dateStr: string): string {
-  const now = new Date();
-  const date = new Date(dateStr);
-  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  const weeks = Math.floor(days / 7);
-  if (weeks < 4) return `${weeks}w ago`;
-  return date.toLocaleDateString();
 }
 
 // -- Context Switcher --
@@ -180,6 +163,12 @@ function NotificationBell({ userId }: { userId: string }) {
     refetchInterval: 30_000,
   });
 
+  const { data: inboxUnread } = useQuery({
+    queryKey: ["inboxUnreadCount", userId],
+    queryFn: () => getUnreadCount(userId),
+    refetchInterval: 30_000,
+  });
+
   // SSE real-time notification stream
   const openRef = useRef(open);
   useEffect(() => {
@@ -240,7 +229,9 @@ function NotificationBell({ userId }: { userId: string }) {
     },
   });
 
-  const unreadCount = unreadData?.count ?? 0;
+  const notifCount = unreadData?.count ?? 0;
+  const msgCount = inboxUnread ?? 0;
+  const unreadCount = notifCount + msgCount;
 
   // Close dropdown on outside click
   const handleClickOutside = useCallback((e: MouseEvent) => {
@@ -285,7 +276,7 @@ function NotificationBell({ userId }: { userId: string }) {
         break;
       case "query_received":
       case "query_response":
-        router.push(`${base}/chat`);
+        router.push(`${base}/inbox?tab=queries`);
         break;
       case "join_request":
       case "network_invite":
@@ -295,6 +286,9 @@ function NotificationBell({ userId }: { userId: string }) {
       case "connection_request":
       case "connection_accepted":
         router.push(`${base}/connections`);
+        break;
+      case "message_received":
+        router.push(`${base}/inbox`);
         break;
       case "task_complete":
         router.push(base); // dashboard
@@ -361,13 +355,16 @@ function NotificationBell({ userId }: { userId: string }) {
                 <div className="text-muted-foreground text-sm animate-pulse">Loading notifications...</div>
               </div>
             ) : !notifications || notifications.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 px-4">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground mb-2">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                </svg>
-                <p className="text-sm text-muted-foreground">No notifications yet</p>
-              </div>
+              <EmptyState
+                className="py-12 px-4"
+                icon={
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  </svg>
+                }
+                title="No notifications yet"
+              />
             ) : (
               notifications.map((notification) => (
                 <button
@@ -406,13 +403,24 @@ function NotificationBell({ userId }: { userId: string }) {
           </div>
 
           {/* Footer */}
-          {notifications && notifications.length > 0 && (
-            <div className="px-4 py-2.5 border-t border-card-border bg-card/80 backdrop-blur-sm text-center">
-              <span className="text-xs text-muted-foreground">
-                {notifications.length} notification{notifications.length !== 1 ? "s" : ""}
-              </span>
-            </div>
-          )}
+          <div className="px-4 py-2.5 border-t border-card-border bg-card/80 backdrop-blur-sm flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">
+              {notifications && notifications.length > 0
+                ? `${notifications.length} notification${notifications.length !== 1 ? "s" : ""}`
+                : "No notifications"}
+            </span>
+            <button
+              onClick={() => { setOpen(false); router.push(`/${userId}/inbox`); }}
+              className="text-xs text-accent hover:text-accent-hover transition-colors flex items-center gap-1"
+            >
+              Inbox
+              {msgCount > 0 && (
+                <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold text-white bg-accent rounded-full">
+                  {msgCount > 99 ? "99+" : msgCount}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
       )}
     </div>

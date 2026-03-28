@@ -41,11 +41,14 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
     bio: Mapped[str] = mapped_column(Text, default="")
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)  # base64 data URI or external URL
-    user_type: Mapped[str] = mapped_column(String(20), default="person")  # "person" | "organization" | "government"
+    user_type: Mapped[str] = mapped_column(String(20), default="person")  # "person" | "organization"
+    org_subtype: Mapped[str | None] = mapped_column(String(20), nullable=True)  # null for persons; org: "company"|"nonprofit"|"healthcare"|"education"|"emergency"|"government"
+    agent_mode: Mapped[str] = mapped_column(String(20), default="private")  # "private" (person) | "internal" (org default) | "public" (org after toggle)
     profile_data: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON structured profile
     is_discoverable: Mapped[bool] = mapped_column(Boolean, default=False)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     is_remote: Mapped[bool] = mapped_column(Boolean, default=False)
+    connectivity_mode: Mapped[str] = mapped_column(String(30), default="invite_only")  # relay_primary | direct_with_fallback | invite_only
     remote_pod_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     remote_did: Mapped[str | None] = mapped_column(String(100), nullable=True)
     vault_key_salt: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
@@ -69,6 +72,7 @@ class Agent(Base):
     public_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     encrypted_private_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     did: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    encryption_public_key: Mapped[str | None] = mapped_column(String(100), nullable=True)  # X25519 b64url — for relay payload encryption
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     owner: Mapped["User"] = relationship(back_populates="agent")
@@ -218,6 +222,7 @@ class ConnectionRequest(Base):
     to_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     message: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(20), default="pending")
+    context: Mapped[str] = mapped_column(String(20), default="personal")  # work | personal | both
     relationship_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
     from_label: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -269,6 +274,25 @@ class Notification(Base):
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
     related_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DataRequest(Base):
+    """Tracks cross-pod data requests sent to this pod's users.
+
+    When the user adds matching data, the requester's pod is notified
+    via POST /api/pod/peer_data_ready so their timeline follow-up fires.
+    """
+    __tablename__ = "data_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    recipient_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    requester_pod_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    requester_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    requester_display: Mapped[str] = mapped_column(String(200), default="")
+    original_question: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | fulfilled
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class NetworkJoinRequest(Base):
@@ -367,3 +391,22 @@ class PoolInviteToken(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | consumed | expired
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ChannelToken(Base):
+    """Bearer tokens for ZeroClaw/NullClaw and any external AI framework.
+
+    Raw token (tm_<base64url>) is returned once at creation and never stored.
+    Only the SHA-256 hex digest is persisted for O(1) lookup.
+    """
+    __tablename__ = "channel_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    relationship_type: Mapped[str | None] = mapped_column(String(50))  # healthcare|legal|financial|...
+    scopes: Mapped[str] = mapped_column(String(200), default="query,memory")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

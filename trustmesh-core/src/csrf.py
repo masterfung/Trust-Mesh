@@ -21,6 +21,8 @@ CSRF_EXEMPT_PATHS = {
 CSRF_EXEMPT_PREFIXES = (
     "/api/pod/",
     "/.well-known/",
+    "/api/channels/",   # Bearer tm_<token> auth — no session cookie, no CSRF needed
+    "/api/memory/",     # Bearer tm_<token> auth — NullClaw memory backend
 )
 
 

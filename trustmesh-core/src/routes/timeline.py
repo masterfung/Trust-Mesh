@@ -992,6 +992,30 @@ def _pipeline_completion_event(label: str) -> str | None:
     return None
 
 
+async def _maybe_inject_live(user_id: str, agent_response: str) -> None:
+    """Check agent response for actionable findings and inject into active Live session.
+
+    Sentinel: if response contains 'CONFLICT FOUND:' on any line, extract the
+    text after the colon and push it into the user's active Live session queue.
+    The injection is silently ignored if no session is active.
+    """
+    try:
+        from src import live_sessions
+    except ImportError:
+        return
+
+    marker = "CONFLICT FOUND:"
+    for line in agent_response.splitlines():
+        idx = line.upper().find(marker)
+        if idx != -1:
+            finding = line[idx + len(marker):].strip()
+            if not finding:
+                continue
+            logger.info("Proactive inject triggered: %.100s", finding)
+            await live_sessions.inject(user_id, finding)
+            return  # Only inject the first conflict found
+
+
 async def _dispatch_agent_hook(engine, entry_id_str: str, hook_index: int):
     """Dispatch an AGENT_TASK hook to the AI agent for processing.
 
@@ -1009,8 +1033,15 @@ async def _dispatch_agent_hook(engine, entry_id_str: str, hook_index: int):
         entry_id_str, label, is_system_hook,
     )
 
-    # Build a prompt from the entry's hook data
-    prompt = f"Timeline hook fired for entry '{label}' (category: {category}). Process this entry and take appropriate action."
+    # Use the actual hook prompt stored in the spec cache, falling back to a generic one
+    spec = _get_entry_spec(entry_id_str)
+    hooks_list = (spec or {}).get("hooks", [])
+    if hook_index < len(hooks_list):
+        prompt = hooks_list[hook_index].get("prompt", "")
+    else:
+        prompt = ""
+    if not prompt:
+        prompt = f"Timeline hook fired for entry '{label}' (category: {category}). Process this entry and take appropriate action."
 
     # Try to dispatch to agent system
     try:
@@ -1051,6 +1082,11 @@ async def _dispatch_agent_hook(engine, entry_id_str: str, hook_index: int):
             response = result.get("response", "")
             logger.info("Agent response for hook: %s", response[:200] if response else "empty")
             engine.complete_hook(eid, hook_index, True)
+
+            # Proactive inject: if agent found a conflict, push it into any active Live session
+            if response:
+                await _maybe_inject_live(user.id, response)
+
     except Exception:
         logger.exception("Agent hook dispatch failed")
         engine.complete_hook(eid, hook_index, False)
@@ -1286,16 +1322,45 @@ def _build_entry_response(engine, entry_id) -> EntryResponse:
 async def get_timeline_state(
     auth_user_id: str = Depends(get_current_user_id),
 ) -> EngineStateResponse:
-    """Get the current central state of the timeline engine."""
-    engine = _get_engine()
+    """Get engine state filtered to the current user's entries."""
+    from src.timeline_bridge import EntryState
 
+    engine = _get_engine()
     state = engine.state
+
+    # Compute per-user counts from the engine entries
+    all_ids = engine.get_all_entry_ids()
+    user_active_ids = []
+    active_count = pending_count = dormant_count = failed_count = total_count = 0
+    for eid in all_ids:
+        spec = _get_entry_spec(str(eid))
+        owner_id = spec.get("owner_id") if spec else None
+        if owner_id != auth_user_id:
+            continue
+        sv = engine.get_entry_state(eid)
+        if sv is None:
+            continue
+        total_count += 1
+        try:
+            es = EntryState(sv)
+            if es.name in ("ACTIVE", "ACTIVATING", "DEACTIVATING"):
+                active_count += 1
+                user_active_ids.append(str(eid))
+            elif es.name == "PENDING":
+                pending_count += 1
+            elif es.name == "DORMANT":
+                dormant_count += 1
+            elif es.name in ("FAILED",):
+                failed_count += 1
+        except (ValueError, KeyError):
+            pass
+
     return EngineStateResponse(
-        active_count=state.active_count,
-        pending_count=state.pending_count,
-        dormant_count=state.dormant_count,
-        failed_count=state.failed_count,
-        total_count=state.total_count,
+        active_count=active_count,
+        pending_count=pending_count,
+        dormant_count=dormant_count,
+        failed_count=failed_count,
+        total_count=total_count,
         tick_count=state.tick_count,
         signal_count=state.signal_count,
         is_running=engine.is_running,
@@ -1307,7 +1372,7 @@ async def get_timeline_state(
             }
             for s in state.signals
         ],
-        active_ids=[str(uid) for uid in state.active_ids],
+        active_ids=user_active_ids,
     )
 
 
@@ -1448,13 +1513,17 @@ async def create_entry(
 async def list_entries(
     auth_user_id: str = Depends(get_current_user_id),
 ) -> list[EntryResponse]:
-    """List all entries in the timeline engine."""
+    """List entries owned by the current user."""
     engine = _get_engine()
     ids = engine.get_all_entry_ids()
     entries = []
     for eid in ids:
         state_val = engine.get_entry_state(eid)
         if state_val is None:
+            continue
+        spec = _get_entry_spec(str(eid))
+        owner_id = spec.get("owner_id") if spec else None
+        if owner_id != auth_user_id:
             continue
         entries.append(_build_entry_response(engine, eid))
     return entries

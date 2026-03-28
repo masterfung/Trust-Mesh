@@ -1,36 +1,58 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# TrustMesh UI
 
-## Getting Started
+Next.js 16 frontend for [TrustMesh](https://github.com/TryMightyAI/trustmesh) — a trust-aware knowledge sharing platform for personal AI agents.
 
-First, run the development server:
+## Quick start
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+bun install
+bun dev --port 3050
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3050](http://localhost:3050).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The backend must be running on `:9000` (single-pod) or `:9001–9016` (multi-pod). See the root `CLAUDE.md` for full setup instructions.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Environment variables
 
-## Learn More
+Create a `.env.local` file (gitignored — never committed) in this directory:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+# .env.local
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Show pod selector dropdowns on /login and /signup.
+# Set to "true" for local multi-pod demo; leave unset for production.
+NEXT_PUBLIC_MULTI_POD=true
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Variable | Default | Description |
+|---|---|---|
+| `NEXT_PUBLIC_MULTI_POD` | _(unset)_ | Enables pod selector dropdowns on login/signup. **Never set in production.** |
+| `NEXT_PUBLIC_API_URL` | _(unset)_ | Override the backend pod URL (optional). |
+| `NEXT_PUBLIC_REGISTRY_URL` | _(unset)_ | Override the registry URL (optional). |
 
-## Deploy on Vercel
+### Production deployment
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Leave `NEXT_PUBLIC_MULTI_POD` unset (or `false`). Pod selection dropdowns will not render — users connect to a single pod determined by the server they visit. No multi-pod scaffolding reaches the browser bundle.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Multi-pod demo
+
+When running the full multi-pod demo (`./multi-pod.sh demo` from the repo root), set `NEXT_PUBLIC_MULTI_POD=true` in `.env.local` to unlock the pod switcher on login and signup.
+
+Demo pods run on `:9001–9016`. Port `:9000` is seeded with the **Johnny Hung** demo account and is intentionally excluded from the signup dropdown (login still works).
+
+## Tests
+
+```bash
+bun run test:e2e      # Playwright E2E (requires pods + frontend running)
+```
+
+E2E tests require `NEXT_PUBLIC_MULTI_POD=true` in `.env.local` — the pod selector auth helper depends on it.
+
+## Stack
+
+- **Next.js 16** — App Router, Server Components
+- **Tailwind CSS** — Dark-mode design system
+- **TanStack Query** — Server state + mutations
+- **Playwright** — E2E tests
+- **D3.js** — Trust graph visualization

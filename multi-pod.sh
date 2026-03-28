@@ -283,11 +283,12 @@ cmd_start() {
   _kill_port 9000
   TRUSTMESH_POD_NAME="My Pod" \
   TRUSTMESH_POD_URL="http://localhost:9000" \
+  TRUSTMESH_FRONTEND_URL="http://localhost:${FRONTEND_PORT}" \
   TRUSTMESH_DB="$DATA_DIR/user.db" \
   TRUSTMESH_POOL_SYNC_SECRET="$TRUSTMESH_POOL_SYNC_SECRET" \
   TRUSTMESH_REGISTRY_URL="http://localhost:${REGISTRY_PORT}" \
   CITADEL_URL="${CITADEL_URL}" \
-  nohup uv run uvicorn src.main:app --reload --port 9000 > "$LOG_DIR/user.log" 2>&1 &
+  nohup uv run uvicorn src.main:app --reload --host '::' --port 9000 > "$LOG_DIR/user.log" 2>&1 &
   echo $! > "$PID_DIR/user.pid"
   echo "  Started :9000  Your Pod (sign up / login here)"
 
@@ -307,11 +308,12 @@ cmd_start() {
     # Each pod gets its own env vars (all share one Citadel sidecar)
     TRUSTMESH_POD_NAME="${POD_NAMES[$key]:-$key}" \
     TRUSTMESH_POD_URL="http://localhost:${port}" \
+    TRUSTMESH_FRONTEND_URL="http://localhost:${FRONTEND_PORT}" \
     TRUSTMESH_DB="$db_path" \
     TRUSTMESH_POOL_SYNC_SECRET="$TRUSTMESH_POOL_SYNC_SECRET" \
     TRUSTMESH_REGISTRY_URL="http://localhost:${REGISTRY_PORT}" \
     CITADEL_URL="${CITADEL_URL}" \
-    nohup uv run uvicorn src.main:app --port "$port" > "$LOG_DIR/${key}.log" 2>&1 &
+    nohup uv run uvicorn src.main:app --host '::' --port "$port" > "$LOG_DIR/${key}.log" 2>&1 &
     echo $! > "$PID_DIR/${key}.pid"
     echo "  Started :${port}  ${POD_NAMES[$key]:-$key}"
   done

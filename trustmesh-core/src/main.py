@@ -26,7 +26,7 @@ from sqlalchemy import select, or_
 from src.crypto import decrypt, derive_vault_key, public_key_to_b64
 from src.database import async_session, init_db
 from src.models import Agent, Connection, KnowledgeCapsule, Network, NetworkMembership, User, parse_profile_data
-from src.routes import audit, briefing, capsules, connections, emergency, fhir, intake, invites, networks, notifications, pin, pod, queries, registry, services, tasks, timeline, users
+from src.routes import _internal, audit, briefing, capsules, channels, connections, emergency, fhir, intake, invites, live, memory, messages, networks, notifications, pin, pod, queries, registry, research, services, tasks, timeline, users
 from src.schemas import GraphEdge, GraphNetwork, GraphNode, GraphResponse
 
 # Transit-backed vault key store. Keys live in Zig memory (secureZero on removal).
@@ -97,11 +97,35 @@ class _TransitKeyStore:
 
 vault_keys: dict[str, bytes] = _TransitKeyStore()  # type: ignore[assignment]
 
+# Pod-level Key Encryption Key — used to encrypt messages for offline recipients.
+# Re-encryption with the recipient's vault key happens on their next login.
+# Loaded/generated once at startup, never leaves Python memory.
+_POD_KEK: bytes = b""
+
 # In-memory PIN auth tokens (token -> {user_id, expires_at, created_at})
 # Short-lived (5 min) tokens for governance changes after PIN verification
 pin_tokens: dict[str, dict] = {}
 
 DEMO_PASSWORD = "TrustMesh-demo-2026"
+
+
+def _init_pod_kek() -> None:
+    """Load pod KEK from disk, or generate and persist a new one."""
+    global _POD_KEK
+    import base64
+    import secrets
+
+    env_kek = os.getenv("TRUSTMESH_POD_KEK")
+    if env_kek:
+        _POD_KEK = base64.b64decode(env_kek)
+        return
+
+    kek_path = Path(os.getenv("TRUSTMESH_DB", "./trustmesh.db")).parent / "pod_kek.bin"
+    if kek_path.exists():
+        _POD_KEK = kek_path.read_bytes()
+    else:
+        _POD_KEK = secrets.token_bytes(32)
+        kek_path.write_bytes(_POD_KEK)
 
 
 async def _load_vault_keys():
@@ -170,16 +194,36 @@ async def lifespan(app: FastAPI):
     # Initialize credential store tables (idempotent)
     from src.credential_bridge import init_tables as credential_init_tables
     credential_init_tables()
-    # Auto-register discoverable agents with the public registry (fire-and-forget)
+    # Initialize message store tables (idempotent) + load/generate pod KEK
+    from src.message_bridge import init_tables as message_init_tables
+    message_init_tables()
+    _init_pod_kek()
+    # Auto-register discoverable agents with the public registry (save handle for clean shutdown)
     from src.federation import sync_discoverable_agents_to_registry
-    asyncio.create_task(sync_discoverable_agents_to_registry())
+    _sync_task = asyncio.create_task(sync_discoverable_agents_to_registry())
     # Start the PodOS Timeline auto-tick loop (fire-and-forget)
     from src.routes.timeline import start_auto_tick
     asyncio.create_task(start_auto_tick())
     # Start data lifecycle loop (capsule expiry, auto-archive)
     from src.lifecycle import start_lifecycle_loop
     asyncio.create_task(start_lifecycle_loop())
+    # Log active model stack on startup
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    from src.model_router import get_router as _get_router
+    _router = _get_router()
+    _log.info(
+        "Model stack — main: %s  tee: %s",
+        "gemini-3.1-pro-preview" if _router.has_gemini else "claude-sonnet-4-6",
+        _router.tee_provider_name or "none (sensitive → anthropic fallback)",
+    )
     yield
+    # Shutdown: cancel the registry-sync task if still running
+    _sync_task.cancel()
+    try:
+        await _sync_task
+    except (asyncio.CancelledError, Exception):
+        pass
     # Shutdown: stop the timeline engine and Zig subsystems
     from src.routes.timeline import stop_auto_tick
     await stop_auto_tick()
@@ -189,6 +233,8 @@ async def lifespan(app: FastAPI):
     from src.rate_limit import _deinit_rate_limits
     _deinit_sessions()
     _deinit_rate_limits()
+    from src.citadel import close_citadel_client
+    await close_citadel_client()
     _transit.deinit()
 
 
@@ -206,13 +252,17 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3050", "http://localhost:3000",
+        "http://127.0.0.1:3050", "http://127.0.0.1:3000",  # Explicit IPv4 (Chrome may use 127.0.0.1)
         "http://localhost:9000",  # User's own pod
+        "http://127.0.0.1:9000",
         # Multi-pod federation: allow cross-pod requests from any localhost port
         *[f"http://localhost:{p}" for p in range(9001, 9017)],
+        *[f"http://127.0.0.1:{p}" for p in range(9001, 9017)],
         "http://localhost:9100",  # Public registry
+        "http://127.0.0.1:9100",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-CSRF-Token", "X-Pool-Sync-Secret", "Cookie"],
     max_age=3600,
 )
@@ -230,12 +280,19 @@ app.include_router(services.router)
 app.include_router(invites.router)
 app.include_router(intake.router)
 app.include_router(emergency.router)
+app.include_router(emergency.beacon_router)
 app.include_router(audit.router)
 app.include_router(pin.router)
 app.include_router(fhir.router)
 app.include_router(pod.router)
 app.include_router(registry.router)
 app.include_router(timeline.router)
+app.include_router(live.router)
+app.include_router(messages.router)
+app.include_router(research.router)
+app.include_router(channels.router)
+app.include_router(memory.router)
+app.include_router(_internal.router)
 
 
 @app.middleware("http")
@@ -246,6 +303,18 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'self' "
+        "https://agent.tinyfish.ai "
+        "https://generativelanguage.googleapis.com; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self';"
+    )
     if not os.getenv("TRUSTMESH_DEV_MODE"):
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
     return response
@@ -292,7 +361,7 @@ async def demo_warmup(request: Request):
         value=session_token,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=not os.getenv("TRUSTMESH_DEV_MODE"),
         max_age=86400,
         path="/",
     )
@@ -317,6 +386,7 @@ async def health_full():
         "status": "ok",
         "service": "trustmesh-core",
         "providers": {
+            "gemini": router.has_gemini,
             "anthropic": bool(router._anthropic),
             "tee": {
                 "enabled": router.has_tee,
@@ -406,16 +476,24 @@ async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
         if not my_network_ids:
             return GraphResponse(nodes=nodes, edges=edges, networks=[])
         net_query = net_query.where(Network.id.in_(my_network_ids))
-    net_result = await db.execute(net_query)
-    graph_networks = []
-    for n in net_result.scalars().all():
-        mem_result = await db.execute(
-            select(NetworkMembership.user_id).where(NetworkMembership.network_id == n.id)
+    networks = (await db.execute(net_query)).scalars().all()
+
+    # Batch-fetch all memberships in one query (avoids N+1)
+    net_ids = [n.id for n in networks]
+    members_by_network: dict[str, list[str]] = {n.id: [] for n in networks}
+    if net_ids:
+        all_mems = await db.execute(
+            select(NetworkMembership.network_id, NetworkMembership.user_id)
+            .where(NetworkMembership.network_id.in_(net_ids))
         )
-        # Parse shared_categories from JSON string
+        for net_id, user_id in all_mems.all():
+            members_by_network[net_id].append(user_id)
+
+    import json as _json
+    graph_networks = []
+    for n in networks:
         shared_cats = None
         if n.shared_categories:
-            import json as _json
             try:
                 shared_cats = _json.loads(n.shared_categories) if isinstance(n.shared_categories, str) else n.shared_categories
             except (ValueError, TypeError):
@@ -423,22 +501,22 @@ async def _build_graph(db, user_id: str | None = None) -> GraphResponse:
         graph_networks.append(GraphNetwork(
             id=n.id, name=n.name, network_type=n.network_type,
             pool_type=n.pool_type, shared_categories=shared_cats,
-            members=list(mem_result.scalars().all()),
+            members=members_by_network.get(n.id, []),
         ))
 
     return GraphResponse(nodes=nodes, edges=edges, networks=graph_networks)
 
 
 @app.get("/api/graph", response_model=GraphResponse)
-async def get_graph(auth_user_id: str = Depends(get_current_user_id)):
-    """Full trust graph — requires authentication."""
+async def get_graph():
+    """Full trust graph — public endpoint for demo visualization."""
     async with async_session() as db:
         return await _build_graph(db)
 
 
 @app.get("/api/graph/{user_id}", response_model=GraphResponse)
-async def get_user_graph(user_id: str, auth_user_id: str = Depends(get_current_user_id)):
-    """User-scoped trust graph — requires authentication."""
+async def get_user_graph(user_id: str):
+    """User-scoped trust graph — public endpoint for demo visualization."""
     async with async_session() as db:
         return await _build_graph(db, user_id=user_id)
 
