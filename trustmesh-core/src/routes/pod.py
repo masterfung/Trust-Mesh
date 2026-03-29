@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, and_, select, update
 
 from src.auth import get_current_user_id
 from src.database import async_session, get_db
@@ -23,7 +23,7 @@ from src.federation import (
     ping_peer,
     send_pool_invite,
 )
-from src.models import Agent, DataRequest, Network, NetworkMembership, PeerPod, PoolInviteToken, User
+from src.models import Agent, Connection, ConnectionRequest, DataRequest, Network, NetworkMembership, Notification, PeerPod, PoolInviteToken, User, utcnow
 from src.rate_limit import check_query_rate, record_query
 from src.federation_auth import verify_federation_request
 
@@ -504,10 +504,39 @@ async def a2a_message(req: A2ARequest, request: Request):
 # ── Cross-Pod Pool Invitations ──
 
 async def _create_ghost_connections(db, ghost_user_id: str, network_id: str):
-    """No-op: pool membership alone grants network trust via resolve_trust_level().
-    Connection rows are no longer needed for ghost users.
+    """Create an accepted Connection between the local user and the ghost user.
+
+    This ensures agents can discover peers via list_connections, not just via
+    network membership.  Skips if the connection already exists.
     """
-    pass
+    # Find the local (non-remote) user
+    local_result = await db.execute(
+        select(User).where(User.is_remote == False)  # noqa: E712
+    )
+    local_user = local_result.scalars().first()
+    if not local_user or local_user.id == ghost_user_id:
+        return
+
+    # Check for existing connection in either direction
+    existing = await db.execute(
+        select(Connection).where(
+            or_(
+                and_(Connection.from_user_id == local_user.id, Connection.to_user_id == ghost_user_id),
+                and_(Connection.from_user_id == ghost_user_id, Connection.to_user_id == local_user.id),
+            )
+        )
+    )
+    if existing.scalar_one_or_none():
+        return
+
+    db.add(Connection(
+        from_user_id=local_user.id,
+        to_user_id=ghost_user_id,
+        context="personal",
+        status="accepted",
+        relationship_type="peer",
+        accepted_at=datetime.now(timezone.utc),
+    ))
 
 
 @router.post("/pool-invite")
@@ -889,6 +918,84 @@ async def pool_sync(req: PoolSyncRequest, request: Request):
         }
 
 
+# ── Orchestrator Connection Sync ──
+
+class SyncConnectionItem(BaseModel):
+    peer_username: str = Field(..., min_length=1, max_length=50)
+    context: str = "personal"
+    relationship_type: str = "peer"
+    local_label: str = ""
+    peer_label: str = ""
+
+
+class SyncConnectionsRequest(BaseModel):
+    connections: list[SyncConnectionItem]
+
+
+@router.post("/sync-connections")
+async def sync_connections(req: SyncConnectionsRequest, request: Request):
+    """Create Connection records between the local user and ghost users.
+
+    Called by the orchestrator after pool-sync to ensure agents can discover
+    peers via list_connections.  Protected by the pool-sync secret.
+    """
+    if not POOL_SYNC_SECRET:
+        raise HTTPException(503, "Pool sync not configured — set TRUSTMESH_POOL_SYNC_SECRET")
+    auth_header = request.headers.get("X-Pool-Sync-Secret", "")
+    if not secrets.compare_digest(auth_header, POOL_SYNC_SECRET):
+        raise HTTPException(403, "Invalid pool sync secret")
+
+    async with async_session() as db:
+        local_result = await db.execute(
+            select(User).where(User.is_remote == False)  # noqa: E712
+        )
+        local_user = local_result.scalars().first()
+        if not local_user:
+            raise HTTPException(500, "No local user found on this pod")
+
+        created = 0
+        for item in req.connections:
+            # Find the ghost user by username
+            ghost_result = await db.execute(
+                select(User).where(
+                    User.username == item.peer_username,
+                    User.is_remote == True,  # noqa: E712
+                )
+            )
+            ghost = ghost_result.scalars().first()
+            if not ghost:
+                logger.debug("sync_connections: ghost user %s not found, skipping", item.peer_username)
+                continue
+
+            # Check for existing connection in either direction
+            existing = await db.execute(
+                select(Connection).where(
+                    or_(
+                        and_(Connection.from_user_id == local_user.id, Connection.to_user_id == ghost.id),
+                        and_(Connection.from_user_id == ghost.id, Connection.to_user_id == local_user.id),
+                    )
+                )
+            )
+            if existing.scalar_one_or_none():
+                continue
+
+            db.add(Connection(
+                from_user_id=local_user.id,
+                to_user_id=ghost.id,
+                context=item.context,
+                status="accepted",
+                relationship_type=item.relationship_type,
+                from_label=item.local_label or None,
+                to_label=item.peer_label or None,
+                accepted_at=datetime.now(timezone.utc),
+            ))
+            created += 1
+
+        await db.commit()
+
+    return {"status": "ok", "connections_created": created}
+
+
 # ── Federation Message Delivery ──
 
 class DeliverMessageRequest(BaseModel):
@@ -1116,4 +1223,170 @@ async def receive_peer_data_ready(
 
 
 # /api/pod/connection-request and /api/pod/connection-accept are handled by
-# the native Zig kernel (handlers/pod_federation.zig).
+# the native Zig kernel (handlers/pod_federation.zig) when TRUSTMESH_ZIG_HTTP=1.
+# The Python implementations below handle the pure-Python multi-pod mode.
+
+
+class InboundConnectionRequestBody(BaseModel):
+    from_did: str
+    from_pod_url: str
+    from_display_name: str
+    to_did: str
+    message: str = ""
+
+
+@router.post("/connection-request")
+async def inbound_connection_request(
+    req: InboundConnectionRequestBody,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Receive an inbound cross-pod connection request from a remote user."""
+    raw_body = await request.body()
+    auth = verify_federation_request(from_did=req.from_did, body=raw_body, headers=request.headers)
+    if auth.status == "invalid":
+        raise HTTPException(401, "Invalid federation signature")
+    if auth.status == "missing":
+        logger.warning("connection-request from %s: missing federation signature (unsigned)", req.from_did[:30])
+
+    # Resolve recipient by to_did — must be a local (non-remote) user
+    agent_result = await db.execute(select(Agent).where(Agent.did == req.to_did))
+    recipient_agent = agent_result.scalar_one_or_none()
+    if not recipient_agent:
+        raise HTTPException(404, "Recipient not found on this pod")
+    user_result = await db.execute(
+        select(User).where(User.id == recipient_agent.owner_id, User.is_remote == False)  # noqa: E712
+    )
+    local_user = user_result.scalar_one_or_none()
+    if not local_user:
+        raise HTTPException(404, "Recipient not found on this pod")
+
+    # Upsert ghost user for the sender
+    ghost = await get_or_create_ghost_user(
+        db,
+        remote_username=req.from_did[:100],
+        remote_display_name=req.from_display_name[:100],
+        remote_did=req.from_did,
+        remote_pod_url=req.from_pod_url,
+    )
+    await db.flush()
+
+    # Idempotency: already connected?
+    conn_result = await db.execute(
+        select(Connection).where(
+            or_(
+                and_(Connection.from_user_id == ghost.id, Connection.to_user_id == local_user.id),
+                and_(Connection.from_user_id == local_user.id, Connection.to_user_id == ghost.id),
+            ),
+            Connection.status == "accepted",
+        )
+    )
+    if conn_result.scalar_one_or_none():
+        return {"status": "already_connected"}
+
+    # Idempotency: already pending?
+    pending_result = await db.execute(
+        select(ConnectionRequest).where(
+            ConnectionRequest.from_user_id == ghost.id,
+            ConnectionRequest.to_user_id == local_user.id,
+            ConnectionRequest.status == "pending",
+        )
+    )
+    if pending_result.scalar_one_or_none():
+        return {"status": "already_pending"}
+
+    # Insert connection request + notification
+    conn_req = ConnectionRequest(
+        from_user_id=ghost.id,
+        to_user_id=local_user.id,
+        message=req.message[:500],
+        status="pending",
+    )
+    db.add(conn_req)
+    await db.flush()
+
+    db.add(Notification(
+        user_id=local_user.id,
+        notification_type="connection_request",
+        title="New connection request",
+        body=f"{req.from_display_name[:100]} wants to connect with you.",
+        is_read=False,
+        related_id=conn_req.id,
+    ))
+    await db.commit()
+    return {"status": "ok", "request_id": conn_req.id}
+
+
+class InboundConnectionAcceptBody(BaseModel):
+    accepted_by_did: str
+    requester_did: str
+    accepted_by_display_name: str
+
+
+@router.post("/connection-accept")
+async def inbound_connection_accept(
+    req: InboundConnectionAcceptBody,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Receive notification that a remote user accepted our outbound connection request."""
+    raw_body = await request.body()
+    auth = verify_federation_request(from_did=req.accepted_by_did, body=raw_body, headers=request.headers)
+    if auth.status == "invalid":
+        raise HTTPException(401, "Invalid federation signature")
+    if auth.status == "missing":
+        logger.warning("connection-accept from %s: missing federation signature (unsigned)", req.accepted_by_did[:30])
+
+    # Resolve local user who sent the original request
+    agent_result = await db.execute(select(Agent).where(Agent.did == req.requester_did))
+    requester_agent = agent_result.scalar_one_or_none()
+    if not requester_agent:
+        raise HTTPException(404, "Original requester not found on this pod")
+    local_user_id = requester_agent.owner_id
+
+    # Find ghost for the accepting user (may not exist if they never queried us)
+    ghost_result = await db.execute(
+        select(User).where(User.remote_did == req.accepted_by_did, User.is_remote == True)  # noqa: E712
+    )
+    ghost = ghost_result.scalar_one_or_none()
+
+    # Find the pending connection request
+    if ghost:
+        pending_result = await db.execute(
+            select(ConnectionRequest).where(
+                ConnectionRequest.from_user_id == local_user_id,
+                ConnectionRequest.to_user_id == ghost.id,
+                ConnectionRequest.status == "pending",
+            )
+        )
+    else:
+        pending_result = await db.execute(
+            select(ConnectionRequest).where(
+                ConnectionRequest.from_user_id == local_user_id,
+                ConnectionRequest.status == "pending",
+            ).order_by(ConnectionRequest.created_at.desc()).limit(1)
+        )
+    pending = pending_result.scalar_one_or_none()
+    if not pending:
+        raise HTTPException(404, "No matching pending connection request found")
+
+    now = utcnow()
+    pending.status = "accepted"
+    pending.reviewed_at = now
+
+    db.add(Connection(
+        from_user_id=pending.from_user_id,
+        to_user_id=pending.to_user_id,
+        status="accepted",
+        accepted_at=now,
+    ))
+    db.add(Notification(
+        user_id=local_user_id,
+        notification_type="connection_accepted",
+        title="Connection accepted",
+        body=f"{req.accepted_by_display_name[:100]} accepted your connection request.",
+        is_read=False,
+        related_id=pending.id,
+    ))
+    await db.commit()
+    return {"status": "ok"}

@@ -1,0 +1,122 @@
+name: Security Scan
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+env:
+  REGION: us-west1
+  PROJECT_ID: trustmesh-hackathon
+
+jobs:
+  # ── Trivy: scan deployed images in Artifact Registry ────────────────────────
+  image-scan:
+    name: Trivy — Deployed Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+
+    strategy:
+      matrix:
+        image: [backend, frontend, registry]
+      fail-fast: false
+
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f  # v2.1.7
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SA }}
+
+      - name: Scan ${{ matrix.image }} image
+        uses: aquasecurity/trivy-action@6e7b7d1fd3e4fef0c5fa8cce1229c54b2c9bd0d8  # v0.29.0
+        with:
+          image-ref: "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/trustmesh/${{ matrix.image }}:latest"
+          format: sarif
+          output: trivy-${{ matrix.image }}.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "0"
+          vuln-type: os,library
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@45775bd8235c68ba998cffa5171334d58593da47  # v3.28.15
+        with:
+          sarif_file: trivy-${{ matrix.image }}.sarif
+          category: weekly-${{ matrix.image }}
+
+  # ── CodeQL: static analysis of Python and TypeScript ──────────────────────
+  codeql:
+    name: CodeQL Static Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+
+    strategy:
+      matrix:
+        language: [python, typescript]
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@45775bd8235c68ba998cffa5171334d58593da47  # v3.28.15
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@45775bd8235c68ba998cffa5171334d58593da47  # v3.28.15
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@45775bd8235c68ba998cffa5171334d58593da47  # v3.28.15
+        with:
+          category: codeql-${{ matrix.language }}
+
+  # ── Terraform security: tfsec ────────────────────────────────────────────────
+  tfsec:
+    name: tfsec — Terraform Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-sarif-action@21ded20e8ca120cd9d3d6ab04ef746477542a608  # v0.1.4
+        with:
+          sarif_file: tfsec.sarif
+          working_directory: infra
+
+      - name: Upload tfsec SARIF
+        uses: github/codeql-action/upload-sarif@45775bd8235c68ba998cffa5171334d58593da47  # v3.28.15
+        with:
+          sarif_file: tfsec.sarif
+          category: tfsec
+
+  # ── Secret scanning: gitleaks ────────────────────────────────────────────────
+  gitleaks:
+    name: Gitleaks — Secret Scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0   # Full history for secret scanning
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7891597d2a49f0c9f3e4fd7b2b1b4d  # v2.3.7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

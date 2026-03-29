@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# deploy.sh — Secure two-step GCP deployment for TrustMesh
+#
+# Usage:
+#   ./deploy.sh [GCP_PROJECT_ID]
+#
+# Prerequisites:
+#   gcloud auth login && gcloud auth application-default login
+#   gcloud auth configure-docker us-west1-docker.pkg.dev
+#   Terraform >= 1.6, Python 3, jq installed
+#
+# First run: populates Secret Manager with your API keys, then creates all
+# Cloud Run services with empty pod URLs, then re-applies with real URLs.
+
+set -euo pipefail
+
+PROJECT="${1:-trustmesh-hackathon}"
+REGION="us-west1"
+TAG="$(git rev-parse --short HEAD)"
+REPO="${REGION}-docker.pkg.dev/${PROJECT}/trustmesh"
+TFSTATE_BUCKET="trustmesh-hackathon-tfstate"
+
+log()  { echo "[deploy] $*"; }
+die()  { echo "[deploy] ERROR: $*" >&2; exit 1; }
+sep()  { echo ""; echo "═══════════════════════════════════════════════════════"; echo " $*"; echo "═══════════════════════════════════════════════════════"; }
+
+# ── Validate prerequisites ────────────────────────────────────────────────────
+command -v docker    >/dev/null || die "docker not found"
+command -v gcloud    >/dev/null || die "gcloud not found"
+command -v terraform >/dev/null || die "terraform not found"
+command -v python3   >/dev/null || die "python3 not found"
+
+# Warn if no LLM keys are set (Terraform will create the secrets, but they'll be empty)
+if [[ -z "${GOOGLE_API_KEY:-}" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
+  echo ""
+  echo "  ⚠  WARNING: Neither GOOGLE_API_KEY nor ANTHROPIC_API_KEY is set."
+  echo "     You will need to populate these secrets in Secret Manager after deploy:"
+  echo "     gcloud secrets versions add GOOGLE_API_KEY --data-file=<(echo -n \"\$YOUR_KEY\")"
+  echo "     gcloud secrets versions add ANTHROPIC_API_KEY --data-file=<(echo -n \"\$YOUR_KEY\")"
+  echo ""
+fi
+
+sep "Step 0: Bootstrap secure Terraform state bucket"
+
+# Create tfstate bucket if it doesn't exist
+if ! gcloud storage buckets describe "gs://${TFSTATE_BUCKET}" --project="${PROJECT}" &>/dev/null; then
+  log "Creating tfstate bucket gs://${TFSTATE_BUCKET} ..."
+  gcloud storage buckets create "gs://${TFSTATE_BUCKET}" \
+    --location="${REGION}" \
+    --project="${PROJECT}" \
+    --uniform-bucket-level-access \
+    --public-access-prevention
+  gcloud storage buckets update "gs://${TFSTATE_BUCKET}" --versioning
+  log "Tfstate bucket created and hardened."
+else
+  gcloud storage buckets update "gs://${TFSTATE_BUCKET}" --versioning 2>/dev/null || true
+fi
+
+sep "Step 0b: Enable GCP APIs + create Artifact Registry"
+
+cd infra
+terraform init -upgrade -input=false -reconfigure 2>&1 | tail -5
+terraform apply \
+  -var="project_id=${PROJECT}" \
+  -var="image_tag=${TAG}" \
+  -target=google_project_service.apis \
+  -target=google_artifact_registry_repository.trustmesh \
+  -auto-approve
+cd ..
+
+# Configure Docker to authenticate with Artifact Registry
+gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+sep "Step 1: Build + push images (tag: ${TAG})"
+
+# Backend
+log "Building backend ..."
+docker build \
+  --platform linux/amd64 \
+  -f Dockerfile.backend \
+  -t "${REPO}/backend:${TAG}" \
+  .
+log "Pushing backend ..."
+docker push "${REPO}/backend:${TAG}"
+
+# Frontend (NEXT_PUBLIC_API_URL="" = server-side proxy, no baked-in pod URL)
+log "Building frontend ..."
+docker build \
+  --platform linux/amd64 \
+  -f Dockerfile.frontend \
+  --build-arg NEXT_PUBLIC_API_URL="" \
+  -t "${REPO}/frontend:${TAG}" \
+  .
+log "Pushing frontend ..."
+docker push "${REPO}/frontend:${TAG}"
+
+# Registry
+log "Building registry ..."
+docker build \
+  --platform linux/amd64 \
+  -f Dockerfile.registry \
+  -t "${REPO}/registry:${TAG}" \
+  .
+log "Pushing registry ..."
+docker push "${REPO}/registry:${TAG}"
+
+sep "Step 2: Populate Secret Manager with API keys"
+
+_add_secret() {
+  local secret_id="$1"
+  local value="$2"
+  if [[ -z "$value" ]]; then
+    log "  Skipping ${secret_id} (not set in env)"
+    return
+  fi
+  # Check if a version already exists
+  if gcloud secrets versions list "${secret_id}" --project="${PROJECT}" --format="value(name)" 2>/dev/null | grep -q .; then
+    log "  ${secret_id}: version already exists — not overwriting"
+  else
+    echo -n "${value}" | gcloud secrets versions add "${secret_id}" \
+      --project="${PROJECT}" --data-file=-
+    log "  ${secret_id}: version added"
+  fi
+}
+
+# Create secret resources so we can populate them with API key values
+cd infra
+terraform apply \
+  -var="project_id=${PROJECT}" \
+  -var="image_tag=${TAG}" \
+  -target=google_project_service.apis \
+  -target=google_secret_manager_secret.google_api_key \
+  -target=google_secret_manager_secret.anthropic_api_key \
+  -target=google_secret_manager_secret.pool_sync_secret \
+  -target=google_secret_manager_secret.redpill_api_key \
+  -auto-approve
+cd ..
+
+_add_secret "GOOGLE_API_KEY"     "${GOOGLE_API_KEY:-}"
+_add_secret "ANTHROPIC_API_KEY"  "${ANTHROPIC_API_KEY:-}"
+_add_secret "REDPILL_API_KEY"    "${REDPILL_API_KEY:-}"
+# TRUSTMESH_POOL_SYNC_SECRET is auto-generated by Terraform (random_password)
+
+sep "Step 3: Bootstrap Terraform (pod URLs unknown yet)"
+
+cd infra
+
+# First full apply: services get created with empty pod URLs (broken federation — expected)
+terraform apply \
+  -var="project_id=${PROJECT}" \
+  -var="image_tag=${TAG}" \
+  -auto-approve
+
+sep "Step 4: Collect pod URLs from Terraform outputs"
+
+terraform output -json pod_urls > /tmp/pod_urls.json
+
+FRONTEND_URL="$(terraform output -raw frontend_url)"
+REGISTRY_URL="$(terraform output -raw registry_url)"
+POD_USER_URL="$(terraform output -raw pod_user_url)"
+
+log "Frontend:   ${FRONTEND_URL}"
+log "Registry:   ${REGISTRY_URL}"
+log "User pod:   ${POD_USER_URL}"
+
+# Write pod_urls.auto.tfvars from the JSON output
+python3 - <<'PYEOF'
+import json, os
+
+with open("/tmp/pod_urls.json") as f:
+    urls = json.load(f)
+
+lines = ["pod_urls = {"]
+for k, v in sorted(urls.items()):
+    lines.append(f'  {k} = "{v}"')
+lines.append("}")
+
+with open("pod_urls.auto.tfvars", "w") as f:
+    f.write("\n".join(lines) + "\n")
+
+# Clean up temp file
+os.unlink("/tmp/pod_urls.json")
+print(f"[deploy] Wrote pod_urls.auto.tfvars ({len(urls)} pods)")
+PYEOF
+
+sep "Step 5: Re-apply with correct pod URLs and frontend URL"
+
+terraform apply \
+  -var="project_id=${PROJECT}" \
+  -var="image_tag=${TAG}" \
+  -var="frontend_url=${FRONTEND_URL}" \
+  -var-file=pod_urls.auto.tfvars \
+  -auto-approve
+
+# Clean up tfvars (contains service URLs — keep workspace clean)
+rm -f pod_urls.auto.tfvars
+
+cd ..
+
+sep "Deployment complete!"
+echo ""
+echo "  Frontend:  ${FRONTEND_URL}"
+echo "  Registry:  ${REGISTRY_URL}"
+echo "  User pod:  ${POD_USER_URL}"
+echo ""
+echo "  Verify services:"
+echo "    gcloud run services list --region=${REGION} --project=${PROJECT}"
+echo ""
+echo "  Check GCS replication:"
+echo "    gsutil ls gs://tm-pods-db-${PROJECT}/pods/"
+echo ""
+if [[ -z "${GOOGLE_API_KEY:-}" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
+  echo "  ⚠  Don't forget to add API keys to Secret Manager:"
+  echo "    gcloud secrets versions add GOOGLE_API_KEY --data-file=<(echo -n \"\$YOUR_KEY\") --project=${PROJECT}"
+  echo "    gcloud secrets versions add ANTHROPIC_API_KEY --data-file=<(echo -n \"\$YOUR_KEY\") --project=${PROJECT}"
+  echo "    Then trigger a new deployment to pick up the keys."
+  echo ""
+fi

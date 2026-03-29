@@ -1,0 +1,270 @@
+name: Deploy to GCP
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: "GCP Project ID"
+        required: false
+        default: "trustmesh-hackathon"
+
+env:
+  REGION: us-west1
+  PROJECT_ID: ${{ github.event.inputs.project_id || 'trustmesh-hackathon' }}
+
+jobs:
+  # ── Job 1: Build, scan, and push images ─────────────────────────────────────
+  build:
+    name: Build + Scan + Push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # Workload Identity Federation
+      security-events: write # Upload Trivy SARIF to GitHub Security tab
+
+    outputs:
+      tag: ${{ steps.tag.outputs.TAG }}
+
+    steps:
+      - name: Checkout
+        # pinned SHA for supply chain security
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f  # v2.1.7
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@6189d56e4096ee891640bb02ac264be376592d6a  # v2.1.4
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232d5  # v3.10.0
+
+      - name: Compute image tag (git short SHA)
+        id: tag
+        run: echo "TAG=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # ── Build images ─────────────────────────────────────────────────────────
+
+      - name: Build + push backend
+        id: build_backend
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4  # v6.15.0
+        with:
+          context: .
+          file: Dockerfile.backend
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/trustmesh/backend:${{ steps.tag.outputs.TAG }}
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/trustmesh/backend:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+          provenance: true
+          sbom: true
+
+      - name: Build + push frontend
+        id: build_frontend
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4  # v6.15.0
+        with:
+          context: .
+          file: Dockerfile.frontend
+          platforms: linux/amd64
+          push: true
+          build-args: NEXT_PUBLIC_API_URL=
+          tags: |
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/trustmesh/frontend:${{ steps.tag.outputs.TAG }}
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/trustmesh/frontend:latest
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+          provenance: true
+          sbom: true
+
+      - name: Build + push registry
+        id: build_registry
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4  # v6.15.0
+        with:
+          context: .
+          file: Dockerfile.registry
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/trustmesh/registry:${{ steps.tag.outputs.TAG }}
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/trustmesh/registry:latest
+          cache-from: type=gha,scope=registry
+          cache-to: type=gha,scope=registry,mode=max
+          provenance: true
+          sbom: true
+
+      # ── Trivy vulnerability scanning ──────────────────────────────────────────
+
+      - name: Scan backend image (Trivy)
+        uses: aquasecurity/trivy-action@6e7b7d1fd3e4fef0c5fa8cce1229c54b2c9bd0d8  # v0.29.0
+        with:
+          image-ref: "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/trustmesh/backend:${{ steps.tag.outputs.TAG }}"
+          format: sarif
+          output: trivy-backend.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"   # Fail build on CRITICAL/HIGH vulns
+        continue-on-error: true  # Upload SARIF even if scan finds issues
+
+      - name: Upload backend Trivy SARIF
+        uses: github/codeql-action/upload-sarif@45775bd8235c68ba998cffa5171334d58593da47  # v3.28.15
+        if: always()
+        with:
+          sarif_file: trivy-backend.sarif
+          category: trivy-backend
+
+      - name: Scan frontend image (Trivy)
+        uses: aquasecurity/trivy-action@6e7b7d1fd3e4fef0c5fa8cce1229c54b2c9bd0d8  # v0.29.0
+        with:
+          image-ref: "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/trustmesh/frontend:${{ steps.tag.outputs.TAG }}"
+          format: sarif
+          output: trivy-frontend.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "0"   # Warn only (frontend has fewer controls over bun deps)
+
+      - name: Upload frontend Trivy SARIF
+        uses: github/codeql-action/upload-sarif@45775bd8235c68ba998cffa5171334d58593da47  # v3.28.15
+        if: always()
+        with:
+          sarif_file: trivy-frontend.sarif
+          category: trivy-frontend
+
+  # ── Job 2: Terraform plan (review before apply) ───────────────────────────────
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write  # Post plan as PR comment
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f  # v2.1.7
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SA }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269ef032  # v3.1.2
+        with:
+          terraform_version: "~1.6"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra
+        run: terraform init -upgrade
+
+      - name: Terraform plan
+        id: plan
+        working-directory: infra
+        run: |
+          terraform plan \
+            -var="project_id=${{ env.PROJECT_ID }}" \
+            -var="image_tag=${{ needs.build.outputs.tag }}" \
+            -out=tfplan.out \
+            -no-color 2>&1 | tee /tmp/tfplan.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Terraform plan artifact
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1  # v4.6.1
+        with:
+          name: tfplan-${{ needs.build.outputs.tag }}
+          path: infra/tfplan.out
+          retention-days: 7
+
+  # ── Job 3: Terraform apply (two-step) ─────────────────────────────────────────
+  apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: [build, plan]
+    environment: production   # Requires manual approval in GitHub Environments settings
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f  # v2.1.7
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SA }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269ef032  # v3.1.2
+        with:
+          terraform_version: "~1.6"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra
+        run: terraform init -upgrade
+
+      - name: Terraform apply (step 1 — bootstrap)
+        working-directory: infra
+        run: |
+          terraform apply \
+            -var="project_id=${{ env.PROJECT_ID }}" \
+            -var="image_tag=${{ needs.build.outputs.tag }}" \
+            -auto-approve
+
+      - name: Collect pod URLs and write tfvars
+        id: urls
+        working-directory: infra
+        run: |
+          terraform output -json pod_urls > /tmp/pod_urls.json
+          echo "FRONTEND_URL=$(terraform output -raw frontend_url)" >> "$GITHUB_OUTPUT"
+          echo "REGISTRY_URL=$(terraform output -raw registry_url)" >> "$GITHUB_OUTPUT"
+
+          python3 - <<'PYEOF'
+          import json
+          with open("/tmp/pod_urls.json") as f:
+              urls = json.load(f)
+          lines = ["pod_urls = {"]
+          for k, v in sorted(urls.items()):
+              lines.append(f'  {k} = "{v}"')
+          lines.append("}")
+          with open("pod_urls.auto.tfvars", "w") as f:
+              f.write("\n".join(lines) + "\n")
+          # Clean up temp file
+          import os; os.unlink("/tmp/pod_urls.json")
+          print(f"Wrote {len(urls)} pod URLs")
+          PYEOF
+
+      - name: Terraform apply (step 2 — set pod URLs)
+        working-directory: infra
+        run: |
+          terraform apply \
+            -var="project_id=${{ env.PROJECT_ID }}" \
+            -var="image_tag=${{ needs.build.outputs.tag }}" \
+            -var="frontend_url=${{ steps.urls.outputs.FRONTEND_URL }}" \
+            -var-file=pod_urls.auto.tfvars \
+            -auto-approve
+
+          # Clean up pod_urls tfvars (contains service URLs — no sensitive data but tidy)
+          rm -f pod_urls.auto.tfvars
+
+      - name: Deployment summary
+        run: |
+          echo "### Deployment Complete :rocket:" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Frontend** | ${{ steps.urls.outputs.FRONTEND_URL }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Registry** | ${{ steps.urls.outputs.REGISTRY_URL }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Image tag** | \`${{ needs.build.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"

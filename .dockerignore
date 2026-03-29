@@ -1,0 +1,54 @@
+# Import .gitignore rules
+.gitignore
+
+# Local env files — never bake into production images
+.env
+.env.local
+.env.*.local
+trustmesh-ui/.env.local
+trustmesh-ui/.env.*.local
+trustmesh-core/.env
+trustmesh-core/.env.local
+
+# Zig build artifacts
+trustmesh-core/kernel/.zig-cache/
+trustmesh-core/kernel/zig-out/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# Data
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Dev artifacts
+.backend.log
+.multipod-pids/
+.multipod-logs/
+screenshots/
+*.png
+
+# Secrets / local config
+.mcp.json
+
+# Terraform local state
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/pod_urls.auto.tfvars
+infra/.terraform.lock.hcl
+
+# IDE
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,46 @@
+# Import .gitignore rules
+.gitignore
+
+# Explicitly exclude large directories that must be excluded
+node_modules/
+.next/
+out/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Zig build artifacts
+trustmesh-core/kernel/.zig-cache/
+trustmesh-core/kernel/zig-out/
+
+# Data directories
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Dev artifacts
+.backend.log
+.multipod-pids/
+.multipod-logs/
+screenshots/
+*.png
+
+# Secrets / local config
+.env
+.env.local
+.env.*.local
+.mcp.json
+
+# Terraform local state
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/pod_urls.auto.tfvars
+infra/.terraform.lock.hcl
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
