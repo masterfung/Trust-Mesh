@@ -121,6 +121,32 @@ export default function ChatPage() {
   const [sessionHistory, setSessionHistory] = useState<{ role: string; content: string }[]>([]);
   const [showLive, setShowLive] = useState(false);
   const [showResearchFeed, setShowResearchFeed] = useState(false);
+  // Track whether the user started a new session (sent a query or cleared chat)
+  const hasNewSessionRef = useRef(false);
+
+  // Load recent queries from history into results on mount so chat persists across navigation
+  useEffect(() => {
+    if (hasNewSessionRef.current) return; // User started a new session, don't overwrite
+    if (!history || history.length === 0) return;
+    if (results.length > 0) return; // Already populated
+
+    const recent = history.slice(0, 20).map((q): StreamingResult => ({
+      id: q.id,
+      from_user_id: q.from_user_id,
+      to_user_id: q.to_user_id,
+      question: q.question,
+      trust_level: q.trust_level,
+      shared_networks: q.shared_networks,
+      response: q.response ?? "",
+      decision: q.decision,
+      agent_actions: q.agent_actions,
+      routing: q.routing,
+      latency_ms: q.latency_ms,
+      created_at: q.created_at,
+      isStreaming: false,
+    }));
+    setResults(recent);
+  }, [history]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build a set of connected user IDs and a map of user -> shared network names
   const connectedIds = new Set(
@@ -208,6 +234,7 @@ export default function ChatPage() {
       isStreaming: true,
       tools: [],
     };
+    hasNewSessionRef.current = true;
     setResults((prev) => [placeholderResult, ...prev]);
     setQuestion("");
 
@@ -519,6 +546,7 @@ export default function ChatPage() {
         {results.length > 0 && (
           <button
             onClick={() => {
+              hasNewSessionRef.current = true;
               setResults([]);
               setSessionHistory([]);
             }}
@@ -705,7 +733,7 @@ export default function ChatPage() {
       {/* Results */}
       {results.length > 0 && (
         <div className="mb-8">
-          <h2 className="text-sm font-semibold text-muted-foreground mb-3">This Session</h2>
+          <h2 className="text-sm font-semibold text-muted-foreground mb-3">{hasNewSessionRef.current ? "This Session" : "Recent"}</h2>
           <div className="space-y-3">
             {results.map((r, idx) => (
               <QueryResultCard key={r.id || `streaming-${idx}`} result={r} users={users ?? []} currentUserId={userId} onSend={sendMessage} onStop={r.isStreaming ? stopStream : undefined} streamElapsed={r.isStreaming ? streamElapsed : undefined} />
@@ -714,8 +742,8 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* History (collapsed by default) */}
-      {history && history.length > 0 && (
+      {/* History (collapsed by default) — hidden when results are already loaded from history */}
+      {hasNewSessionRef.current && history && history.length > 0 && (
         <HistorySection history={history} users={users ?? []} userId={userId} />
       )}
     </div>
