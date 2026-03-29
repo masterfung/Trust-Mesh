@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from src.crypto import derive_vault_key, encrypt, generate_key, generate_ed25519_keypair, hash_pin, public_key_to_did
 from src import transit_bridge
 from src.database import drop_db, init_db, async_session
-from src.embeddings import init_fts, reset_collections, upsert_capsule_embedding
+from src.embeddings import upsert_capsule_embedding
 from src.models import (
     Agent,
     CapsuleNetworkAccess,
@@ -721,9 +721,7 @@ CONNECTIONS = [
     ("jane", "acetutor", "work", "work", "tutor", "student"),
     ("peter", "handypro", "work", "work", "handyman", "customer"),
     ("molly", "riverside_gov", "work", "work", "city hall", "resident"),
-    # Johnny's connections
-    ("johnny", "molly", "both", "work", "PM colleague", "founder"),
-    ("johnny", "peter", "personal", "friend", "friend", "friend"),
+    # Johnny starts with no connections — test the befriend flow yourself
 ]
 
 NETWORKS = [
@@ -732,7 +730,7 @@ NETWORKS = [
         "type": "family",
         "description": "Johnson family knowledge sharing — health, schedules, and home info.",
         "owner": "peter",
-        "members": ["peter", "molly", "jane", "bill"],
+        "members": ["peter", "molly", "jane", "bill", "grandmarose"],
         "is_public": False,
         "join_policy": "invite_only",
         "context": "personal",
@@ -908,6 +906,28 @@ CAPSULES = [
         "content": "Peter is a licensed electrician with 20 years experience, specializing in residential work.",
         "visibility": "open",
         "category": "general",
+        "networks": [],
+    },
+    # Peter's travel preferences (open so federated agents can read them)
+    {
+        "owner": "peter",
+        "type": "preference",
+        "title": "Peter's Travel & Dining Preferences",
+        "content": (
+            "DIET: Vegetarian — no meat, no fish, no poultry. Eggs and dairy OK. "
+            "This is a firm lifestyle choice, not an allergy. Always check menus ahead of time.\n\n"
+            "TRAVEL MUST-HAVES:\n"
+            "- Always visit the local Starbucks in every city for a city-exclusive mug or tumbler. "
+            "This is a serious collection — have 47 mugs from around the world so far.\n"
+            "- Hard Rock Cafe/Hotel: must stop at any Hard Rock location for a t-shirt and pin. "
+            "Prefer staying at Hard Rock Hotel when available. Collection includes 31 city pins.\n"
+            "- Loves live music venues, especially blues and classic rock bars.\n"
+            "- Prefers hotels with a pool.\n"
+            "- No early morning tours — latest start time possible."
+        ),
+        "visibility": "open",
+        "category": "general",
+        "can_reshare": True,
         "networks": [],
     },
     # Peter's private capsules — personal thoughts nobody else should see
@@ -1117,6 +1137,30 @@ CAPSULES = [
         ),
         "visibility": "private",
         "category": "health",
+        "networks": [],
+    },
+    # Molly's travel preferences (open so federated agents can read them)
+    {
+        "owner": "molly",
+        "type": "preference",
+        "title": "Molly's Travel & Activity Preferences",
+        "content": (
+            "TRAVEL STYLE: Active explorer — hates sitting on tour buses.\n\n"
+            "MUST-HAVES:\n"
+            "- Walking tours: historical neighborhoods, street art, architecture. "
+            "Will walk 15-20k steps happily. Loves a good local guide with stories.\n"
+            "- Vineyards & wine tasting: this is non-negotiable on any trip to wine country. "
+            "Prefers small family-owned vineyards over big commercial operations. "
+            "Loves discovering local grape varieties — not just the usual Cab/Chard.\n"
+            "- Local food markets: farmers markets, spice bazaars, street food tours.\n"
+            "- Yoga or Pilates classes at local studios when traveling.\n"
+            "- Salsa dancing spots if available (any Latin dance works).\n\n"
+            "DISLIKES: All-inclusive resorts, chain restaurants, crowded tourist traps.\n"
+            "PACE: Likes a mix of planned activities and free time to wander."
+        ),
+        "visibility": "open",
+        "category": "general",
+        "can_reshare": True,
         "networks": [],
     },
     # ── JANE ───────────────────────────────────
@@ -1649,6 +1693,34 @@ CAPSULES = [
         "category": "family",
         "networks": ["Rose's Care Circle", "The Johnsons"],
     },
+    # Rose's travel & cultural preferences (open so federated agents can read them)
+    {
+        "owner": "grandmarose",
+        "type": "preference",
+        "title": "Rose's Dining & Cultural Preferences",
+        "content": (
+            "DINING: Passionate about fine dining — Michelin-starred restaurants are a must on any trip. "
+            "BUT: no French or Italian cuisine. Had enough of both growing up in New York. "
+            "Loves Japanese kaiseki, modern Spanish tapas, Peruvian-Japanese Nikkei, "
+            "Scandinavian New Nordic, and innovative Korean tasting menus. "
+            "Harold and I used to make Michelin restaurants our anniversary tradition. "
+            "Lactose intolerant — restaurants need to accommodate dairy-free.\n\n"
+            "CULTURE MUST-HAVES:\n"
+            "- Opera: attend a local opera performance wherever we travel. "
+            "Loves Puccini and Verdi but open to modern productions. "
+            "The local opera house is often the most beautiful building in any city.\n"
+            "- Classical music concerts, symphony, or chamber music if opera isn't available.\n"
+            "- Museum visits: art museums, especially impressionists and modern art.\n"
+            "- Botanical gardens: always visit the local botanical garden.\n\n"
+            "MOBILITY: Uses walker for longer distances. Needs accessible seating at venues. "
+            "Cannot do cobblestone streets for extended periods. "
+            "Prefers ground-floor hotel rooms or elevators."
+        ),
+        "visibility": "open",
+        "category": "general",
+        "can_reshare": True,
+        "networks": [],
+    },
     # Rose's private capsules — personal thoughts nobody else should see
     {
         "owner": "grandmarose",
@@ -2150,10 +2222,12 @@ async def seed():
         except FileNotFoundError:
             pass
 
-    # 4. Re-create schema and FTS5 index on a fresh file.
+    # 4. Re-create schema on a fresh file.
+    #    Skip FTS5 init here — the Zig FTS handle + Python async engine writing
+    #    to the same WAL concurrently can corrupt shadow table pages.
+    #    The server rebuilds the FTS5 index on startup via _init_fts_index().
     await init_db()
-    init_fts()
-    reset_collections()
+    _skip_fts = True
 
     # Import vault_keys from main to populate
     from src.main import vault_keys
@@ -2373,13 +2447,14 @@ async def seed():
                         network_id=network_map[net_name].id,
                     ))
 
-            # Embed for semantic search (category-scoped)
-            upsert_capsule_embedding(
-                capsule.id,
-                f"{c['title']}: {c['content']}",
-                {"capsule_id": capsule.id, "owner_id": owner.id, "visibility": visibility},
-                category=c.get("category", "general"),
-            )
+            # Embed for semantic search (category-scoped) — skip if FTS disabled
+            if not _skip_fts:
+                upsert_capsule_embedding(
+                    capsule.id,
+                    f"{c['title']}: {c['content']}",
+                    {"capsule_id": capsule.id, "owner_id": owner.id, "visibility": visibility},
+                    category=c.get("category", "general"),
+                )
             capsule_count += 1
             print(f"  \u2713 [{visibility}] {c['title']} ({c['owner']})")
 
@@ -2403,12 +2478,13 @@ async def seed():
                 )
                 db.add(capsule)
                 await db.flush()
-                upsert_capsule_embedding(
-                    capsule.id,
-                    f"{cap['title']}: {cap['content']}",
-                    {"capsule_id": capsule.id, "owner_id": sp_user.id, "visibility": cap_visibility},
-                    category=cap.get("category", "general"),
-                )
+                if not _skip_fts:
+                    upsert_capsule_embedding(
+                        capsule.id,
+                        f"{cap['title']}: {cap['content']}",
+                        {"capsule_id": capsule.id, "owner_id": sp_user.id, "visibility": cap_visibility},
+                        category=cap.get("category", "general"),
+                    )
                 capsule_count += 1
                 print(f"  \u2713 [{cap_visibility}] {cap['title']} ({sp['username']})")
 
@@ -2565,6 +2641,19 @@ async def seed():
         print(f"  ! Timeline seeding failed (non-fatal): {e}")
 
     _print_summary(user_map, network_map, capsule_count, delegates, vault_keys)
+
+    # Checkpoint WAL so data is visible to other processes immediately.
+    # Dispose the async engine first (releases all aiosqlite connections),
+    # then use raw sqlite3 to checkpoint and close cleanly.
+    from src.database import engine as _eng
+    await _eng.dispose()
+    import sqlite3 as _sqlite3
+    try:
+        _raw = _sqlite3.connect(db_path, timeout=10)
+        _raw.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        _raw.close()
+    except Exception as _ck_err:
+        print(f"  ! WAL checkpoint warning: {_ck_err}")
 
 
 if __name__ == "__main__":
