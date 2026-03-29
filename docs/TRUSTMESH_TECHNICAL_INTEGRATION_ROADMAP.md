@@ -236,7 +236,7 @@ async def audit_log_append(
     Used by agent frameworks to log decisions made using TrustMesh data.
     """
     log_entry = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "action": action,  # "query_capsule", "access_denied", "policy_violation"
         "agent_did": agent_did,
         "resource_type": resource_type,
@@ -592,9 +592,9 @@ async def issue_compliance_vc(
         "@context": ["https://www.w3.org/2018/credentials/v1"],
         "type": ["VerifiableCredential"],
         "issuer": issuer_did.did,
-        "issuanceDate": datetime.utcnow().isoformat(),
+        "issuanceDate": datetime.now(timezone.utc).isoformat(),
         "expirationDate": (
-            datetime.utcnow() + timedelta(days=365)
+            datetime.now(timezone.utc) + timedelta(days=365)
         ).isoformat(),
         "credentialSubject": {
             "id": request.pod_did,
@@ -612,7 +612,7 @@ async def issue_compliance_vc(
         "payload": vc_payload,
         "proof": {
             "type": "Ed25519Signature2020",
-            "created": datetime.utcnow().isoformat(),
+            "created": datetime.now(timezone.utc).isoformat(),
             "verificationMethod": f"{issuer_did.did}#signing-key",
             "signatureValue": signature
         }
@@ -662,7 +662,7 @@ async def verify_vc_signature(vc: dict) -> bool:
     )
 
     # 4. Check expiration
-    if datetime.fromisoformat(vc["payload"]["expirationDate"]) < datetime.utcnow():
+    if datetime.fromisoformat(vc["payload"]["expirationDate"]) < datetime.now(timezone.utc):
         return False
 
     return is_valid
@@ -705,7 +705,7 @@ async def create_federation_pool(
         name=request.pool_name,
         description=request.description,
         pool_type=request.pool_type,  # "healthcare_network", "bank_consortium", etc.
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
         members=[
             {
                 "pod_did": creator_pod.did,
@@ -782,7 +782,7 @@ async def join_federation_pool(
         "pod_url": joining_pod.url,
         "trust_level": "member",
         "ghost_user_id": ghost_user.id,
-        "joined_at": datetime.utcnow()
+        "joined_at": datetime.now(timezone.utc)
     })
     await db.pools.update(pool)
 

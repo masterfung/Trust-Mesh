@@ -261,7 +261,7 @@ Delete:
 ```python
 async def check_capsule_freshness():
     """Periodic task to archive expired capsules."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Archive capsules past their expiration date
     expired = await get_capsules_where(expires_at__lt=now, is_archived=False)
