@@ -704,6 +704,43 @@ def vault_add(
     console.print(f"[green]Created capsule: {result['title']} ({result['id'][:8]})[/green]")
 
 
+@vault_app.command("update")
+def vault_update(
+    capsule_id: str = typer.Argument(..., help="Capsule ID (or prefix)"),
+    content: str = typer.Option(None, "--content", "-c", help="New content"),
+    title: str = typer.Option(None, "--title", "-t", help="New title"),
+    visibility: str = typer.Option(None, "--vis", help="New visibility"),
+):
+    """Update a capsule's content, title, or visibility."""
+    session = _require_session()
+    me = _api("GET", "/api/auth/me", session=session)
+    capsules = _api("GET", f"/api/users/{me['id']}/capsules", session=session)
+    matches = [c for c in capsules if c["id"].startswith(capsule_id)]
+    if not matches:
+        console.print(f"[red]No capsule matching '{capsule_id}'[/red]")
+        raise typer.Exit(1)
+    if len(matches) > 1:
+        console.print(f"[yellow]Ambiguous prefix — {len(matches)} matches.[/yellow]")
+        raise typer.Exit(1)
+
+    cap = matches[0]
+    payload = {}
+    if content is not None:
+        payload["content"] = content
+    if title is not None:
+        payload["title"] = title
+    if visibility is not None:
+        payload["visibility"] = visibility
+    if not payload:
+        console.print("[yellow]Nothing to update. Use --content, --title, or --vis.[/yellow]")
+        raise typer.Exit(1)
+
+    result = _api("PUT", f"/api/capsules/{cap['id']}", session=session, json=payload)
+    console.print(f"[green]Updated capsule: {result.get('title', cap['title'])} ({cap['id'][:8]})[/green]")
+    if content:
+        console.print(f"[dim]Content updated ({len(content)} chars, re-encrypted)[/dim]")
+
+
 @vault_app.command("archive")
 def vault_archive(capsule_id: str = typer.Argument(..., help="Capsule ID")):
     """Archive a capsule (soft-delete)."""
