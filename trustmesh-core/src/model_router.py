@@ -64,10 +64,10 @@ ANTHROPIC_MODELS = {
 # Gemini models via OpenAI-compatible endpoint
 # https://generativelanguage.googleapis.com/v1beta/openai/
 GEMINI_MODELS = {
-    "default": "gemini-3-flash-preview",
-    "reasoning": "gemini-3.1-pro-preview",
-    "fast": "gemini-3-flash-preview",
-    "vision": "gemini-3-flash-preview",
+    "default": "gemini-2.0-flash",
+    "reasoning": "gemini-2.0-flash",
+    "fast": "gemini-2.0-flash",
+    "vision": "gemini-2.0-flash",
 }
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
@@ -209,6 +209,30 @@ def _anthropic_messages_to_openai(messages: list[dict], system: str = "") -> lis
     return openai_msgs
 
 
+def _repair_json(raw: str) -> dict:
+    """Attempt to repair malformed JSON from Gemini tool call arguments."""
+    import re
+    # Try as-is first
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    # Strip trailing garbage after last }
+    idx = raw.rfind("}")
+    if idx >= 0:
+        try:
+            return json.loads(raw[:idx + 1])
+        except json.JSONDecodeError:
+            pass
+    # Try fixing unescaped newlines in strings
+    try:
+        fixed = re.sub(r'(?<=: ")(.*?)(?=")', lambda m: m.group(0).replace("\n", "\\n"), raw)
+        return json.loads(fixed)
+    except Exception:
+        pass
+    return {"_raw_parse_error": raw[:200]}
+
+
 def _openai_response_to_model_response(response) -> ModelResponse:
     """Convert an OpenAI/Gemini chat completion response to our unified ModelResponse."""
     choice = response.choices[0]
@@ -220,7 +244,7 @@ def _openai_response_to_model_response(response) -> ModelResponse:
             tool_calls.append(ToolCall(
                 id=tc.id,
                 name=tc.function.name,
-                input=json.loads(tc.function.arguments),
+                input=_repair_json(tc.function.arguments),
             ))
 
     return ModelResponse(
@@ -355,6 +379,7 @@ class ModelRouter:
         sensitivity: str = "standard",
         tools: list[dict] | None = None,
         max_tokens: int = 1024,
+        tool_choice: str | None = None,
     ) -> ModelResponse:
         """Route a completion to the appropriate provider.
 
@@ -381,22 +406,14 @@ class ModelRouter:
             )
             return await self._anthropic_complete(messages, system, model, tools, max_tokens)
 
-        # Skip Gemini for multi-turn tool loops: thinking models attach thought_signatures
-        # to tool call responses, but our Anthropic-format message history strips them
-        # during conversion. Re-sending without thought_signatures causes a 400 error.
-        # Detect tool_result in history → this is a continuation turn → use Anthropic directly.
-        has_tool_history = any(
-            isinstance(msg.get("content"), list) and
-            any(isinstance(b, dict) and b.get("type") == "tool_result"
-                for b in msg["content"])
-            for msg in messages
-        )
-
-        if self._gemini_client and not has_tool_history:
+        # Route tool-use (agentic) queries to Anthropic for reliable multi-step orchestration.
+        # Gemini handles simpler non-tool queries (cross-queries, read-only responses).
+        has_tools = bool(tools)
+        if self._gemini_client and not has_tools:
             gemini_model = self._gemini_models.get(model, self._gemini_models.get("default", model))
             log.warning(f"[ROUTING] → Gemini ({gemini_model})")
             try:
-                return await self._gemini_complete(messages, system, model, tools, max_tokens)
+                return await self._gemini_complete(messages, system, model, tools, max_tokens, tool_choice=tool_choice)
             except Exception as exc:
                 log.warning(f"[ROUTING] Gemini failed ({exc!r}) — falling back to Anthropic")
 
@@ -442,7 +459,8 @@ class ModelRouter:
 
     # ── Provider implementations ───────────────────────────────
 
-    async def _gemini_complete(self, messages, system, model, tools, max_tokens) -> ModelResponse:
+    async def _gemini_complete(self, messages, system, model, tools, max_tokens,
+                              *, tool_choice: str | None = None) -> ModelResponse:
         """Call Gemini via OpenAI-compatible endpoint.
 
         Reuses all existing Anthropic→OpenAI converters since Gemini's compat
@@ -458,7 +476,7 @@ class ModelRouter:
         }
         if tools:
             kwargs["tools"] = _anthropic_tools_to_openai(tools)
-            kwargs["tool_choice"] = "auto"
+            kwargs["tool_choice"] = tool_choice or "auto"
 
         response = await self._gemini_client.chat.completions.create(**kwargs)
         result = _openai_response_to_model_response(response)

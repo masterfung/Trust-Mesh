@@ -974,16 +974,31 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
 
 
 async def handle_web_search(ctx: ToolContext, query: str, context: str = "") -> str:
-    """Search the web via Tavily API. Returns top results."""
+    """Search the web via TinyFish browse (Google search). Falls back to Tavily if available."""
+    # Primary: use TinyFish to search Google
+    tinyfish_key = os.getenv("TINYFISH_API_KEY", "")
+    if tinyfish_key:
+        search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+        goal = f"Find the top 5 most relevant results for: {query}"
+        if context:
+            goal += f"\nContext: {context}"
+        result = await _call_tinyfish_single(search_url, goal, f"search: {query[:40]}", ctx)
+        if result.get("success"):
+            return json.dumps({
+                "success": True,
+                "query": query,
+                "source": "tinyfish",
+                "results": result.get("data", result.get("result", "")),
+            })
+        # TinyFish failed — try Tavily fallback
+    # Fallback: Tavily
     try:
         from tavily import TavilyClient
         api_key = os.getenv("TAVILY_API_KEY", "")
         if not api_key:
-            return json.dumps({
-                "success": False,
-                "error": "Web search is not configured on this pod (TAVILY_API_KEY missing). Tell the user: web search is not available on this pod.",
-                "results": [],
-            })
+            if tinyfish_key:
+                return json.dumps({"success": False, "error": "Web search temporarily unavailable. Try browse_web with a specific URL instead."})
+            return json.dumps({"success": False, "error": "Web search is not configured (no TINYFISH_API_KEY or TAVILY_API_KEY).", "results": []})
         client = TavilyClient(api_key=api_key)
         response = client.search(query=query, max_results=5)
         results = []
@@ -993,12 +1008,7 @@ async def handle_web_search(ctx: ToolContext, query: str, context: str = "") -> 
                 "url": r.get("url", ""),
                 "snippet": r.get("content", "")[:300],
             })
-        return json.dumps({
-            "success": True,
-            "query": query,
-            "results": results,
-            "result_count": len(results),
-        })
+        return json.dumps({"success": True, "query": query, "results": results, "result_count": len(results)})
     except Exception as e:
         return json.dumps({"success": False, "error": str(e), "results": []})
 
@@ -1158,7 +1168,7 @@ async def _call_tinyfish_single(
                 endpoint,
                 headers=headers,
                 json={"url": url, "goal": goal},
-                timeout=aiohttp.ClientTimeout(total=45),
+                timeout=aiohttp.ClientTimeout(total=20),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
@@ -2821,7 +2831,7 @@ async def handle_generate_emergency_qr(
     from src import transit_bridge
     from src.ucan import create_ucan_token
     from src.rate_limit import check_emergency_issue_rate, record_emergency_issue
-    from src.federation import POD_URL, REGISTRY_URL
+    from src.federation import POD_URL, REGISTRY_URL, REGISTRY_DID
     import os as _os
     import uuid as _uuid
 
@@ -2872,7 +2882,23 @@ async def handle_generate_emergency_qr(
                         params={"entity_type": "organization", "q": requester_org},
                     )
                     if resp.status_code == 200:
-                        for entry in resp.json().get("agents", []):
+                        # Verify registry response signature when REGISTRY_DID is configured
+                        resp_did = REGISTRY_DID or resp.headers.get("x-trustmesh-registry-did", "")
+                        sig_ok = True
+                        if resp_did:
+                            from src.federation_auth import verify_registry_response
+                            vr = verify_registry_response(
+                                registry_did=resp_did,
+                                body=resp.content,
+                                headers=dict(resp.headers),
+                            )
+                            if vr.status == "invalid":
+                                import logging as _logging
+                                _logging.getLogger(__name__).warning(
+                                    f"Registry response signature invalid: {vr.reason} — ignoring"
+                                )
+                                sig_ok = False
+                        for entry in (resp.json().get("agents", []) if sig_ok else []):
                             name_lower = entry.get("name", "").lower()
                             bio_lower = entry.get("bio", "").lower()
                             # Must match the org name AND look like a medical org
@@ -4150,19 +4176,29 @@ async def agent_respond_with_tools(
         personality_instruction=_personality_note(personality),
     ) + org_ctx
 
-    sensitivity = detect_sensitivity(capsules, question, hint=sensitivity_hint)
+    # Self-queries: user is accessing their own data — only use TEE if explicitly
+    # requested via sensitivity_hint (e.g., channel boundary pre-flight).
+    # Auto-detection from capsule categories would route every query with health
+    # data to TEE, even for unrelated topics like travel planning.
+    if sensitivity_hint == "standard":
+        sensitivity = "standard"
+    else:
+        sensitivity = detect_sensitivity(capsules, question, hint=sensitivity_hint)
     router = get_router()
     messages: list[dict] = [{"role": "user", "content": question}]
 
-    # Tool-use loop (max 5 round-trips to prevent runaway)
-    for _ in range(5):
+    # Tool-use loop (max 8 round-trips: allows multi-step plans to complete)
+    for iteration in range(8):
+        # Force tool use on first turn so the model doesn't just answer from memory
+        tc = "required" if iteration == 0 else "auto"
         response = await router.complete(
             messages=messages,
             system=system_prompt,
             model="reasoning",
             sensitivity=sensitivity,
             tools=AGENT_TOOLS,
-            max_tokens=2048,
+            max_tokens=4096,
+            tool_choice=tc,
         )
 
         # If the response is a final text (no tool use), we're done
@@ -4187,6 +4223,7 @@ async def agent_respond_with_tools(
             # Execute each tool call, scan results with Citadel, collect
             tool_results = []
             for tc in response.tool_calls:
+                log.warning(f"[TOOL CALL] iteration={iteration} tool={tc.name} input_keys={list(tc.input.keys()) if isinstance(tc.input, dict) else '?'}")
                 result_str = await execute_tool(tc.name, tc.input, tool_context)
                 # Citadel scan on tool outputs (external sources)
                 # browse_web and research_parallel already scan internally — skip double scan
@@ -4206,8 +4243,24 @@ async def agent_respond_with_tools(
                     "content": result_str,
                 })
 
-            # Send tool results back to the model
-            messages.append({"role": "user", "content": tool_results})
+            # Send tool results back to the model, with a nudge to keep going
+            nudge = ""
+            if iteration < 5:
+                nudge = (
+                    "Continue — if you still need to query peers or browse websites, "
+                    "do that now."
+                )
+            elif iteration >= 5:
+                nudge = (
+                    "IMPORTANT: You now have enough data. Stop calling tools. "
+                    "Write your FULL detailed answer to the user right now. "
+                    "Include all the information you gathered. Do NOT say 'Done' or "
+                    "create tasks — write the actual itinerary/answer inline."
+                )
+            tool_results_with_nudge = list(tool_results)
+            if nudge:
+                tool_results_with_nudge.append({"type": "text", "text": nudge})
+            messages.append({"role": "user", "content": tool_results_with_nudge})
         else:
             # Audit self-query on final answer
             try:
