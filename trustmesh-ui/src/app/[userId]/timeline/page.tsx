@@ -2,8 +2,9 @@
 
 import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
-import type { TimelineEntry, TimelineEngineState } from "@/lib/api";
+import type { TimelineEntry, TimelineEngineState, AgentTask } from "@/lib/api";
 import { CATEGORY_ICONS } from "@/lib/constants";
 
 /* ─── Cron builder helpers ─── */
@@ -544,9 +545,69 @@ function CreateForm({ onClose }: { onClose: () => void }) {
   );
 }
 
+/* ─── Agent Task Card ─── */
+
+const TASK_STATUS_STYLE: Record<string, { dot: string; label: string }> = {
+  pending:    { dot: "bg-amber-500", label: "Pending" },
+  running:    { dot: "bg-blue-500 animate-pulse", label: "Running" },
+  completed:  { dot: "bg-emerald-500", label: "Done" },
+  failed:     { dot: "bg-red-500", label: "Failed" },
+};
+
+function AgentTaskCard({ task }: { task: AgentTask }) {
+  const st = TASK_STATUS_STYLE[task.status] || TASK_STATUS_STYLE.pending;
+  const icon = CATEGORY_ICONS[task.task_type] || "🤖";
+  const timeAgo = getTimeAgo(task.created_at);
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-4 hover:opacity-90 transition-all">
+      <div className="flex items-start gap-3 min-w-0">
+        <span className="text-lg mt-0.5 shrink-0">{icon}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-sm font-semibold">{task.title}</h3>
+            <div className="flex items-center gap-1">
+              <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
+              <span className="text-[10px] text-muted-foreground">{st.label}</span>
+            </div>
+          </div>
+          {task.description && (
+            <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{task.description}</p>
+          )}
+          <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+            <span className="text-[10px] text-muted-foreground/60">{timeAgo}</span>
+            {task.source_message && (
+              <span className="text-[10px] text-muted-foreground/50 truncate max-w-[200px]">
+                from: &quot;{task.source_message}&quot;
+              </span>
+            )}
+          </div>
+          {task.result && task.status === "completed" && (
+            <p className="text-xs text-emerald-400/80 mt-1.5 line-clamp-2">{task.result}</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function getTimeAgo(dateStr: string): string {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diffMs = now - then;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
 /* ─── Main Page ─── */
 
 export default function TimelinePage() {
+  const { userId } = useParams<{ userId: string }>();
   const queryClient = useQueryClient();
   const [view, setView] = useState<"active" | "scheduled" | "all">("active");
   const [showCreate, setShowCreate] = useState(false);
@@ -562,6 +623,14 @@ export default function TimelinePage() {
     queryKey: ["timeline-entries"],
     queryFn: () => api.listTimelineEntries(),
     refetchInterval: 5000,
+    retry: false,
+  });
+
+  // Agent tasks created during conversations (via create_task tool)
+  const { data: agentTasks } = useQuery({
+    queryKey: ["agent-tasks", userId],
+    queryFn: () => api.listTasks(userId),
+    enabled: !!userId,
     retry: false,
   });
 
@@ -709,6 +778,30 @@ export default function TimelinePage() {
           {shown.map((entry) => (
             <EntryCard key={entry.id} entry={entry} onComplete={(id) => completeMutation.mutate(id)} />
           ))}
+        </div>
+      )}
+
+      {/* Agent Tasks — tasks created by the agent during conversations */}
+      {agentTasks && agentTasks.length > 0 && (
+        <div className="mt-8">
+          <h2 className="text-sm font-semibold text-muted-foreground mb-3 flex items-center gap-2">
+            Agent Tasks
+            <span className="px-1.5 py-0.5 rounded bg-card-hover text-[10px] font-medium">{agentTasks.length}</span>
+          </h2>
+          <div className="space-y-2">
+            {agentTasks.map((task) => (
+              <AgentTaskCard key={task.id} task={task} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Empty state when both timeline and agent tasks are empty */}
+      {unavailable && (!agentTasks || agentTasks.length === 0) && (
+        <div className="bg-card border border-card-border rounded-2xl p-8 text-center mt-6">
+          <p className="text-muted-foreground text-sm">
+            No scheduled tasks yet. Tasks created by your agent during conversations will appear here.
+          </p>
         </div>
       )}
     </div>
