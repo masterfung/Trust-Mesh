@@ -40,44 +40,44 @@ CITADEL_PORT=3001
 # Federation shared secret (generated once per session, shared by all pods + orchestrator)
 POOL_SYNC_SECRET_FILE="$ROOT/.multipod-secret"
 
-# Pod definitions: key port
+# Pod definitions: key:port — keys match seed usernames
 PODS=(
-  "sarah:9001"
-  "mike:9002"
-  "emma:9003"
-  "grandma:9004"
-  "dr_chen:9005"
-  "tom:9006"
-  "lisa:9007"
-  "priya:9008"
-  "james:9009"
-  "maria:9010"
-  "techcorp:9011"
-  "hospital:9012"
-  "music:9013"
-  "city:9014"
-  "insurance:9015"
-  "dance:9016"
+  "molly:9001"
+  "peter:9002"
+  "jane:9003"
+  "grandmarose:9004"
+  "dr_lee:9005"
+  "kyle:9006"
+  "amy:9007"
+  "dorothy:9008"
+  "nurse_davis:9009"
+  "emt_johnson:9010"
+  "sparkleclean:9011"
+  "riverside_hospital:9012"
+  "acetutor:9013"
+  "riverside_gov:9014"
+  "handypro:9015"
+  "riverside_ambulance:9016"
 )
 
 # Display names for status output
 declare -A POD_NAMES=(
-  [sarah]="Sarah Johnson"
-  [mike]="Mike Johnson"
-  [emma]="Emma Johnson"
-  [grandma]="Grandma Rose"
-  [dr_chen]="Dr. Chen"
-  [tom]="Tom (Plumber)"
-  [lisa]="Lisa Rodriguez"
-  [priya]="Priya Patel"
-  [james]="James Wilson"
-  [maria]="Maria Santos"
-  [techcorp]="TechCorp"
-  [hospital]="Riverside Hospital"
-  [music]="Music Collective"
-  [city]="City of Riverside"
-  [insurance]="Insurance Co"
-  [dance]="Dance Studio"
+  [molly]="Molly Johnson"
+  [peter]="Peter Johnson"
+  [jane]="Jane Johnson"
+  [grandmarose]="Grandma Rose"
+  [dr_lee]="Dr. Sarah Lee"
+  [kyle]="Kyle Rivera"
+  [amy]="Amy Torres"
+  [dorothy]="Dorothy Park"
+  [nurse_davis]="Nurse Rachel Davis"
+  [emt_johnson]="EMT Mike Johnson"
+  [sparkleclean]="SparkleClean Residential"
+  [riverside_hospital]="Riverside Hospital"
+  [acetutor]="AceTutor SAT Prep"
+  [riverside_gov]="City of Riverside"
+  [handypro]="HandyPro Home Services"
+  [riverside_ambulance]="Riverside Ambulance"
 )
 
 # ── Helpers ──
@@ -288,7 +288,7 @@ cmd_start() {
   TRUSTMESH_POOL_SYNC_SECRET="$TRUSTMESH_POOL_SYNC_SECRET" \
   TRUSTMESH_REGISTRY_URL="http://localhost:${REGISTRY_PORT}" \
   CITADEL_URL="${CITADEL_URL}" \
-  nohup uv run uvicorn src.main:app --reload --host '::' --port 9000 > "$LOG_DIR/user.log" 2>&1 &
+  nohup uv run uvicorn src.main:app --host '::' --port 9000 > "$LOG_DIR/user.log" 2>&1 &
   echo $! > "$PID_DIR/user.pid"
   echo "  Started :9000  Your Pod (sign up / login here)"
 

@@ -33,26 +33,26 @@ from src.seed import CAPSULES, DEMO_PASSWORD, SERVICE_PROVIDERS, USERS
 
 # Map plan names to existing seed usernames
 POD_ENTITIES = {
-    # People (ports 9001-9010)
-    "sarah":    {"port": 9001, "username": "molly",        "type": "person"},   # "Molly" = Sarah in plan
-    "mike":     {"port": 9002, "username": "peter",        "type": "person"},   # "Peter" = Mike in plan
-    "emma":     {"port": 9003, "username": "jane",         "type": "person"},   # "Jane" = Emma in plan
-    "grandma":  {"port": 9004, "username": "grandmarose",  "type": "person"},
-    "dr_chen":  {"port": 9005, "username": "dr_lee",       "type": "person"},   # Dr. Lee = Dr. Chen in plan
-    "tom":      {"port": 9006, "username": "kyle",         "type": "person"},   # Kyle = Tom the plumber in plan
-    "lisa":     {"port": 9007, "username": "amy",          "type": "person"},   # Amy = Lisa Rodriguez in plan
-    "priya":    {"port": 9008, "username": "dorothy",      "type": "person"},   # Dorothy = Priya Patel in plan
-    "james":    {"port": 9009, "username": "nurse_davis",  "type": "person"},   # Nurse Davis = James Wilson
-    "maria":    {"port": 9010, "username": "emt_johnson",  "type": "person"},   # EMT Johnson = Maria Santos
+    # People (ports 9001-9010) — keys match seed usernames
+    "molly":         {"port": 9001, "username": "molly",        "type": "person"},
+    "peter":         {"port": 9002, "username": "peter",        "type": "person"},
+    "jane":          {"port": 9003, "username": "jane",         "type": "person"},
+    "grandmarose":   {"port": 9004, "username": "grandmarose",  "type": "person"},
+    "dr_lee":        {"port": 9005, "username": "dr_lee",       "type": "person"},
+    "kyle":          {"port": 9006, "username": "kyle",         "type": "person"},
+    "amy":           {"port": 9007, "username": "amy",          "type": "person"},
+    "dorothy":       {"port": 9008, "username": "dorothy",      "type": "person"},
+    "nurse_davis":   {"port": 9009, "username": "nurse_davis",  "type": "person"},
+    "emt_johnson":   {"port": 9010, "username": "emt_johnson",  "type": "person"},
     # Organizations (ports 9011-9016)
-    "techcorp":  {"port": 9011, "username": "sparkleclean",        "type": "organization"},
-    "hospital":  {"port": 9012, "username": "riverside_hospital",  "type": "organization"},
-    "music":     {"port": 9013, "username": "acetutor",            "type": "organization"},
-    "city":      {"port": 9014, "username": "riverside_gov",       "type": "government"},
-    "insurance": {"port": 9015, "username": "handypro",            "type": "organization"},
-    "dance":     {"port": 9016, "username": "riverside_ambulance", "type": "organization"},
+    "sparkleclean":        {"port": 9011, "username": "sparkleclean",        "type": "organization"},
+    "riverside_hospital":  {"port": 9012, "username": "riverside_hospital",  "type": "organization"},
+    "acetutor":            {"port": 9013, "username": "acetutor",            "type": "organization"},
+    "riverside_gov":       {"port": 9014, "username": "riverside_gov",       "type": "government"},
+    "handypro":            {"port": 9015, "username": "handypro",            "type": "organization"},
+    "riverside_ambulance": {"port": 9016, "username": "riverside_ambulance", "type": "organization"},
     # User pod (port 9000)
-    "user":      {"port": 9000, "username": "johnny",              "type": "person"},
+    "user":                {"port": 9000, "username": "johnny",              "type": "person"},
 }
 
 # Build lookup maps
@@ -119,6 +119,7 @@ async def seed_pod(entity_key: str, db_path: str):
             bio=user_data["bio"],
             user_type=user_type,
             is_demo=True,
+            is_discoverable=True,
             profile_data=json.dumps(user_data["profile_data"]) if user_data.get("profile_data") else None,
             vault_key_salt=salt,
             encrypted_vault_key=encrypted_vault_key,
@@ -211,5 +212,40 @@ async def seed_all():
     print(f"    Manifest: {manifest_path}\n")
 
 
+async def seed_pod_single(key: str) -> None:
+    """Seed a single pod into TRUSTMESH_DB.
+
+    Used by scripts/start.sh on Cloud Run cold-start to populate the pod's
+    SQLite DB without needing the full multi-pod DATA_DIR layout.
+    """
+    import os as _os
+    db_path = _os.getenv("TRUSTMESH_DB", "./trustmesh.db")
+
+    # Ensure tables exist (idempotent)
+    from src.database import init_db
+    await init_db()
+
+    result = await seed_pod(key, db_path)
+    print(
+        f"[seed_multi] Pod '{key}': {result['display_name']}"
+        f" — {result['capsule_count']} capsules seeded into {db_path}"
+    )
+
+
 if __name__ == "__main__":
-    asyncio.run(seed_all())
+    import argparse
+
+    parser = argparse.ArgumentParser(description="TrustMesh multi-pod seeder")
+    parser.add_argument(
+        "--pod-key",
+        choices=list(POD_ENTITIES.keys()),
+        default=None,
+        help="Seed only this pod into TRUSTMESH_DB (Cloud Run mode). "
+             "Omit to generate all pod DBs into data/pods/.",
+    )
+    args = parser.parse_args()
+
+    if args.pod_key:
+        asyncio.run(seed_pod_single(args.pod_key))
+    else:
+        asyncio.run(seed_all())
