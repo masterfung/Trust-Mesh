@@ -955,10 +955,10 @@ async def sync_connections(req: SyncConnectionsRequest, request: Request):
 
         created = 0
         for item in req.connections:
-            # Find the ghost user by username
+            # Find the ghost user by username — ghosts are stored as "remote:peter@localhost"
             ghost_result = await db.execute(
                 select(User).where(
-                    User.username == item.peer_username,
+                    User.username.contains(item.peer_username),
                     User.is_remote == True,  # noqa: E712
                 )
             )
@@ -967,7 +967,7 @@ async def sync_connections(req: SyncConnectionsRequest, request: Request):
                 logger.debug("sync_connections: ghost user %s not found, skipping", item.peer_username)
                 continue
 
-            # Check for existing connection in either direction
+            # Check for existing connection — update metadata if found, create if not
             existing = await db.execute(
                 select(Connection).where(
                     or_(
@@ -976,7 +976,14 @@ async def sync_connections(req: SyncConnectionsRequest, request: Request):
                     )
                 )
             )
-            if existing.scalar_one_or_none():
+            conn_record = existing.scalar_one_or_none()
+            if conn_record:
+                # Update with proper metadata (pool-sync creates with defaults)
+                conn_record.context = item.context
+                conn_record.relationship_type = item.relationship_type
+                conn_record.from_label = item.local_label or conn_record.from_label
+                conn_record.to_label = item.peer_label or conn_record.to_label
+                created += 1
                 continue
 
             db.add(Connection(
