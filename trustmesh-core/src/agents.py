@@ -4283,7 +4283,24 @@ async def agent_respond_with_tools(
                 response.provider,
             )
 
-    # Max iterations reached
+    # Max iterations reached — make one final call WITHOUT tools to synthesize a response
+    messages.append({"role": "user", "content": [{"type": "text", "text":
+        "You've gathered all the data. Now write your COMPLETE detailed answer to the user. "
+        "Include everything you learned from the tools. Do NOT call any more tools — just write the answer."
+    }]})
+    try:
+        final = await router.complete(
+            messages=messages,
+            system=system_prompt,
+            model="reasoning",
+            sensitivity=sensitivity,
+            tools=None,  # No tools — force text response
+            max_tokens=4096,
+        )
+        if final.text and len(final.text) > 50:
+            return final.text, tool_context.actions, final.provider
+    except Exception:
+        pass
     return "I've completed the requested actions.", tool_context.actions, "anthropic"
 
 
@@ -4440,6 +4457,26 @@ async def agent_respond_with_tools_streaming(
             yield ("actions", tool_context.actions)
             return
 
+    # Max iterations — one final call WITHOUT tools to synthesize
+    messages.append({"role": "user", "content": [{"type": "text", "text":
+        "You've gathered all the data. Now write your COMPLETE detailed answer to the user. "
+        "Include everything you learned from the tools. Do NOT call any more tools — just write the answer."
+    }]})
+    try:
+        final = await router.complete(
+            messages=messages,
+            system=system_prompt,
+            model="reasoning",
+            sensitivity=sensitivity,
+            tools=None,
+            max_tokens=4096,
+        )
+        if final.text and len(final.text) > 50:
+            yield ("text", final.text)
+            yield ("actions", tool_context.actions)
+            return
+    except Exception:
+        pass
     yield ("text", "I've completed the requested actions.")
     yield ("actions", tool_context.actions)
 
