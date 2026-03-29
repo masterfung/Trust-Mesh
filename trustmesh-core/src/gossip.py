@@ -444,8 +444,8 @@ async def query_agent(
                     trust_level = "public"
         network_names = [n.name for n in shared_networks]
 
-    # 1b. Rate limit check (skip for self-query)
-    if not is_self_query:
+    # 1b. Rate limit check (skip for self-query and agent sub-queries)
+    if not is_self_query and query_depth == 0:
         rate_ok, rate_reason = check_query_rate(from_user_id, to_user_id, trust_level)
         if not rate_ok:
             return _error_result(
