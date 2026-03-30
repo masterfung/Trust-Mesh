@@ -78,6 +78,94 @@ def _push_timeline_event(event_type: str):
         pass  # Timeline is optional — never block capsule operations
 
 
+async def _propagation_fan_out(
+    capsule_id: str,
+    capsule_title: str,
+    capsule_category: str,
+    owner_id: str,
+    owner_display_name: str,
+    propagation: str,
+) -> None:
+    """Fan out notifications after capsule create/update. Best-effort, never raises."""
+    import logging as _log
+    logger = _log.getLogger(__name__)
+
+    if propagation == "silent":
+        return
+
+    try:
+        from src.database import async_session
+        from sqlalchemy import select, distinct, or_, and_
+        from src.models import CapsuleNetworkAccess, NetworkMembership, User, Notification
+
+        async with async_session() as db:
+            # Find all users in networks this capsule is shared to, excluding owner
+            stmt = (
+                select(
+                    distinct(User.id),
+                    User.is_remote,
+                    User.remote_pod_url,
+                )
+                .select_from(CapsuleNetworkAccess)
+                .join(NetworkMembership, NetworkMembership.network_id == CapsuleNetworkAccess.network_id)
+                .join(User, User.id == NetworkMembership.user_id)
+                .where(
+                    CapsuleNetworkAccess.capsule_id == capsule_id,
+                    User.id != owner_id,
+                )
+            )
+            result = await db.execute(stmt)
+            members = result.all()
+
+            if not members:
+                return
+
+            # Local notifications
+            local_count = 0
+            for user_id, is_remote, remote_pod_url in members:
+                if is_remote:
+                    continue
+                db.add(Notification(
+                    user_id=user_id,
+                    notification_type="capsule_updated",
+                    title=f"{owner_display_name} updated: {capsule_title[:80]}",
+                    body=f"Capsule '{capsule_title}' ({capsule_category}) was updated.",
+                    related_id=capsule_id,
+                ))
+                local_count += 1
+
+            if local_count:
+                await db.commit()
+                logger.info("propagation: %d local notifications for capsule %s", local_count, capsule_id[:8])
+
+            # Cross-pod push (broadcast only)
+            if propagation == "broadcast":
+                remote_pods = set()
+                for _, is_remote, remote_pod_url in members:
+                    if is_remote and remote_pod_url:
+                        remote_pods.add(remote_pod_url.rstrip("/"))
+
+                if remote_pods:
+                    from src.federation import push_capsule_notification
+                    import asyncio
+                    tasks = [
+                        push_capsule_notification(
+                            peer_url=pod_url,
+                            capsule_id=capsule_id,
+                            capsule_title=capsule_title,
+                            capsule_category=capsule_category,
+                            owner_display_name=owner_display_name,
+                        )
+                        for pod_url in remote_pods
+                    ]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    ok = sum(1 for r in results if r is True)
+                    logger.info("propagation: cross-pod push to %d pods (%d ok)", len(remote_pods), ok)
+
+    except Exception as e:
+        logger.warning("propagation fan-out failed for capsule %s: %s", capsule_id[:8], e)
+
+
 def _check_vault_key(user_id: str) -> None:
     """Verify vault key is loaded for user. Raises 500 if not."""
     if not transit_bridge.has_key(user_id):
@@ -133,6 +221,7 @@ def _capsule_to_response(
         category=capsule.category,
         context=capsule.context,
         freshness=capsule.freshness,
+        propagation=getattr(capsule, "propagation", "silent"),
         expires_at=capsule.expires_at,
         last_verified_at=capsule.last_verified_at,
         auto_archive_days=capsule.auto_archive_days,
@@ -173,6 +262,13 @@ async def create_capsule(
     if user:
         authority_weight = {"person": 1.0, "organization": 2.0, "government": 3.0}.get(user.user_type, 1.0)
 
+    from src.propagation_bridge import infer_propagation
+    effective_propagation = infer_propagation(
+        data.propagation if data.propagation != "silent" else None,
+        data.category,
+        data.effective_visibility(),
+    )
+
     capsule = KnowledgeCapsule(
         owner_id=user_id,
         capsule_type=data.capsule_type,
@@ -186,6 +282,7 @@ async def create_capsule(
         embedding_collection=data.category or "general",
         context=data.context,
         freshness=data.freshness,
+        propagation=effective_propagation,
         expires_at=data.expires_at,
         auto_archive_days=data.auto_archive_days,
         supersedes_id=supersedes_id,
@@ -226,6 +323,18 @@ async def create_capsule(
     if capsule.visibility in ("open", "internal"):
         import asyncio as _asyncio
         _asyncio.ensure_future(_notify_pending_requesters(db, user_id))
+
+    # Propagation fan-out (best-effort, background)
+    if effective_propagation != "silent" and capsule.visibility != "private":
+        import asyncio as _asyncio2
+        _asyncio2.ensure_future(_propagation_fan_out(
+            capsule_id=capsule.id,
+            capsule_title=data.title,
+            capsule_category=data.category,
+            owner_id=user_id,
+            owner_display_name=user.display_name if user else "",
+            propagation=effective_propagation,
+        ))
 
     # Resolve network names
     network_names = []
@@ -365,6 +474,9 @@ async def update_capsule(
         capsule.expires_at = data.expires_at
     if data.auto_archive_days is not None:
         capsule.auto_archive_days = data.auto_archive_days
+    if data.propagation is not None:
+        from src.propagation_bridge import infer_propagation as _infer_prop
+        capsule.propagation = _infer_prop(data.propagation, capsule.category or "", capsule.visibility)
 
     if data.network_ids is not None:
         network_ids = await _validate_network_ids(db, capsule.owner_id, data.network_ids)
@@ -402,6 +514,20 @@ async def update_capsule(
 
     # Push timeline event
     _push_timeline_event(f"capsule.updated.{capsule.category or 'general'}")
+
+    # Propagation fan-out on update (best-effort, background)
+    eff_prop = getattr(capsule, "propagation", "silent")
+    if eff_prop != "silent" and capsule.visibility != "private":
+        _update_owner = await db.get(User, capsule.owner_id)
+        import asyncio as _asyncio3
+        _asyncio3.ensure_future(_propagation_fan_out(
+            capsule_id=capsule.id,
+            capsule_title=capsule.title,
+            capsule_category=capsule.category or "general",
+            owner_id=capsule.owner_id,
+            owner_display_name=_update_owner.display_name if _update_owner else "",
+            propagation=eff_prop,
+        ))
 
     na_result = await db.execute(
         select(CapsuleNetworkAccess.network_id).where(CapsuleNetworkAccess.capsule_id == capsule_id)

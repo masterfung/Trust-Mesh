@@ -533,6 +533,46 @@ async def remote_emergency_access(peer_url: str, token: str, patient_username: s
     return None
 
 
+# ── Cross-pod Capsule Notification ─────────────────────────
+# Uses HTTP POST (not WebSocket/gRPC). Rationale: stateless matches pod
+# sovereignty, firewall-friendly for Cloud Run/Heroku, simple to debug.
+# Evaluate NATS pub-sub at >200 pods per network (see docs/design-propagation.md).
+
+
+async def push_capsule_notification(
+    peer_url: str,
+    capsule_id: str,
+    capsule_title: str,
+    capsule_category: str,
+    owner_display_name: str,
+    from_pod_url: str | None = None,
+) -> bool:
+    """Push a capsule update notification to a remote pod. Returns True on success."""
+    try:
+        _validate_peer_url(peer_url)
+    except ValueError as exc:
+        logger.warning("push_capsule_notification: SSRF rejected %r — %s", peer_url, exc)
+        return False
+    try:
+        payload = {
+            "from_pod": from_pod_url or POD_URL,
+            "notification_type": "capsule_updated",
+            "capsule_id": capsule_id,
+            "capsule_title": capsule_title,
+            "capsule_category": capsule_category,
+            "owner_display_name": owner_display_name,
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(f"{peer_url.rstrip('/')}/api/pod/notify", json=payload)
+            if r.status_code == 200:
+                return True
+            logger.warning("push_capsule_notification: %s returned %d", peer_url, r.status_code)
+            return False
+    except (httpx.RequestError, httpx.HTTPStatusError) as e:
+        logger.warning("push_capsule_notification: failed for %s — %s", peer_url, e)
+        return False
+
+
 # ── Public Registry Client ──────────────────────────────────
 
 
