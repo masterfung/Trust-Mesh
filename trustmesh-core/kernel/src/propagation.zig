@@ -561,6 +561,211 @@ pub fn podos_debounce_pending_export() callconv(.c) c_int {
 }
 
 // ═══════════════════════════════════════════
+//  Staleness Detection (Phase 3)
+// ═══════════════════════════════════════════
+
+/// A potentially stale capsule reference found by FTS5 search.
+pub const StaleRef = struct {
+    capsule_id: [36]u8 = undefined,
+    valid: bool = false,
+};
+
+/// Search a user's capsules for references to another user + topic.
+/// Uses FTS5 MATCH query: "owner_name keywords"
+/// Returns count of stale references written to out_refs.
+pub fn searchStaleReferences(
+    database: *podos.db.Database,
+    user_id: []const u8,
+    owner_name: []const u8,
+    keywords: []const u8,
+    out_refs: []StaleRef,
+) !usize {
+    // Build FTS5 query: "owner_name keywords"
+    var query_buf: [512]u8 = undefined;
+    var query_len: usize = 0;
+
+    // Copy owner name
+    const name_len = @min(owner_name.len, 200);
+    @memcpy(query_buf[0..name_len], owner_name[0..name_len]);
+    query_len = name_len;
+
+    // Add space + keywords
+    if (keywords.len > 0 and query_len < query_buf.len - 1) {
+        query_buf[query_len] = ' ';
+        query_len += 1;
+        const kw_len = @min(keywords.len, query_buf.len - query_len);
+        @memcpy(query_buf[query_len .. query_len + kw_len], keywords[0..kw_len]);
+        query_len += kw_len;
+    }
+
+    // Search capsules owned by user_id using FTS5
+    // First get user's capsule IDs
+    var id_list_buf: [16384]u8 = undefined; // JSON array of IDs
+    var id_offset: usize = 0;
+    id_list_buf[0] = '[';
+    id_offset = 1;
+
+    {
+        var stmt = database.prepare(
+            "SELECT id FROM knowledge_capsules WHERE owner_id = ? AND deleted_at IS NULL",
+        ) catch return error.DbError;
+        defer stmt.finalize();
+        stmt.bindText(1, user_id.ptr, @intCast(user_id.len)) catch return error.DbError;
+
+        var first = true;
+        while (true) {
+            const has_row = stmt.step() catch return error.DbError;
+            if (!has_row) break;
+            const cid_ptr = stmt.getText(0) orelse continue;
+            const cid = std.mem.span(cid_ptr);
+            if (cid.len < 36) continue;
+
+            if (!first and id_offset < id_list_buf.len - 40) {
+                id_list_buf[id_offset] = ',';
+                id_offset += 1;
+            }
+            if (id_offset + cid.len + 2 >= id_list_buf.len) break;
+            id_list_buf[id_offset] = '"';
+            id_offset += 1;
+            @memcpy(id_list_buf[id_offset .. id_offset + 36], cid[0..36]);
+            id_offset += 36;
+            id_list_buf[id_offset] = '"';
+            id_offset += 1;
+            first = false;
+        }
+    }
+    id_list_buf[id_offset] = ']';
+    id_offset += 1;
+
+    if (id_offset <= 2) return 0; // No capsules to search
+
+    // Call FTS5 search
+    var result_buf: [8192]u8 = undefined;
+    const result_len = podos.fts.searchCapsules(
+        database,
+        query_buf[0..query_len].ptr, @intCast(query_len),
+        id_list_buf[0..id_offset].ptr, @intCast(id_offset),
+        @intCast(@min(out_refs.len, 10)),
+        &result_buf, result_buf.len,
+    ) catch return 0;
+
+    if (result_len == 0) return 0;
+
+    // Parse JSON result: [{"id":"...","rank":-1.23}, ...]
+    // Simple extraction: find "id":"<36 chars>"
+    var count: usize = 0;
+    var pos: usize = 0;
+    const result = result_buf[0..result_len];
+    while (pos + 5 < result_len and count < out_refs.len) {
+        // Find "id":"
+        const needle = "\"id\":\"";
+        if (std.mem.indexOf(u8, result[pos..], needle)) |idx| {
+            const start = pos + idx + needle.len;
+            if (start + 36 <= result_len) {
+                @memcpy(&out_refs[count].capsule_id, result[start .. start + 36]);
+                out_refs[count].valid = true;
+                count += 1;
+                pos = start + 36;
+            } else break;
+        } else break;
+    }
+
+    return count;
+}
+
+/// Mark capsules as stale with reason and source.
+/// SQL: UPDATE knowledge_capsules SET stale_since=?, stale_reason=?, stale_source_capsule_id=? WHERE id=?
+pub fn markCapsulesStale(
+    database: *podos.db.Database,
+    refs: []const StaleRef,
+    count: usize,
+    reason: []const u8,
+    source_capsule_id: []const u8,
+) !u32 {
+    var marked: u32 = 0;
+    const now_s = std.time.timestamp();
+    var ts_buf: [32]u8 = undefined;
+    const ts_len = formatIsoTimestamp(now_s, &ts_buf);
+    const ts = ts_buf[0..ts_len];
+
+    for (refs[0..count]) |ref| {
+        if (!ref.valid) continue;
+
+        var stmt = database.prepare(
+            "UPDATE knowledge_capsules SET stale_since = ?, stale_reason = ?, " ++
+                "stale_source_capsule_id = ? WHERE id = ?",
+        ) catch continue;
+        defer stmt.finalize();
+        stmt.bindText(1, ts.ptr, @intCast(ts.len)) catch continue;
+        stmt.bindText(2, reason.ptr, @intCast(reason.len)) catch continue;
+        stmt.bindText(3, source_capsule_id.ptr, @intCast(source_capsule_id.len)) catch continue;
+        stmt.bindText(4, &ref.capsule_id, 36) catch continue;
+        _ = stmt.step() catch continue;
+        marked += 1;
+    }
+
+    return marked;
+}
+
+/// C ABI: search for stale references. Returns count, or -1 on error.
+/// out_buf: packed [36]u8 capsule IDs.
+pub fn podos_search_stale_export(
+    db_handle: *podos.db.Database,
+    user_id_ptr: [*]const u8,
+    user_id_len: usize,
+    owner_name_ptr: [*]const u8,
+    owner_name_len: usize,
+    keywords_ptr: [*]const u8,
+    keywords_len: usize,
+    out_buf: [*]u8,
+    out_buf_cap: usize,
+) callconv(.c) c_int {
+    const user_id = user_id_ptr[0..user_id_len];
+    const owner_name = owner_name_ptr[0..owner_name_len];
+    const keywords = keywords_ptr[0..keywords_len];
+
+    var refs: [32]StaleRef = undefined;
+    const count = searchStaleReferences(db_handle, user_id, owner_name, keywords, &refs) catch return -1;
+
+    // Pack capsule IDs into out_buf
+    var offset: usize = 0;
+    for (refs[0..count]) |ref| {
+        if (!ref.valid) continue;
+        if (offset + 36 > out_buf_cap) break;
+        @memcpy(out_buf[offset .. offset + 36], &ref.capsule_id);
+        offset += 36;
+    }
+
+    return @intCast(count);
+}
+
+/// C ABI: mark capsules as stale. Returns count marked, or -1 on error.
+pub fn podos_mark_stale_export(
+    db_handle: *podos.db.Database,
+    capsule_ids_ptr: [*]const u8,
+    capsule_count: usize,
+    reason_ptr: [*]const u8,
+    reason_len: usize,
+    source_id_ptr: [*]const u8,
+    source_id_len: usize,
+) callconv(.c) c_int {
+    const reason = reason_ptr[0..reason_len];
+    const source_id = source_id_ptr[0..source_id_len];
+
+    var refs: [32]StaleRef = undefined;
+    const count = @min(capsule_count, 32);
+    for (0..count) |i| {
+        const offset = i * 36;
+        if (offset + 36 > capsule_count * 36) break;
+        @memcpy(&refs[i].capsule_id, capsule_ids_ptr[offset .. offset + 36]);
+        refs[i].valid = true;
+    }
+
+    const marked = markCapsulesStale(db_handle, &refs, count, reason, source_id) catch return -1;
+    return @intCast(marked);
+}
+
+// ═══════════════════════════════════════════
 //  Tests
 // ═══════════════════════════════════════════
 
