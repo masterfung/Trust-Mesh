@@ -632,11 +632,14 @@ def vault_list(
         table.add_column("Archived")
 
     for c in capsules:
+        sharing = vis_display.get(c.get("visibility", ""), c.get("visibility", ""))
+        if c.get("stale_since"):
+            sharing += " [yellow]\u26a0 stale[/yellow]"
         row = [
             c["id"][:8],
             c["title"],
             c.get("capsule_type", ""),
-            vis_display.get(c.get("visibility", ""), c.get("visibility", "")),
+            sharing,
             c.get("category", ""),
         ]
         if has_networks:
@@ -678,7 +681,30 @@ def vault_get(capsule_id: str = typer.Argument(..., help="Capsule ID (or prefix)
         console.print(f"Shared with: {', '.join(net_names)}")
     if c.get("is_archived"):
         console.print("[yellow]ARCHIVED[/yellow]")
+    if c.get("stale_since"):
+        console.print()
+        console.print("[yellow]\u26a0 POTENTIALLY STALE[/yellow]")
+        if c.get("stale_reason"):
+            console.print(f"  Reason: {c['stale_reason']}")
+        console.print(f"  Since: {c['stale_since']}")
     console.print(f"\n{c.get('content', '')}")
+
+
+@vault_app.command("check-stale")
+def vault_check_stale():
+    """Scan vault for capsules with stale data."""
+    session = _require_session()
+    me = _api("GET", "/api/auth/me", session=session)
+    capsules = _api("GET", f"/api/users/{me['id']}/capsules", session=session)
+    stale = [c for c in capsules if c.get("stale_since")]
+    if not stale:
+        console.print("[green]No stale capsules found.[/green]")
+        return
+    console.print(f"[yellow]Found {len(stale)} potentially stale capsule(s):[/yellow]")
+    for c in stale:
+        console.print(f"  [yellow]\u26a0[/yellow] {c['title']} ({c['id'][:8]})")
+        if c.get("stale_reason"):
+            console.print(f"    Reason: {c['stale_reason']}")
 
 
 @vault_app.command("add")
