@@ -14,6 +14,126 @@ Today, these downstream consumers only discover the change when they happen to r
 
 ---
 
+## Phase 1 Implementation Status
+
+Phase 1 is complete. The propagation field flows end-to-end: capsule create/update in both Zig and Python, cross-pod notification via federation, UI form toggle and inbox rendering, CLI flag, agent tool schema, and 27 passing tests (18 Python + 9 Zig).
+
+### Files Modified
+
+#### Zig Kernel (`trustmesh-core/kernel/`)
+
+| File | Change |
+|------|--------|
+| `src/propagation.zig` | **New module.** Comptime keyword lists for inference (`BROADCAST_KEYWORDS`, `NOTIFY_KEYWORDS`, `SILENT_CATEGORIES`), target resolution via SQL JOIN (`capsule_network_access` + `network_memberships` + `users WHERE is_remote`), and batch INSERT of notification rows. Exports `podos_infer_propagation`, `podos_resolve_propagation_targets`, `podos_insert_propagation_notifications`. |
+| `src/handlers/capsules.zig` | Stores the `propagation` field on capsule CREATE and UPDATE. Reads it from JSON body, defaults to `"silent"` when absent. Returns it in all GET responses. After successful update, calls `propagation.resolvePropagationTargets()` if the field is not `"silent"`. |
+| `src/handlers/pod_federation.zig` | New handler for `POST /api/pod/notify`. Validates inbound notification payload (`from_pod`, `capsule_title`, `capsule_category`, `change_summary`, `owner_username`). Creates a `Notification` row for each local user in the affected networks. Returns 200 on success, 400 on malformed payload. |
+| `src/server_main.zig` | Registers the `/api/pod/notify` route and the propagation module initialization. |
+
+The Zig-first approach matters here. Propagation inference uses **comptime keyword lists** — the compiler embeds `BROADCAST_KEYWORDS` (allerg, medication, prescription, emergency contact) and `NOTIFY_KEYWORDS` (travel, trip, itinerary, schedule, deadline, dining, address) directly into the binary. No heap allocation, no hash table construction at runtime. The `podos_infer_propagation` function iterates these with a flat scan over contiguous memory, and the compiler unrolls the loops at `-Doptimize=ReleaseFast` because the iteration count is known at compile time.
+
+Target resolution is a **single SQL query** in Zig, replacing what would be three SQLAlchemy round-trips in Python (capsule -> networks, networks -> memberships, memberships -> users). The prepared statement is cached after the first execution:
+
+```sql
+SELECT DISTINCT u.remote_pod_url, u.id, u.username
+FROM capsule_network_access cna
+JOIN network_memberships nm ON nm.network_id = cna.network_id
+JOIN users u ON u.id = nm.user_id
+WHERE cna.capsule_id = ?
+  AND u.is_remote = 1
+  AND u.remote_pod_url IS NOT NULL
+  AND u.id != ?
+ORDER BY u.remote_pod_url
+```
+
+Notification batch insert writes all notification rows in a single transaction with a prepared INSERT statement, avoiding per-row overhead.
+
+#### Python Backend (`trustmesh-core/src/`)
+
+| File | Change |
+|------|--------|
+| `src/propagation_bridge.py` | **New file.** ctypes bridge to Zig propagation functions. `infer_propagation()` calls `podos_infer_propagation` with fallback to a Python reimplementation (same keyword lists) when the Zig library is not loaded. `resolve_propagation_targets()` and `insert_propagation_notifications()` wrap their Zig counterparts. |
+| `src/routes/capsules.py` | Wired propagation into capsule create and update endpoints. After a successful update, calls `propagation_bridge.resolve_propagation_targets()` to get destination pod URLs, then calls `federation.push_capsule_notification()` for each. Inference runs on create when no explicit `propagation` value is provided. |
+| `src/federation.py` | New function `push_capsule_notification(pod_url, payload)`. Sends `POST /api/pod/notify` to a peer pod with the capsule metadata (title, category, change summary, owner username, source pod URL). Uses the existing `httpx.AsyncClient` with federation timeout and error handling. |
+| `src/routes/pod.py` | Python fallback handler for `POST /api/pod/notify` when running without Zig HTTP mode. Validates the notification payload, resolves local users in affected networks, and creates `Notification` records. This ensures propagation works in both deployment modes (Zig HTTP and standard Python). |
+| `src/models.py` | Added `propagation` column to `KnowledgeCapsule` model: `mapped_column(String(20), default="silent")`. |
+| `src/schemas.py` | Added `propagation` field to capsule Pydantic schemas (create, update, response). |
+
+#### Frontend (`trustmesh-ui/src/`)
+
+| File | Change |
+|------|--------|
+| `src/lib/api.ts` | Added `propagation` field to the `Capsule` TypeScript interface. Values: `"silent" \| "notify" \| "broadcast"`. |
+| `src/app/[userId]/vault/page.tsx` | Capsule create/edit form now includes a propagation toggle. Only shown when `visibility` is `internal` or `open` and the capsule is shared to at least one network. Three radio options: "Don't notify anyone" (silent), "Notify network members" (notify, default for family/work), "Notify with change details" (broadcast). Capsule list cards display a small badge indicating propagation mode — a bell icon for `notify`, a megaphone icon for `broadcast`, nothing for `silent`. |
+| `src/app/[userId]/inbox/page.tsx` | New notification type `capsule_propagated` renders with a distinct style. Shows the source user, capsule title, and change summary. Links to the capsule on the source pod for context. |
+
+The UI experience is straightforward: when editing a shared capsule, the user sees a "When this changes, notify:" toggle below the visibility selector. The default is inferred from category (family/health default to `notify`, personal/financial forced to `silent`). The capsule list view shows at a glance which capsules will notify others on update — no need to open each one to check.
+
+#### CLI
+
+| File | Change |
+|------|--------|
+| `src/cli.py` | `vault add` and `vault update` commands accept `--propagation <silent|notify|broadcast>`. When omitted on `add`, inference runs based on title/category. When omitted on `update`, the existing value is preserved. |
+
+#### Agent
+
+| File | Change |
+|------|--------|
+| `src/agents.py` | The `save_capsule` tool schema now includes an optional `propagation` parameter. When the agent saves a new capsule, it can specify propagation mode. If omitted, inference applies. The agent does not decide propagation on its own — it reads the capsule's existing setting or the user's default. |
+
+### Test Results: 27 Passing
+
+#### Python Tests (18)
+
+`tests/test_propagation.py` covers:
+
+- `test_infer_propagation_allergy` — title "Peter's Allergies" infers `broadcast`
+- `test_infer_propagation_medication` — title with "prescription" infers `broadcast`
+- `test_infer_propagation_emergency_contact` — infers `broadcast`
+- `test_infer_propagation_travel` — title "Travel Preferences" infers `notify`
+- `test_infer_propagation_schedule` — title with "deadline" infers `notify`
+- `test_infer_propagation_journal` — category `personal` forces `silent`
+- `test_infer_propagation_financial` — category `financial` forces `silent`
+- `test_infer_propagation_private_visibility` — visibility `private` forces `silent` regardless of category
+- `test_capsule_create_default_propagation` — create with category=family, no explicit propagation, returns `notify`
+- `test_capsule_create_explicit_propagation` — explicit `silent` overrides category default
+- `test_capsule_response_includes_propagation` — GET capsule response JSON has `propagation` field
+- `test_update_capsule_preserves_propagation` — update content only, propagation unchanged
+- `test_update_capsule_changes_propagation` — update with new propagation value
+- `test_update_notify_creates_notifications` — capsule with propagation=notify in a network, update triggers notification records for network members
+- `test_update_silent_no_notifications` — propagation=silent, zero notifications on update
+- `test_update_broadcast_includes_change_summary` — broadcast notification body contains "Changed: content"
+- `test_pod_notify_endpoint` — `POST /api/pod/notify` creates notification for local user
+- `test_pod_notify_rejects_malformed` — missing fields return 400
+
+#### Zig Tests (9)
+
+`kernel/src/tests/test_propagation.zig` covers:
+
+- `test_infer_broadcast_allergy` — "allergy" keyword triggers broadcast
+- `test_infer_broadcast_medication` — "medication" keyword triggers broadcast
+- `test_infer_notify_travel` — "travel" keyword triggers notify
+- `test_infer_notify_schedule` — "schedule" keyword triggers notify
+- `test_infer_silent_personal` — personal category forces silent
+- `test_infer_silent_financial` — financial category forces silent
+- `test_capsule_create_with_propagation` — POST capsule with propagation=notify, stored and returned correctly
+- `test_capsule_update_preserves_propagation` — update content, propagation persists
+- `test_capsule_propagation_default` — create without propagation field defaults to silent
+
+### End-to-End Verification
+
+Verified on the multi-pod setup (`/opt/homebrew/bin/bash multi-pod.sh demo`):
+
+1. Peter (pod :9002) creates capsule "Peter's Travel & Dining Preferences" with `propagation=notify`, shared to "The Johnsons" network
+2. Peter updates the capsule content to include "pescatarian"
+3. Peter's pod resolves propagation targets: Molly's pod (:9001), Rose's pod (:9004)
+4. `POST http://localhost:9001/api/pod/notify` sent with `{ from_pod: "http://localhost:9002", capsule_title: "Peter's Travel & Dining Preferences", capsule_category: "family", change_summary: "content updated", owner_username: "peter" }`
+5. Molly's pod creates a `capsule_propagated` notification for user `mollyjohnson`
+6. Molly opens her inbox at `http://localhost:3050/mollyjohnson/inbox` and sees: "Peter updated Peter's Travel & Dining Preferences"
+
+The notification arrives within 1-2 seconds of Peter's update. No manual re-query needed.
+
+---
+
 ## How Data Enters the System (and where propagation decisions happen)
 
 Data enters through 5 paths. Each path needs to resolve propagation.
@@ -421,21 +541,30 @@ test_notification_appears_on_update
 
 ## Demo Narrative
 
-**Today's demo (what we record):**
+**Phase 1 demo (live, working today):**
 1. Show data silos problem (diagram)
-2. Molly queries Peter + Rose via federation
-3. Peter updates diet in CLI
-4. Molly re-queries → sees pescatarian
-5. Narrate: "Today this re-query is manual. With propagation, it's automatic."
+2. Molly queries Peter + Rose via federation — the original trust-aware flow
+3. Peter opens the vault UI, edits "Travel & Dining Preferences" capsule
+   - The propagation toggle is visible: "When this changes, notify: Network members"
+   - The capsule card shows a bell badge indicating `notify` mode
+4. Peter changes content to "Pescatarian — I eat fish and seafood now"
+5. Switch to Molly's inbox tab — within seconds, a `capsule_propagated` notification appears: "Peter updated Peter's Travel & Dining Preferences"
+6. Molly clicks the notification, sees the change summary
+7. Alternatively, show the CLI path: `trustmesh vault update <id> --content "Pescatarian" --propagation notify`
+8. Show the federation flow in the backend logs: Peter's pod resolves targets, sends `POST /api/pod/notify` to Molly's pod, Molly's pod creates the notification
 
-**What's next (pitch slide):**
-"When Peter changes his diet, the system:
-- Notifies Molly automatically
-- Detects the itinerary is stale
-- Re-triggers TinyFish for new restaurants
-- Updates the plan — zero manual coordination"
+**Key demo talking points:**
+- "Peter chose to notify. The propagation toggle is a one-time decision — every future update to this capsule automatically notifies the family."
+- "The Zig kernel resolves propagation targets in a single SQL query — no N+1, no ORM overhead. Inference uses compile-time keyword lists: allergies always broadcast, travel always notifies."
+- "The notification contains metadata only — capsule title and change summary. Peter's actual capsule content never leaves his pod until someone queries it."
+- "This works in both deployment modes: Zig HTTP (propagation.zig handles everything in-process) and standard Python (propagation_bridge.py calls Zig via FFI, federation.py sends HTTP)."
 
-This is the Phase 2-5 roadmap. The demo proves the foundation works. Propagation is the unlock.
+**What's next (Phase 2-3 pitch slide):**
+"Phase 1 delivers notification. Phase 2 adds intelligence:
+- Debounce batching: edit 5 capsules in 30 seconds, peers get 1 batched notification
+- Federation signing: ed25519 signatures on /api/pod/notify prevent spoofed notifications
+- Staleness detection: Molly's pod runs FTS5 search, finds her itinerary references Peter's old diet, flags it stale
+- Agent re-trigger: Molly's agent automatically re-queries Peter, runs TinyFish for new restaurants, updates the itinerary — zero manual coordination"
 
 ---
 
@@ -2725,6 +2854,81 @@ Test: Replay the same write request → 409 (nonce already seen)
 | FTS5 query latency p99 | >50ms | Zig-side counter exposed via `/health/full` |
 | Notification queue depth (Phase 6) | >1000 pending | NATS/Redis queue metrics |
 | Re-encryption duration | >1s for any single operation | Zig-side timer on `podos_rekey_capsules()` |
+
+---
+
+## Phase 2 Planning
+
+Phase 1 delivers the notification pipe: capsule update -> propagation inference -> target resolution -> cross-pod notification -> inbox rendering. Phase 2 adds the intelligence and hardening layers on top of that pipe.
+
+### Debounce Batching (propagation.zig ring buffer)
+
+Phase 1 sends one `POST /api/pod/notify` per capsule update per destination pod. When Peter edits 5 capsules in 30 seconds, each destination pod gets 5 HTTP requests. Phase 2 introduces a Zig-side ring buffer that coalesces updates within a configurable debounce window (default: 5 seconds).
+
+**Why Zig, not Python asyncio:** The original design recommended Python asyncio for debounce (Section 2 of Scalability & Performance Deep Dive). After Phase 1 implementation, the recommendation is revised to Zig. The propagation module already owns target resolution and notification insert in Zig. Adding a ring buffer keeps the entire propagation hot path in Zig without FFI round-trips. The debounce timer uses Zig's event loop (kqueue on macOS, io_uring on Linux) for microsecond precision. The ring buffer is stack-allocated:
+
+```
+Entry: [36]u8 capsule_id + u8 propagation_level + i64 timestamp = 45 bytes
+Ring: [256]Entry per destination pod = 11,520 bytes
+Total at 200 pods: ~2.3 MB (fits in L2 cache)
+```
+
+When the timer fires, Zig flushes the buffer and calls back to Python via a registered function pointer for the HTTP send (Python's httpx handles TLS, retry, backoff). The `broadcast` tier bypasses the ring buffer entirely — safety-critical data (allergies, medications) is sent immediately.
+
+**Deliverables:**
+- `propagation.zig`: `RingBuffer` struct, `enqueue()` with broadcast bypass, timer-based `flush()`
+- `propagation_bridge.py`: register Python callback for flush delivery
+- Tests: ring buffer coalescing (5 updates -> 1 batch), broadcast bypass, timer expiry
+
+### Federation Signing (ed25519 on /api/pod/notify)
+
+Phase 1 sends unsigned notifications. Any server that knows a pod's URL can send a fake `POST /api/pod/notify` claiming "Peter updated his diet." Phase 2 adds ed25519 signing, reusing the infrastructure already in `federation_auth.zig`.
+
+**Signing format:** Same as existing federation request signing — signature over `method + path + timestamp + nonce + body`. The receiving pod verifies the signature against the `from_pod`'s DID public key (resolved via the ghost user's `remote_did` field). Replay protection via the existing nonce cache (`DEFAULT_NONCE_TTL_SECONDS = 120`).
+
+**Deliverables:**
+- `federation.py`: `push_capsule_notification()` signs the payload with the pod's ed25519 private key
+- `handlers/pod_federation.zig`: verify ed25519 signature on inbound `/api/pod/notify` before processing
+- `routes/pod.py`: Python fallback also verifies signature (using `crypto.py` ed25519 verify)
+- Tests: valid signature accepted, forged signature rejected, replay rejected
+
+### Opt-out / Per-network Mute
+
+Phase 1 delivers all notifications unconditionally. If Rose does not care about Peter's travel updates, she still sees them. Phase 2 adds per-network mute with an optional per-capsule override.
+
+**Schema:**
+```sql
+CREATE TABLE network_subscription_prefs (
+    id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(18)))),
+    user_id     TEXT NOT NULL REFERENCES users(id),
+    network_id  TEXT NOT NULL REFERENCES networks(id),
+    muted       BOOLEAN DEFAULT FALSE,
+    mute_until  TIMESTAMP,  -- NULL = permanent, non-NULL = temporary snooze
+    UNIQUE(user_id, network_id)
+);
+```
+
+**UI:** Network settings page gets a "Mute notifications from this network" toggle. Inbox notification cards get a "Mute this network" quick action. Muted networks show a muted bell icon in the sidebar.
+
+**Notification filter:** On the receiving pod, before creating a notification row, check `network_subscription_prefs`. If the user has muted all networks that the capsule is shared to, skip the notification. If any non-muted network overlaps, deliver.
+
+**Deliverables:**
+- `models.py`: `NetworkSubscriptionPref` model
+- `routes/networks.py`: `PUT /api/networks/{id}/mute` endpoint
+- `propagation.zig` or `routes/pod.py`: filter check before notification insert
+- `inbox/page.tsx`: mute quick action on notification cards
+- `networks/page.tsx`: mute toggle in network settings
+- Tests: muted network suppresses notification, unmuted delivers, temporary snooze expires
+
+### Staleness Detection (Phase 3 teaser)
+
+Phase 2 delivers the mute/filter layer. Phase 3 closes the loop with staleness detection — the receiving pod does not just show a notification, it actively searches its local capsules for stale references.
+
+**The vision:** When Molly's pod receives "Peter updated his dining preferences," it runs an FTS5 query against Molly's capsules: `MATCH 'peter AND (dining OR travel OR diet)'`. If it finds Molly's "San Sebastian Itinerary" capsule, it flags that capsule as stale and creates a `TimelineEntry` with a `hook_prompt` that instructs Molly's agent to re-query Peter, re-research restaurants via TinyFish, and update the itinerary.
+
+This is the full propagation promise: Peter changes one capsule, and every downstream consumer's agent autonomously updates their affected data.
+
+**Why Phase 3, not Phase 2:** Staleness detection requires careful tuning. FTS5 keyword matching produces false positives (a capsule mentioning "Peter" in an unrelated context). The staleness scoring function needs to consider: keyword overlap, category match, temporal relevance (capsule references future dates), and entity co-reference (does the capsule actually USE Peter's data, or just mention his name?). Getting this wrong means agents re-triggering on every notification, wasting LLM tokens. Phase 2 lays the foundation (mute controls give users an escape hatch if staleness detection is too aggressive).
 
 ---
 
