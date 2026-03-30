@@ -230,6 +230,9 @@ export interface Capsule {
   updated_at: string;
   network_ids: string[];
   network_names?: string[];
+  stale_since?: string;
+  stale_reason?: string;
+  stale_source_capsule_id?: string;
 }
 
 export interface CitadelResult {
@@ -616,6 +619,13 @@ export const api = {
     }),
   deleteCapsule: (capsuleId: string) =>
     apiFetch(`/api/capsules/${capsuleId}`, { method: "DELETE" }),
+  markReviewed: (capsuleId: string) =>
+    apiFetch<Capsule>(`/api/capsules/${capsuleId}`, {
+      method: "PUT",
+      body: JSON.stringify({ stale_since: null, stale_reason: null, stale_source_capsule_id: null }),
+    }),
+  autoUpdateCapsule: (capsuleId: string) =>
+    apiFetch<Capsule>(`/api/capsules/${capsuleId}/auto-update`, { method: "POST" }),
 
   // Queries
   query: (fromUserId: string, toUserId: string, question: string) =>

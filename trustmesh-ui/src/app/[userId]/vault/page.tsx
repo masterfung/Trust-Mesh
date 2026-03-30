@@ -55,6 +55,16 @@ export default function VaultPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["capsules", userId] }),
   });
 
+  const markReviewedMutation = useMutation({
+    mutationFn: (id: string) => api.markReviewed(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["capsules", userId] }),
+  });
+
+  const autoUpdateMutation = useMutation({
+    mutationFn: (id: string) => api.autoUpdateCapsule(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["capsules", userId] }),
+  });
+
   const filtered = capsules?.filter((c) => {
     if (typeFilter !== "all" && c.capsule_type !== typeFilter) return false;
     if (tierFilter !== "all" && c.tier !== tierFilter) return false;
@@ -223,6 +233,9 @@ export default function VaultPage() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0 ml-2">
                     <TrustBadge tier={c.tier} />
+                    {c.stale_since && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 border border-orange-500/20" title={c.stale_reason || "Potentially stale data"}>&#x26a0; stale</span>
+                    )}
                     {c.propagation === "notify" && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-400 border border-yellow-500/20" title="Notifies network on update">notify</span>
                     )}
@@ -255,6 +268,37 @@ export default function VaultPage() {
                     <p className="text-sm mt-3 whitespace-pre-wrap leading-relaxed text-muted-foreground bg-background/50 rounded-xl p-4">
                       {c.content}
                     </p>
+
+                    {/* Stale warning banner */}
+                    {c.stale_since && (
+                      <div className="mt-3 flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-orange-500/10 border border-orange-500/20">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-orange-400">&#x26a0; Potentially stale</p>
+                          {c.stale_reason && (
+                            <p className="text-xs text-orange-400/70 mt-0.5">{c.stale_reason}</p>
+                          )}
+                          <p className="text-[11px] text-muted-foreground mt-0.5">
+                            Since {new Date(c.stale_since).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => markReviewedMutation.mutate(c.id)}
+                            disabled={markReviewedMutation.isPending}
+                            className="px-3 py-1.5 text-xs bg-card text-muted-foreground rounded-lg hover:text-foreground hover:bg-card-hover transition-colors border border-card-border disabled:opacity-40"
+                          >
+                            Mark as reviewed
+                          </button>
+                          <button
+                            onClick={() => autoUpdateMutation.mutate(c.id)}
+                            disabled={autoUpdateMutation.isPending}
+                            className="px-3 py-1.5 text-xs bg-orange-500/20 text-orange-400 rounded-lg hover:bg-orange-500/30 transition-colors border border-orange-500/30 disabled:opacity-40"
+                          >
+                            {autoUpdateMutation.isPending ? "Updating..." : "Auto-update"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Metadata row */}
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-[11px] text-muted-foreground">

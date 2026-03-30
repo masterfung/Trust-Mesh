@@ -12,6 +12,7 @@ import {
   api,
   type MessageItem,
   type Notification,
+  type Capsule,
 } from "@/lib/api";
 import { TrustBadge } from "@/components/TrustBadge";
 import { formatRelativeTime } from "@/lib/utils";
@@ -220,12 +221,14 @@ function QueryRow({
   expanded,
   onExpand,
   onMarkRead,
+  staleCapsuleCount,
 }: {
   notif: Notification;
   userId: string;
   expanded: boolean;
   onExpand: () => void;
   onMarkRead: () => void;
+  staleCapsuleCount?: number;
 }) {
   const typeLabel: Record<string, string> = {
     query_received: "Query received",
@@ -272,7 +275,17 @@ function QueryRow({
             <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">{notif.body}</p>
           </div>
           {notif.notification_type === "capsule_updated" && (
-            <div className="mt-2">
+            <div className="mt-2 space-y-2">
+              {staleCapsuleCount != null && staleCapsuleCount > 0 && (
+                <a
+                  href={`/${userId}/vault`}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-orange-500/10 border border-orange-500/20 text-orange-400 hover:bg-orange-500/15 transition-colors"
+                >
+                  <span>&#x26a0;</span>
+                  <span>{staleCapsuleCount} capsule{staleCapsuleCount !== 1 ? "s" : ""} may be stale from this update</span>
+                  <span className="ml-auto text-orange-400/60">Review in vault &rarr;</span>
+                </a>
+              )}
               <a
                 href={`/${userId}/networks`}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors border border-transparent hover:border-amber-500/20"
@@ -334,6 +347,13 @@ export default function InboxPage() {
     // Always fetch — data requests need to show on inbox tab too
     refetchInterval: 30_000,
   });
+
+  const { data: capsules } = useQuery({
+    queryKey: ["capsules", userId],
+    queryFn: () => api.listCapsules(userId),
+    enabled: tab === "queries",
+  });
+  const staleCapsuleCount = capsules?.filter((c: Capsule) => c.stale_since).length ?? 0;
 
   // Data requests bubble up to the top of the inbox tab
   const dataRequests = allNotifications.filter((n) => n.notification_type === "data_request" && !n.is_read);
@@ -483,6 +503,7 @@ export default function InboxPage() {
                 expanded={expandedId === notif.id}
                 onExpand={() => setExpandedId(expandedId === notif.id ? null : notif.id)}
                 onMarkRead={() => markNotifReadMutation.mutate(notif.id)}
+                staleCapsuleCount={notif.notification_type === "capsule_updated" ? staleCapsuleCount : undefined}
               />
             ))
           )}

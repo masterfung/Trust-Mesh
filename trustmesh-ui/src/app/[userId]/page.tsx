@@ -118,6 +118,8 @@ export default function Dashboard() {
     private: capsules?.filter((c) => c.tier === "private").length ?? 0,
   };
 
+  const staleCapsules = capsules?.filter((c) => c.stale_since) ?? [];
+
   const pendingTasks = tasks?.filter(
     (t: AgentTask) => t.status === "pending" || t.status === "in_progress"
   ) ?? [];
@@ -275,6 +277,32 @@ export default function Dashboard() {
 
       {/* Dynamic Briefing Card */}
       {!isNewUser && <BriefingCard userId={userId} briefing={briefing} briefingLoading={briefingLoading} briefingError={briefingError} queryClient={queryClient} />}
+
+      {/* Staleness Summary Card */}
+      {!isNewUser && staleCapsules.length > 0 && (
+        <Link
+          href={`/${userId}/vault`}
+          className="flex items-center gap-4 bg-orange-500/5 border border-orange-500/20 rounded-2xl p-5 mb-6 hover:bg-orange-500/10 transition-colors group"
+        >
+          <div className="w-11 h-11 rounded-xl bg-orange-500/15 flex items-center justify-center shrink-0">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-orange-400">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-orange-400">
+              {staleCapsules.length} potentially stale capsule{staleCapsules.length !== 1 ? "s" : ""}
+            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Some of your memories may contain outdated information. Review them in your vault.
+            </p>
+          </div>
+          <span className="text-xs text-orange-400/60 group-hover:text-orange-400 transition-colors shrink-0">
+            Review &rarr;
+          </span>
+        </Link>
+      )}
 
       {/* Pending Tasks Card — only show when there are tasks */}
       {!isNewUser && tasks && tasks.length > 0 && (
