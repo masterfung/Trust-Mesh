@@ -9,7 +9,7 @@ COPY trustmesh-registry/ .
 
 RUN bun run build
 
-# ── Runtime stage ──
+# ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM oven/bun:1
 
 WORKDIR /app
@@ -19,6 +19,11 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/package.json .
 COPY --from=builder /app/node_modules ./node_modules
 
-EXPOSE 8100
+# oven/bun ships with a 'bun' user (UID 1000). Drop to it for runtime.
+RUN chown -R bun:bun /app
 
-CMD ["bun", "run", "start", "--", "--port", "8100"]
+USER bun
+
+EXPOSE 8080
+
+CMD ["sh", "-c", "bun node_modules/.bin/next start --port ${PORT:-8080}"]

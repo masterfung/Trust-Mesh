@@ -2,13 +2,14 @@
 
 import logging
 
+import pydantic
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, or_, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth import get_current_user_id
 from src.database import get_db
-from src.models import Connection, ConnectionRequest, NetworkMembership, User
+from src.models import Connection, ConnectionRequest, NetworkMembership, Notification, User
 from src.rate_limit import check_connection_rate, record_connection_request
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,17 @@ async def send_connection_request(
         from_label=data.from_label,
     )
     db.add(req)
+
+    # Notify recipient
+    notif = Notification(
+        user_id=data.to_user_id,
+        notification_type="connection_request",
+        title=f"{from_user.display_name} wants to connect",
+        body=data.message or f"{from_user.display_name} sent you a connection request.",
+        related_id=req.id,
+    )
+    db.add(notif)
+
     await db.commit()
     await db.refresh(req)
     record_connection_request(data.from_user_id)
@@ -226,6 +238,39 @@ async def list_connection_requests(user_id: str, db: AsyncSession = Depends(get_
         ))
     return response
 
+@router.get("/users/{user_id}/connection-requests/sent", response_model=list[ConnectionRequestResponse])
+async def list_sent_connection_requests(user_id: str, db: AsyncSession = Depends(get_db),
+                                        auth_user_id: str = Depends(get_current_user_id)):
+    """List pending connection requests sent by a user (outgoing)."""
+    if auth_user_id != user_id:
+        raise HTTPException(403, "Access denied")
+    result = await db.execute(
+        select(ConnectionRequest).where(
+            ConnectionRequest.from_user_id == user_id,
+            ConnectionRequest.status == "pending",
+        )
+    )
+    requests = result.scalars().all()
+
+    response = []
+    for req in requests:
+        to_user = await db.get(User, req.to_user_id)
+        response.append(ConnectionRequestResponse(
+            id=req.id,
+            from_user_id=req.from_user_id,
+            to_user_id=req.to_user_id,
+            message=req.message,
+            status=req.status,
+            relationship_type=req.relationship_type,
+            from_label=req.from_label,
+            mutual_connections=0,
+            mutual_networks=0,
+            created_at=req.created_at,
+            to_user=UserPublic.model_validate(to_user) if to_user else None,
+        ))
+    return response
+
+
 # PUT /api/connection-requests/{id} is handled by the Zig kernel (handlers/connections.zig).
 
 
@@ -289,3 +334,126 @@ async def update_connection_label(
         accepted_at=conn.accepted_at,
         peer=UserPublic.model_validate(peer) if peer else None,
     )
+
+
+# ── Cross-Pod Connection Request ──────────────────────────────────────────────
+
+class CrossPodConnectionRequest(pydantic.BaseModel):
+    from_user_id: str
+    to_pod_url: str
+    to_did: str
+    to_username: str
+    to_display_name: str
+    message: str = ""
+    relationship_type: str = ""
+    context: str = "personal"
+
+
+@router.post("/connections/request-cross-pod")
+async def send_cross_pod_connection_request(
+    data: CrossPodConnectionRequest,
+    db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
+    """Send a connection request to a user on a different pod."""
+    import json as _json
+    import uuid
+    import httpx
+    from src.models import Agent, Notification
+    from src import transit_bridge
+    from src.federation import POD_URL, get_or_create_ghost_user
+    from src.federation_auth import sign_federation_request
+
+    if auth_user_id != data.from_user_id:
+        raise HTTPException(403, "Access denied")
+
+    allowed, reason = check_connection_rate(data.from_user_id)
+    if not allowed:
+        raise HTTPException(429, reason)
+
+    from_user = await db.get(User, data.from_user_id)
+    if not from_user:
+        raise HTTPException(404, "User not found")
+
+    # Get or create ghost user for the remote person
+    try:
+        ghost = await get_or_create_ghost_user(
+            db=db,
+            remote_username=data.to_username,
+            remote_display_name=data.to_display_name,
+            remote_did=data.to_did,
+            remote_pod_url=data.to_pod_url,
+        )
+        await db.flush()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # Check already connected or pending
+    existing = await db.execute(
+        select(Connection).where(
+            or_(
+                and_(Connection.from_user_id == data.from_user_id, Connection.to_user_id == ghost.id),
+                and_(Connection.from_user_id == ghost.id, Connection.to_user_id == data.from_user_id),
+            )
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(400, "Already connected")
+
+    existing_req = await db.execute(
+        select(ConnectionRequest).where(
+            ConnectionRequest.from_user_id == data.from_user_id,
+            ConnectionRequest.to_user_id == ghost.id,
+            ConnectionRequest.status == "pending",
+        )
+    )
+    if existing_req.scalar_one_or_none():
+        raise HTTPException(400, "Request already pending")
+
+    # Sign and send to remote pod
+    agent_result = await db.execute(select(Agent).where(Agent.owner_id == data.from_user_id))
+    our_agent = agent_result.scalar_one_or_none()
+    if not our_agent:
+        raise HTTPException(500, "Agent not configured")
+
+    if not transit_bridge.has_key(data.from_user_id) or not our_agent.encrypted_private_key:
+        raise HTTPException(400, "Vault key not loaded — please log in again")
+
+    private_key = transit_bridge.decrypt(data.from_user_id, our_agent.encrypted_private_key)
+    payload = {
+        "from_did": our_agent.did,
+        "from_pod_url": POD_URL,
+        "from_display_name": from_user.display_name,
+        "to_did": data.to_did,
+        "message": data.message,
+    }
+    body = _json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    headers.update(sign_federation_request(body, private_key))
+    del private_key
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{data.to_pod_url.rstrip('/')}/api/pod/connection-request",
+                content=body,
+                headers=headers,
+            )
+        if resp.status_code not in (200, 201):
+            raise HTTPException(502, f"Remote pod rejected request: {resp.status_code}")
+    except httpx.RequestError as e:
+        raise HTTPException(502, f"Could not reach remote pod: {e}")
+
+    # Create local pending ConnectionRequest for tracking
+    req = ConnectionRequest(
+        from_user_id=data.from_user_id,
+        to_user_id=ghost.id,
+        message=data.message,
+        context=data.context,
+        relationship_type=data.relationship_type or None,
+    )
+    db.add(req)
+    record_connection_request(data.from_user_id)
+    await db.commit()
+
+    return {"status": "sent", "to_display_name": data.to_display_name, "to_pod_url": data.to_pod_url}

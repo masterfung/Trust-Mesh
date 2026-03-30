@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/lib/auth";
 import Link from "next/link";
 import { Loader2 } from "lucide-react";
@@ -13,10 +13,12 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isPending, setIsPending] = useState(false);
-  const [selectedPod, setSelectedPod] = useState(() => {
-    const stored = typeof window !== "undefined" ? getPodUrl() : "";
-    return stored || "http://localhost:9001";
-  });
+  // SSR-safe: initialize with default, sync from localStorage after mount
+  const [selectedPod, setSelectedPod] = useState("http://localhost:9001");
+  useEffect(() => {
+    const stored = getPodUrl();
+    if (stored) setSelectedPod(stored);
+  }, []);
 
   const handleSubmit = async () => {
     setError("");

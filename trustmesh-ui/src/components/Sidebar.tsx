@@ -83,17 +83,6 @@ const NAV_SECTIONS: NavSection[] = [
           </svg>
         ),
       },
-      {
-        href: "/inbox",
-        label: "Inbox",
-        requiresSetup: true,
-        icon: (
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>
-            <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
-          </svg>
-        ),
-      },
     ],
   },
   {
@@ -185,6 +174,7 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
     queryFn: () => api.listCapsules(user.id),
   });
   const isNewUser = (capsules?.length ?? 0) === 0;
+  const hasCompleteProfile = new Set(capsules?.map(c => c.capsule_type) ?? []).size >= 3;
 
   const { data: inboxUnread } = useQuery({
     queryKey: ["inboxUnreadCount", user.id],
@@ -209,7 +199,7 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
       <div className="p-4 border-b border-card-border">
         <div className="flex items-center justify-between mb-2.5">
           <Link
-            href="/"
+            href={`/${user.id}`}
             onClick={handleNavClick}
             className="flex items-center gap-2 hover:opacity-80 transition-opacity"
           >
@@ -342,7 +332,7 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
 
       {/* Bottom */}
       <div className="p-2 border-t border-card-border space-y-0.5">
-        {!isNewUser && (
+        {!isNewUser && !hasCompleteProfile && (
           <Link
             href={`/${user.id}/onboard`}
             onClick={handleNavClick}

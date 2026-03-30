@@ -1,15 +1,30 @@
-import Database from "better-sqlite3";
 import path from "path";
 
 const DB_PATH = path.join(process.cwd(), "registry.db");
 
-let _db: Database.Database | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _db: any = null;
 
-export function getDb(): Database.Database {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getSqliteDatabase(): any {
+  // Use eval('require') to prevent webpack from statically analyzing the import.
+  // Try bun:sqlite first (production Docker/Bun runtime), fall back to better-sqlite3 (Node.js / next dev).
+  try {
+    const { Database } = (eval("require") as (m: string) => { Database: unknown })("bun:sqlite");
+    return Database;
+  } catch {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (eval("require") as (m: string) => any)("better-sqlite3");
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getDb(): any {
   if (!_db) {
+    const Database = getSqliteDatabase();
     _db = new Database(DB_PATH);
-    _db.pragma("journal_mode = WAL");
-    _db.pragma("busy_timeout = 5000");
+    _db.exec("PRAGMA journal_mode = WAL");
+    _db.exec("PRAGMA busy_timeout = 5000");
     _db.exec(`
       CREATE TABLE IF NOT EXISTS agents (
         did TEXT PRIMARY KEY,
@@ -24,7 +39,9 @@ export function getDb(): Database.Database {
         updated_at TEXT NOT NULL
       )
     `);
-    // Index for fast username lookups (not unique — same username on different pods is valid)
+    // Migrate: drop unique index on username if it exists (same username on different pods is valid)
+    _db.exec(`DROP INDEX IF EXISTS idx_agents_username`);
+    // Non-unique index for fast username lookups
     _db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_username ON agents(username) WHERE username != ''`);
   }
   return _db;

@@ -276,15 +276,15 @@ export default function Dashboard() {
       {/* Dynamic Briefing Card */}
       {!isNewUser && <BriefingCard userId={userId} briefing={briefing} briefingLoading={briefingLoading} briefingError={briefingError} queryClient={queryClient} />}
 
-      {/* Pending Tasks Card */}
-      {!isNewUser && <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold">Agent Tasks</h2>
-          <span className="text-xs text-muted-foreground">
-            {pendingTasks.length} pending
-          </span>
-        </div>
-        {tasks && tasks.length > 0 ? (
+      {/* Pending Tasks Card — only show when there are tasks */}
+      {!isNewUser && tasks && tasks.length > 0 && (
+        <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold">Agent Tasks</h2>
+            <span className="text-xs text-muted-foreground">
+              {pendingTasks.length} pending
+            </span>
+          </div>
           <div className="space-y-2">
             {tasks.slice(0, 8).map((task: AgentTask) => (
               <div
@@ -312,10 +312,8 @@ export default function Dashboard() {
               </div>
             ))}
           </div>
-        ) : (
-          <p className="text-sm text-muted-foreground text-center py-6">No tasks yet. Your agent will create tasks from conversations.</p>
-        )}
-      </div>}
+        </div>
+      )}
 
       {/* Stats Grid — hidden for new users */}
       {!isNewUser && <>
@@ -385,48 +383,45 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Networks */}
-        <div className="bg-card border border-card-border rounded-2xl p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold">Your Groups</h2>
-            <Link href={`/${userId}/networks`} className="text-xs text-accent hover:text-accent-hover transition-colors">
-              Manage &rarr;
-            </Link>
-          </div>
-          <div className="space-y-2">
-            {networks?.map((n) => (
-              <div key={n.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-card-hover transition-colors">
-                <div className="flex items-center gap-3">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${
-                    n.network_type === "family" ? "bg-blue-500/15 text-blue-400" :
-                    n.network_type === "team" ? "bg-amber-500/15 text-amber-400" :
-                    "bg-green-500/15 text-green-400"
-                  }`}>
-                    {n.name[0]}
+        {/* Networks — only shown when user has groups */}
+        {networks && networks.length > 0 && (
+          <div className="bg-card border border-card-border rounded-2xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold">Your Groups</h2>
+              <Link href={`/${userId}/networks`} className="text-xs text-accent hover:text-accent-hover transition-colors">
+                Manage &rarr;
+              </Link>
+            </div>
+            <div className="space-y-2">
+              {networks.map((n) => (
+                <div key={n.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-card-hover transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${
+                      n.network_type === "family" ? "bg-blue-500/15 text-blue-400" :
+                      n.network_type === "team" ? "bg-amber-500/15 text-amber-400" :
+                      "bg-green-500/15 text-green-400"
+                    }`}>
+                      {n.name[0]}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium">{n.name}</p>
+                      <p className="text-[11px] text-muted-foreground">{n.network_type}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm font-medium">{n.name}</p>
-                    <p className="text-[11px] text-muted-foreground">{n.network_type}</p>
-                  </div>
+                  <span className="text-xs text-muted-foreground">{n.members.length} members</span>
                 </div>
-                <span className="text-xs text-muted-foreground">{n.members.length} members</span>
-              </div>
-            ))}
-            {!networks?.length && (
-              <p className="text-sm text-muted-foreground text-center py-6">No groups yet.</p>
-            )}
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Service Providers */}
-        <div className="bg-card border border-card-border rounded-2xl p-5 lg:col-span-2">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold">Service Providers</h2>
-            <span className="text-xs text-muted-foreground">
-              {services?.length ?? 0} available
-            </span>
-          </div>
-          {services && services.length > 0 ? (
+        {/* Service Providers — only shown when available */}
+        {services && services.length > 0 && (
+          <div className="bg-card border border-card-border rounded-2xl p-5 lg:col-span-2">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold">Service Providers</h2>
+              <span className="text-xs text-muted-foreground">{services.length} available</span>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {services.map((sp: ServiceProvider) => (
                 <div
@@ -438,23 +433,16 @@ export default function Dashboard() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium">{sp.display_name}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
-                      {sp.bio}
-                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{sp.bio}</p>
                     {sp.agent_card?.skills && sp.agent_card.skills.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-2">
                         {sp.agent_card.skills.slice(0, 4).map((skill) => (
-                          <span
-                            key={skill.id}
-                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent/80"
-                          >
+                          <span key={skill.id} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent/80">
                             {skill.name}
                           </span>
                         ))}
                         {sp.agent_card.skills.length > 4 && (
-                          <span className="text-[10px] text-muted-foreground">
-                            +{sp.agent_card.skills.length - 4} more
-                          </span>
+                          <span className="text-[10px] text-muted-foreground">+{sp.agent_card.skills.length - 4} more</span>
                         )}
                       </div>
                     )}
@@ -468,10 +456,8 @@ export default function Dashboard() {
                 </div>
               ))}
             </div>
-          ) : (
-            <p className="text-sm text-muted-foreground text-center py-6">No service providers available yet.</p>
-          )}
-        </div>
+          </div>
+        )}
       </div>
       </>}
     </div>

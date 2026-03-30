@@ -5,8 +5,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 export default function Home() {
-  const { user: authUser, logout } = useAuth();
+  const { user: authUser } = useAuth();
   const router = useRouter();
+
+  // Logged-in users go straight to their dashboard
+  if (authUser) {
+    router.replace(`/${authUser.id}`);
+    return null;
+  }
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -21,7 +27,7 @@ export default function Home() {
             Docs
           </Link>
           <a
-            href="http://localhost:8100"
+            href="http://localhost:9100"
             target="_blank"
             rel="noopener noreferrer"
             className="hidden sm:inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1.5 rounded-lg hover:bg-card"
@@ -33,37 +39,20 @@ export default function Home() {
               <line x1="10" y1="14" x2="21" y2="3" />
             </svg>
           </a>
-          {authUser ? (
-            <>
-              <button
-                onClick={() => router.push(`/${authUser.id}`)}
-                className="px-3 sm:px-4 py-1.5 bg-accent hover:bg-accent-hover text-accent-fg font-medium rounded-lg text-xs sm:text-sm transition-all"
-              >
-                Dashboard
-              </button>
-              <button
-                onClick={() => logout()}
-                className="px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground rounded-lg hover:bg-card transition-colors"
-              >
-                Log Out
-              </button>
-            </>
-          ) : (
-            <>
-              <Link
-                href="/login"
-                className="px-3 sm:px-4 py-1.5 text-xs sm:text-sm text-muted-foreground hover:text-foreground font-medium rounded-lg hover:bg-card transition-colors"
-              >
-                Log In
-              </Link>
-              <Link
-                href="/signup"
-                className="px-3 sm:px-4 py-1.5 bg-accent hover:bg-accent-hover text-accent-fg font-medium rounded-lg text-xs sm:text-sm transition-all"
-              >
-                Sign Up
-              </Link>
-            </>
-          )}
+          <>
+            <Link
+              href="/login"
+              className="px-3 sm:px-4 py-1.5 text-xs sm:text-sm text-muted-foreground hover:text-foreground font-medium rounded-lg hover:bg-card transition-colors"
+            >
+              Log In
+            </Link>
+            <Link
+              href="/signup"
+              className="px-3 sm:px-4 py-1.5 bg-accent hover:bg-accent-hover text-accent-fg font-medium rounded-lg text-xs sm:text-sm transition-all"
+            >
+              Sign Up
+            </Link>
+          </>
         </div>
       </nav>
 

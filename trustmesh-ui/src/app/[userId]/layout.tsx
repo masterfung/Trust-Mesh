@@ -5,7 +5,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, getPodUrl, getUnreadCount, Notification as NotificationType, ContextMode } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Sidebar } from "@/components/Sidebar";
+import { LiveAgent } from "@/components/LiveAgent";
 import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import { timeAgo } from "@/lib/utils";
 import { EmptyState } from "@/components/ui/empty-state";
 
@@ -91,6 +93,9 @@ const ORG_CONTEXTS: { value: ContextMode; label: string; icon: string }[] = [
 
 function ContextSwitcher({ userId, currentContext, userType }: { userId: string; currentContext: ContextMode; userType: string }) {
   const queryClient = useQueryClient();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const mobileRef = useRef<HTMLDivElement>(null);
+
   const mutation = useMutation({
     mutationFn: (ctx: ContextMode) => api.switchContext(userId, ctx),
     onSuccess: () => {
@@ -101,25 +106,111 @@ function ContextSwitcher({ userId, currentContext, userType }: { userId: string;
   });
 
   const options = userType === "person" ? PERSON_CONTEXTS : ORG_CONTEXTS;
+  const active = options.find((o) => o.value === currentContext) ?? options[0];
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (mobileRef.current && !mobileRef.current.contains(e.target as Node)) {
+        setMobileOpen(false);
+      }
+    };
+    if (mobileOpen) document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [mobileOpen]);
 
   return (
-    <div className="flex items-center gap-1 bg-card rounded-lg border border-card-border p-0.5">
-      {options.map((opt) => (
+    <>
+      {/* Desktop pill tabs */}
+      <div className="hidden sm:flex items-center gap-1 bg-card rounded-lg border border-card-border p-0.5">
+        {options.map((opt) => (
+          <button
+            key={opt.value}
+            onClick={() => mutation.mutate(opt.value)}
+            className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+              currentContext === opt.value
+                ? "bg-accent text-accent-fg shadow-sm"
+                : "text-muted-foreground hover:text-foreground hover:bg-hover"
+            }`}
+            title={`Switch to ${opt.label} mode`}
+          >
+            <span className="mr-1">{opt.icon}</span>
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Mobile compact dropdown */}
+      <div className="sm:hidden relative" ref={mobileRef}>
         <button
-          key={opt.value}
-          onClick={() => mutation.mutate(opt.value)}
-          className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
-            currentContext === opt.value
-              ? "bg-accent text-accent-fg shadow-sm"
-              : "text-muted-foreground hover:text-foreground hover:bg-hover"
+          onClick={() => setMobileOpen(!mobileOpen)}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all ${
+            mobileOpen ? "bg-card border-accent/50" : "bg-card border-card-border"
           }`}
-          title={`Switch to ${opt.label} mode`}
         >
-          <span className="mr-1">{opt.icon}</span>
-          {opt.label}
+          <span>{active.icon}</span>
+          <span className="text-foreground">{active.label}</span>
+          <svg
+            width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+            className={`text-muted-foreground transition-transform ${mobileOpen ? "rotate-180" : ""}`}
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
         </button>
-      ))}
-    </div>
+        {mobileOpen && (
+          <div className="absolute right-0 top-full mt-1.5 bg-card border border-card-border rounded-xl shadow-xl z-50 py-1 min-w-[130px]">
+            {options.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => { mutation.mutate(opt.value); setMobileOpen(false); }}
+                className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-sm transition-colors ${
+                  currentContext === opt.value
+                    ? "text-accent font-medium"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <span>{opt.icon}</span>
+                <span>{opt.label}</span>
+                {currentContext === opt.value && (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="ml-auto">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// -- Inbox Button --
+
+function InboxButton({ userId }: { userId: string }) {
+  const { data: msgCount } = useQuery({
+    queryKey: ["inboxUnreadCount", userId],
+    queryFn: () => getUnreadCount(userId),
+    refetchInterval: 30_000,
+  });
+  const count = msgCount ?? 0;
+
+  return (
+    <Link
+      href={`/${userId}/inbox`}
+      className="relative p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-card-hover transition-all"
+      title="Inbox"
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
+        <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+      </svg>
+      {count > 0 && (
+        <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 flex items-center justify-center text-[10px] font-bold text-white bg-accent rounded-full">
+          {count > 99 ? "99+" : count}
+        </span>
+      )}
+    </Link>
   );
 }
 
@@ -176,8 +267,11 @@ function NotificationBell({ userId }: { userId: string }) {
   }, [open]);
 
   useEffect(() => {
-    const API_BASE = getPodUrl();
-    const eventSource = new EventSource(`${API_BASE}/api/users/${userId}/notifications/stream`, { withCredentials: true });
+    // In production (non-localhost), use a relative URL so the request goes
+    // through the Next.js /api/[...path] catch-all proxy to the pod.
+    const streamBase =
+      window.location.hostname !== "localhost" ? "" : getPodUrl();
+    const eventSource = new EventSource(`${streamBase}/api/users/${userId}/notifications/stream`, { withCredentials: true });
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
@@ -435,6 +529,7 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
   const userId = params.userId as string;
   const { user: authUser, isLoading: authLoading } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showLive, setShowLive] = useState(false);
 
   const { data: user, isLoading } = useQuery({
     queryKey: ["user", userId],
@@ -477,6 +572,7 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <div className="flex h-screen overflow-hidden">
+      {showLive && <LiveAgent userId={userId} onClose={() => setShowLive(false)} />}
       <Sidebar
         user={user}
         isOpen={sidebarOpen}
@@ -507,12 +603,25 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             <ContextSwitcher
               userId={userId}
               currentContext={(user.active_context as ContextMode) || "all"}
               userType={user.user_type || "person"}
             />
+            {/* Live voice agent button — headphones icon (distinct from mic/voice-to-text) */}
+            <button
+              onClick={() => setShowLive(true)}
+              className="relative p-2 rounded-xl text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 transition-all"
+              title="Live voice agent"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 18v-6a9 9 0 0 1 18 0v6"/>
+                <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"/>
+                <path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
+              </svg>
+            </button>
+            <InboxButton userId={userId} />
             <NotificationBell userId={userId} />
           </div>
         </header>

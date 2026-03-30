@@ -99,7 +99,7 @@ function Waveform({ active }: { active: boolean }) {
 }
 
 export function LiveAgent({ onClose }: Props) {
-  const [status, setStatus] = useState<LiveStatus>("idle");
+  const [status, setStatus] = useState<LiveStatus>("connecting");
   const [transcript, setTranscript] = useState<{ role: "user" | "agent"; text: string }[]>([]);
   const [tools, setTools] = useState<ToolActivity[]>([]);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
@@ -205,10 +205,18 @@ export function LiveAgent({ onClose }: Props) {
       const captureCtx = new AudioContext({ sampleRate: 16000 });
       audioCtxRef.current = captureCtx;
 
+      // Resume context — browsers suspend AudioContext if created outside a direct gesture frame
+      if (captureCtx.state === "suspended") {
+        await captureCtx.resume();
+      }
+
       const workletBlob = new Blob([WORKLET_SOURCE], { type: "application/javascript" });
       const workletUrl = URL.createObjectURL(workletBlob);
       await captureCtx.audioWorklet.addModule(workletUrl);
       URL.revokeObjectURL(workletUrl);
+
+      // Give the worklet execution context a tick to fully initialize before creating the node
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -312,6 +320,10 @@ export function LiveAgent({ onClose }: Props) {
     setStatus("idle");
   }, [cleanup]);
 
+  // Auto-start on mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { startSession(); }, []);
+
   // Cleanup on unmount
   useEffect(() => () => cleanup(), [cleanup]);
 
@@ -372,11 +384,10 @@ export function LiveAgent({ onClose }: Props) {
 
         {/* Transcript */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2 min-h-[220px] max-h-[340px]">
-          {transcript.length === 0 && status !== "active" && (
+          {transcript.length === 0 && status === "connecting" && (
             <div className="text-center text-gray-500 text-sm mt-8">
-              <p className="text-2xl mb-2">🎙️</p>
-              <p>Press <strong>Start</strong> to begin a live voice conversation</p>
-              <p className="text-xs mt-1 text-gray-600">Your agent has full access to your vault and trust network</p>
+              <p className="text-2xl mb-2 animate-pulse">🎙️</p>
+              <p>Connecting to your agent…</p>
             </div>
           )}
           {transcript.length === 0 && status === "active" && (
@@ -458,17 +469,17 @@ export function LiveAgent({ onClose }: Props) {
 
         {/* Controls */}
         <div className="px-5 py-4 border-t border-gray-800 flex gap-3">
-          {status === "idle" || status === "error" ? (
+          {status === "error" ? (
             <button
               onClick={startSession}
               className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2"
             >
-              <span>🎙️</span> Start Live Session
+              <span>🎙️</span> Retry
             </button>
           ) : (
             <button
               onClick={stopSession}
-              className="flex-1 bg-red-600 hover:bg-red-500 text-white font-medium py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2"
+              className="flex-1 bg-red-600/80 hover:bg-red-500 text-white font-medium py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2"
             >
               <span>⏹</span> End Session
             </button>

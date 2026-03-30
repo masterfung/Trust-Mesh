@@ -248,19 +248,34 @@ app = FastAPI(
 app.add_middleware(RateLimitHeadersMiddleware)
 app.add_middleware(ProxySecretMiddleware)
 app.add_middleware(CSRFMiddleware)
+# CORS: localhost origins are only included in dev mode.
+# In production (TRUSTMESH_POD_URL starts with https://), only the deployed
+# frontend URL is allowed. This prevents localhost-based CSRF attacks in prod.
+_is_production = os.getenv("TRUSTMESH_POD_URL", "").startswith("https://")
+
+_local_origins: list[str] = [] if _is_production else [
+    "http://localhost:3050", "http://localhost:3000",
+    "http://127.0.0.1:3050", "http://127.0.0.1:3000",  # Explicit IPv4 (Chrome may use 127.0.0.1)
+    "http://localhost:9000",  # User's own pod
+    "http://127.0.0.1:9000",
+    # Multi-pod federation: allow cross-pod requests from any localhost port
+    *[f"http://localhost:{p}" for p in range(9001, 9017)],
+    *[f"http://127.0.0.1:{p}" for p in range(9001, 9017)],
+    "http://localhost:9100",  # Public registry
+    "http://127.0.0.1:9100",
+]
+
+_extra_origins: list[str] = []
+_frontend_url = os.getenv("TRUSTMESH_FRONTEND_URL", "").rstrip("/")
+if _frontend_url and _frontend_url.startswith("https://"):
+    # Validate: must be a well-formed https URL (no injection into CORS header)
+    import re as _re
+    if _re.fullmatch(r"https://[a-zA-Z0-9._\-]+", _frontend_url):
+        _extra_origins.append(_frontend_url)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3050", "http://localhost:3000",
-        "http://127.0.0.1:3050", "http://127.0.0.1:3000",  # Explicit IPv4 (Chrome may use 127.0.0.1)
-        "http://localhost:9000",  # User's own pod
-        "http://127.0.0.1:9000",
-        # Multi-pod federation: allow cross-pod requests from any localhost port
-        *[f"http://localhost:{p}" for p in range(9001, 9017)],
-        *[f"http://127.0.0.1:{p}" for p in range(9001, 9017)],
-        "http://localhost:9100",  # Public registry
-        "http://127.0.0.1:9100",
-    ],
+    allow_origins=[*_local_origins, *_extra_origins],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-CSRF-Token", "X-Pool-Sync-Secret", "Cookie"],

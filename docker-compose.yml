@@ -2,10 +2,10 @@ version: "3.9"
 
 # 3-pod local demo (mirrors Cloud Run deployment)
 # Usage:
+#   export ANTHROPIC_API_KEY=...   # or GOOGLE_API_KEY=...
 #   docker compose build
 #   docker compose up -d
-#   # Wire pods together:
-#   ./demo-3pod.sh wire
+#   ./demo-3pod.sh wire            # wire pods together via federation
 
 services:
   family:
@@ -18,11 +18,16 @@ services:
       TRUSTMESH_POD_NAME: family
       TRUSTMESH_POD_URL: http://localhost:9000
       TRUSTMESH_REGISTRY_URL: http://registry:8100
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      TRUSTMESH_DB: /data/trustmesh.db
+      # SEED_POD_KEY not set → start.sh falls back to src.seed (full demo dataset)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # Shared secret for pod-to-pod federation auth.
+      # Use a real random value in production; this default is fine for local dev.
+      TRUSTMESH_POOL_SYNC_SECRET: ${TRUSTMESH_POOL_SYNC_SECRET:-local-dev-secret-change-me}
     volumes:
-      - family-data:/app/data
+      - family-data:/data
 
   hospital:
     build:
@@ -34,11 +39,13 @@ services:
       TRUSTMESH_POD_NAME: hospital
       TRUSTMESH_POD_URL: http://localhost:9001
       TRUSTMESH_REGISTRY_URL: http://registry:8100
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      TRUSTMESH_DB: /data/trustmesh.db
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      TRUSTMESH_POOL_SYNC_SECRET: ${TRUSTMESH_POOL_SYNC_SECRET:-local-dev-secret-change-me}
     volumes:
-      - hospital-data:/app/data
+      - hospital-data:/data
 
   work:
     build:
@@ -50,11 +57,13 @@ services:
       TRUSTMESH_POD_NAME: work
       TRUSTMESH_POD_URL: http://localhost:9002
       TRUSTMESH_REGISTRY_URL: http://registry:8100
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      TRUSTMESH_DB: /data/trustmesh.db
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      TRUSTMESH_POOL_SYNC_SECRET: ${TRUSTMESH_POOL_SYNC_SECRET:-local-dev-secret-change-me}
     volumes:
-      - work-data:/app/data
+      - work-data:/data
 
   frontend:
     build:

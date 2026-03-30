@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { api, type RegistryAgent, type RegistryPodAgent, type User } from "@/lib/api";
 import { useParams } from "next/navigation";
 import Link from "next/link";
@@ -289,12 +289,14 @@ export default function DiscoverPage() {
     queryKey: ["registry-search", searchQuery, typeFilter, capabilityFilter],
     queryFn: () => api.registrySearch(searchQuery, { user_type: typeFilter || undefined, capability: capabilityFilter || undefined }),
     enabled: hasFilters,
+    placeholderData: keepPreviousData,
   });
 
   const { data: allData, isLoading: allLoading } = useQuery({
     queryKey: ["registry-agents", typeFilter],
     queryFn: () => api.registryAgents({ user_type: typeFilter || undefined }),
     enabled: !hasFilters,
+    placeholderData: keepPreviousData,
   });
 
   // Public registry
@@ -318,6 +320,7 @@ export default function DiscoverPage() {
     },
     enabled: registryOnline,
     retry: false,
+    placeholderData: keepPreviousData,
   });
 
   const { data: podInfo } = useQuery({
@@ -337,8 +340,11 @@ export default function DiscoverPage() {
     (users ?? []).filter((u: User) => !!u.username).map((u: User) => [u.username!, u.id])
   );
 
-  const localAgents: RegistryAgent[] = hasFilters ? (searchData?.results ?? []) : (allData?.agents ?? []);
-  const localCount = hasFilters ? (searchData?.count ?? 0) : (allData?.count ?? 0);
+  const currentUser = (users ?? []).find((u: User) => u.id === userId);
+  const rawLocalAgents: RegistryAgent[] = hasFilters ? (searchData?.results ?? []) : (allData?.agents ?? []);
+  // Don't show yourself on the Discover page
+  const localAgents = rawLocalAgents.filter((a) => a.username !== currentUser?.username);
+  const localCount = localAgents.length;
   const localLoading = hasFilters ? searchLoading : allLoading;
 
   const publicAgentList: RegistryPodAgent[] = publicAgents?.agents ?? [];

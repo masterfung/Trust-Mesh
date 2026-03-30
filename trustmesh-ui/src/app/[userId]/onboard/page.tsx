@@ -154,6 +154,13 @@ export default function OnboardPage() {
   const isCompleteProfile = distinctTypes.size >= 3;
   const isSeededUser = hasExistingData && !isCompleteProfile;
 
+  // Redirect complete users straight to chat — no need to re-train
+  useEffect(() => {
+    if (existingCapsules !== undefined && isCompleteProfile && !started) {
+      router.replace(`/${userId}/chat`);
+    }
+  }, [existingCapsules, isCompleteProfile, started, router, userId]);
+
   const isOrg = user?.user_type === "organization";
   const orgSubtype = user?.org_subtype;
   const hasComplianceStep = isOrg && (orgSubtype === "healthcare" || orgSubtype === "emergency");

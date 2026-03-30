@@ -7,13 +7,13 @@ RUN bun install --frozen-lockfile
 
 COPY trustmesh-ui/ .
 
-# NEXT_PUBLIC_API_URL is baked in at build time
+# NEXT_PUBLIC_API_URL="" in production (Next.js server-side proxy handles /api/*)
 ARG NEXT_PUBLIC_API_URL=http://localhost:9000
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
 RUN bun run build
 
-# ── Runtime stage ──
+# ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM oven/bun:1
 
 WORKDIR /app
@@ -22,6 +22,12 @@ COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/package.json .
 COPY --from=builder /app/node_modules ./node_modules
+
+# oven/bun ships with a 'bun' user (UID 1000). Drop to it for runtime.
+# .next/cache may be written at runtime; ensure ownership is correct.
+RUN chown -R bun:bun /app
+
+USER bun
 
 EXPOSE 8080
 

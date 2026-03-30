@@ -1,14 +1,14 @@
 const std = @import("std");
 
 fn addSqlite(mod: *std.Build.Module) void {
-    const builtin = @import("builtin");
-    if (builtin.os.tag == .macos) {
-        // macOS Homebrew keg-only sqlite paths (both x86_64 and arm64)
-        mod.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/include" });
-        mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/lib" });
-    }
-    // On Linux, sqlite3 headers come from the system (libsqlite3-dev)
-    mod.linkSystemLibrary("sqlite3", .{});
+    // Bundle sqlite3 amalgamation for zero-dependency cross-platform builds.
+    // Enables FTS5 full-text search. No system library needed at build or runtime.
+    mod.link_libc = true; // Required for cross-compilation: lets Zig supply bundled libc headers.
+    mod.addCSourceFile(.{
+        .file = mod.owner.path("sqlite/sqlite3.c"),
+        .flags = &.{"-DSQLITE_ENABLE_FTS5"},
+    });
+    mod.addSystemIncludePath(mod.owner.path("sqlite"));
 }
 
 pub fn build(b: *std.Build) void {
@@ -49,7 +49,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     server_mod.addImport("podos", podos_mod);
-    addSqlite(server_mod);
+    // No addSqlite(server_mod) — server_main.zig only uses sqlite3 via podos module import.
 
     const server_exe = b.addExecutable(.{
         .name = "podos-server",
@@ -93,7 +93,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         test_module.addImport("podos", podos_mod);
-        addSqlite(test_module);
+        // No addSqlite(test_module) — tests use sqlite3 via podos module import.
+        // Tests that directly import sqlite3 functions do so through podos, so one copy suffices.
 
         const t = b.addTest(.{ .root_module = test_module });
         const run_t = b.addRunArtifact(t);

@@ -236,16 +236,18 @@ export default function GraphPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {/* Pod selector */}
-          <select
-            value={podOverride}
-            onChange={(e) => { setPodOverride(e.target.value); setSelectedUserId(""); setRecentQueries([]); }}
-            className="bg-card border border-card-border rounded-xl px-3 py-1.5 text-xs text-foreground"
-          >
-            {KNOWN_PODS.map((p) => (
-              <option key={p.url} value={p.url}>{p.label}</option>
-            ))}
-          </select>
+          {/* Pod selector — multi-pod dev only */}
+          {process.env.NEXT_PUBLIC_MULTI_POD === "true" && (
+            <select
+              value={podOverride}
+              onChange={(e) => { setPodOverride(e.target.value); setSelectedUserId(""); setRecentQueries([]); }}
+              className="bg-card border border-card-border rounded-xl px-3 py-1.5 text-xs text-foreground"
+            >
+              {KNOWN_PODS.map((p) => (
+                <option key={p.url} value={p.url}>{p.label}</option>
+              ))}
+            </select>
+          )}
           {/* Graph view toggle */}
           <div className="flex rounded-xl overflow-hidden border border-card-border">
             <button

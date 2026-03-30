@@ -28,3 +28,33 @@ async def _close_citadel_client_after_test():
         await close_citadel_client()
     except Exception:
         pass
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clear_transit_keys_after_test():
+    """Reset the Zig transit engine after each test.
+
+    The transit engine is a process-level singleton with MAX_USERS=256 capacity.
+    Tests that call transit_bridge.store_key() directly (bypassing vault_keys)
+    don't track keys in vault_keys._user_ids, so vault_keys.clear() alone is
+    insufficient. Full deinit/reinit guarantees a clean engine for every test
+    regardless of which code path stored the keys.
+
+    podos_transit_init() is idempotent (no-op if already initialized), so
+    calling deinit+reinit here is safe across all test orderings.
+    """
+    yield
+    try:
+        from src import transit_bridge
+        from src.main import vault_keys
+        # Clear Python-side tracking
+        vault_keys._user_ids.clear()
+        transit_bridge._initialized = False
+        # Deinit the Zig engine (secureZero all keys, free engine)
+        try:
+            lib = transit_bridge._get_lib()
+            lib.podos_transit_deinit()
+        except Exception:
+            pass
+    except Exception:
+        pass

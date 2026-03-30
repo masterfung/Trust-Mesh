@@ -129,7 +129,7 @@ pub fn decrypt(data: []const u8, key: *const [KEY_SIZE]u8, out: []u8) CryptoErro
 // ═══════════════════════════════════════════
 
 /// Derive a vault key from password using Argon2id.
-/// Params: t=3, m=65536 KiB (64 MiB), p=4. Must match Python exactly.
+/// Params: t=3, m=65536 KiB (64 MiB), p=1. Single-threaded for Cloud Run compatibility.
 /// If salt_in is null, generates a random 16-byte salt.
 /// Returns derived 32-byte key; salt is written to salt_out.
 pub fn deriveVaultKey(
@@ -150,7 +150,7 @@ pub fn deriveVaultKey(
         out_key,
         password,
         &out_salt.*,
-        .{ .t = 3, .m = 65536, .p = 4 },
+        .{ .t = 3, .m = 65536, .p = 1 },
         .argon2id,
     ) catch return CryptoError.ArgonFailed;
 }

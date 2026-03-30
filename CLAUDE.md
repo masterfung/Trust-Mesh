@@ -34,7 +34,7 @@ uv sync                                    # Install deps
 uv run python -m src.seed                  # Seed demo data
 uv run uvicorn src.main:app --reload --port 9000
 
-# Frontend
+# Frontend (separate terminal)
 cd trustmesh-ui
 bun install
 bun dev --port 3050
@@ -43,32 +43,28 @@ bun dev --port 3050
 ### Multi-Pod Federation
 ```bash
 # Requires: Bash 4.0+ (macOS ships 3.2 — brew install bash)
-./multi-pod.sh demo       # Full setup: seed + start 16 pods + orchestrate
-./multi-pod.sh status     # Show all pod health
-./multi-pod.sh stop       # Stop everything
+/opt/homebrew/bin/bash multi-pod.sh demo   # Full setup: seed + start 16 pods + orchestrate
+./multi-pod.sh status                      # Show all pod health
+./multi-pod.sh stop                        # Stop everything
 ```
 
 ### Tests
 ```bash
 cd trustmesh-core
-uv run pytest tests/ -v                    # All tests
-uv run pytest tests/test_ucan.py -v        # Specific file
-uv run pytest tests/test_multi_pod.py -v   # Multi-pod (requires running pods)
+uv run pytest tests/ --ignore=tests/test_multi_pod.py --ignore=tests/test_memory_api.py -q   # all tests
+uv run pytest tests/test_channels.py tests/test_nullclaw_memory.py -v   # channel/NullClaw tests
+uv run pytest tests/test_ucan.py -v                                      # specific file
+uv run pytest tests/test_multi_pod.py -v                                 # requires running pods
 ```
 
-### Citadel Security Sidecar
+### Citadel Security Sidecar (optional)
 ```bash
-# First-time setup: download ML model + build with ONNX
-./dev.sh citadel
-
-# Or manually:
 cd citadel-ref
 ./scripts/setup-ml.sh     # Download HuggingFace model (~685MB) + ONNX Runtime
 make build-ml             # Build with ML detection
-./citadel serve 3001      # Start on port 3001
+./citadel serve 3001      # Start on port 3001; backend auto-detects via CITADEL_URL
 ```
 
-When Citadel is running, `./dev.sh start` auto-detects it and sets `CITADEL_URL`.
 Without Citadel, the Python heuristic fallback in `citadel.py` handles scanning.
 
 For production multimodal AI security (text, images, PDFs, tool calls), see [Mighty](https://trymighty.ai/).
@@ -120,7 +116,7 @@ For production multimodal AI security (text, images, PDFs, tool calls), see [Mig
 - `capsule_matches_scope()` checks category + keyword matching against role scope
 
 ### Zig HTTP Server (Dual Mode)
-- Enable with `TRUSTMESH_ZIG_HTTP=1 ./dev.sh start`
+- Enable with `TRUSTMESH_ZIG_HTTP=1 uv run uvicorn src.main:app --port 9500` (Zig on :9000, Python on :9500)
 - Zig listens on `:9000`, Python on `:9500` (internal)
 - 36 native Zig routes (auth, memory, credentials, onboard, notifications, audit, pin, users, connections, capsules)
 - Unhandled routes proxied to Python with `X-Internal-Proxy-Secret` header
@@ -155,6 +151,8 @@ For production multimodal AI security (text, images, PDFs, tool calls), see [Mig
 | `src/transit_bridge.py` | Zig transit engine ctypes wrappers — vault key storage, encrypt/decrypt |
 | `src/main.py` | App startup, CORS, security headers, route registration |
 | `src/middleware.py` | Rate limit headers + proxy secret validation |
+| `src/routes/channels.py` | Channel token CRUD + ZeroClaw/NullClaw webhook (Bearer `tm_<token>` auth) |
+| `src/routes/memory.py` | NullClaw-compatible memory backend API (PUT/GET/POST/DELETE `memories/{key}`, health, sessions) |
 | `tests/bench_hot_path.py` | Performance benchmark for hot-path endpoints |
 
 ## Common Gotchas
@@ -163,9 +161,10 @@ For production multimodal AI security (text, images, PDFs, tool calls), see [Mig
 - Use `transit_bridge.has_key(user_id)` to check, `transit_bridge.encrypt()/decrypt()` for capsule ops
 - Demo password is `DEMO_PASSWORD` constant in `src/seed.py` - only used for `is_demo=True` users
 - FTS5 search uses SQLite (Zig kernel) — no ChromaDB, no external service needed
+- NullClaw config: `{ "memory": { "backend": "api", "api": { "base_url": "http://localhost:9000/api/memory/<username>", "api_key": "tm_<channel_token>" } } }` — create channel token via `POST /api/users/{id}/channel-tokens`
+- Memory API uses `title = "nullclaw:{json}"` prefix to store NullClaw metadata (category, session_id) on capsules
 - `tests/conftest.py` sets `TRUSTMESH_DEV_MODE=1` and `TRUSTMESH_DISABLE_CSRF=1` for test environments
 - `close_fts()` resets Zig FTS handle + cascades to `trust.py` and `credential_bridge` caches to prevent stale pointer segfaults
 - Tests that reinit the DB must call `close_fts()` first, then `init_fts()` after — never delete the DB file (use `drop_db()` instead)
 - [Citadel](https://github.com/TryMightyAI/citadel) Go sidecar is optional — Python heuristic fallback handles scanning without it (circuit breaker: 3 failures in 60s skips Citadel for 60s)
-- `./dev.sh citadel` does first-time ML setup (HuggingFace model download + ONNX build)
-- `./dev.sh start` auto-starts Citadel if the binary exists in `citadel-ref/`
+- First-time Citadel ML setup: `cd citadel-ref && ./scripts/setup-ml.sh && make build-ml`

@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type User, type ContextMode, type Connection, type ConnectionRequest, type Network } from "@/lib/api";
+import { api, type User, type ContextMode, type Connection, type ConnectionRequest, type Network, type RegistryPodAgent } from "@/lib/api";
 import { useParams } from "next/navigation";
 import { matchesContext } from "@/lib/context";
 import { RelationshipBadge } from "@/components/TrustBadge";
@@ -42,6 +42,11 @@ export default function ConnectionsPage() {
   const { data: requests } = useQuery({
     queryKey: ["connection-requests", userId],
     queryFn: () => api.listConnectionRequests(userId),
+  });
+
+  const { data: sentRequests } = useQuery({
+    queryKey: ["sent-requests", userId],
+    queryFn: () => api.listSentRequests(userId),
   });
 
   const { data: allUsers, isLoading: usersLoading } = useQuery({
@@ -128,6 +133,7 @@ export default function ConnectionsPage() {
   const handleConnectDone = useCallback(() => {
     setShowConnect(false);
     queryClient.invalidateQueries({ queryKey: ["connections", userId] });
+    queryClient.invalidateQueries({ queryKey: ["sent-requests", userId] });
     queryClient.invalidateQueries({ queryKey: ["user-graph", userId] });
   }, [queryClient, userId]);
 
@@ -207,6 +213,38 @@ export default function ConnectionsPage() {
                 isPending={acceptMutation.isPending || declineMutation.isPending}
               />
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Sent Requests (outgoing, awaiting acceptance) */}
+      {sentRequests && sentRequests.length > 0 && (
+        <div className="mb-6">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-2 h-2 rounded-full bg-sky-400" />
+            <h2 className="text-sm font-semibold text-sky-400">
+              {sentRequests.length} sent request{sentRequests.length !== 1 ? "s" : ""} awaiting reply
+            </h2>
+          </div>
+          <div className="space-y-2">
+            {sentRequests.map((r: ConnectionRequest) => {
+              const to = r.to_user;
+              return (
+                <div key={r.id} className="flex items-center gap-3 p-3 bg-card border border-card-border rounded-xl">
+                  <div className="w-8 h-8 rounded-lg bg-sky-500/15 flex items-center justify-center text-sky-400 font-bold text-sm shrink-0">
+                    {(to?.display_name ?? "?")[0]}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{to?.display_name ?? r.to_user_id}</p>
+                    {to?.username && <p className="text-xs text-muted-foreground">@{to.username}</p>}
+                    {r.message && <p className="text-xs text-muted-foreground mt-0.5 italic truncate">"{r.message}"</p>}
+                  </div>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20 shrink-0">
+                    Pending
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -549,20 +587,93 @@ function SendConnectionForm({
   activeContext?: ContextMode;
 }) {
   const [targetId, setTargetId] = useState("");
+  const [search, setSearch] = useState("");
   const [message, setMessage] = useState("");
   const [relType, setRelType] = useState("");
   const [fromLabel, setFromLabel] = useState("");
-  const selectedUser = unconnected.find((u) => u.id === targetId);
+  const [crossPodTarget, setCrossPodTarget] = useState<{ did: string; podUrl: string; username: string; displayName: string } | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
-  // Derive connection context from current nav mode
   const connContext = activeContext === "all" ? "both" : (activeContext ?? "personal");
 
-  const mutation = useMutation({
+  // Search the public registry across all pods
+  const { data: registryResults, isFetching: registryFetching } = useQuery<{ results: RegistryPodAgent[]; count: number; query: string }>({
+    queryKey: ["cross-pod-search", search],
+    queryFn: () => api.registrySearchAll(search),
+    enabled: search.length >= 2,
+    staleTime: 10_000,
+  });
+
+  // Filter local unconnected by search
+  const filteredLocal = search
+    ? unconnected.filter((u) =>
+        u.display_name.toLowerCase().includes(search.toLowerCase()) ||
+        (u.username || "").toLowerCase().includes(search.toLowerCase())
+      )
+    : unconnected;
+
+  // Same-pod mutation
+  const localMutation = useMutation({
     mutationFn: () => api.sendConnectionRequest(userId, targetId, message, relType || undefined, fromLabel || undefined, connContext),
     onSuccess: onDone,
   });
 
+  // Cross-pod mutation
+  const crossPodMutation = useMutation({
+    mutationFn: () => {
+      if (!crossPodTarget) throw new Error("No target");
+      return api.sendCrossPodConnectionRequest(
+        userId,
+        crossPodTarget.podUrl,
+        crossPodTarget.did,
+        crossPodTarget.username,
+        crossPodTarget.displayName,
+        message,
+        relType || undefined,
+        connContext,
+      );
+    },
+    onSuccess: onDone,
+  });
+
   const suggestions = relType ? LABEL_SUGGESTIONS[relType] || [] : [];
+  const selectedUser = unconnected.find((u) => u.id === targetId);
+  const isCrossPod = !!crossPodTarget;
+  const canSend = isCrossPod ? !crossPodMutation.isPending : (!!targetId && !localMutation.isPending);
+  const isPending = localMutation.isPending || crossPodMutation.isPending;
+  const isError = localMutation.isError || crossPodMutation.isError;
+  const errorMsg = ((localMutation.error || crossPodMutation.error) as Error)?.message;
+
+  const crossPodResults = registryResults?.results ?? [];
+
+  function selectCrossPod(agent: RegistryPodAgent) {
+    setCrossPodTarget({
+      did: agent.did,
+      podUrl: agent.pod_url,
+      username: agent.username || agent.display_name.toLowerCase().replace(/\s+/g, ""),
+      displayName: agent.display_name,
+    });
+    setSearch(agent.display_name);
+    setTargetId("");
+  }
+
+  function selectLocal(id: string) {
+    setTargetId(id);
+    setCrossPodTarget(null);
+    const u = unconnected.find((u) => u.id === id);
+    if (u) setSearch(u.display_name);
+  }
+
+  function clearSelection() {
+    setTargetId("");
+    setCrossPodTarget(null);
+    setSearch("");
+    setTimeout(() => searchRef.current?.focus(), 0);
+  }
+
+  const showDropdown = search.length >= 1 && !targetId && !crossPodTarget;
+  const hasLocalResults = filteredLocal.length > 0;
+  const hasCrossPodResults = crossPodResults.length > 0;
 
   return (
     <div className="bg-card border border-accent/20 rounded-2xl p-5 mb-6">
@@ -575,43 +686,132 @@ function SendConnectionForm({
       </h2>
 
       {isLoading ? (
-        <div className="py-6 text-center">
-          <p className="text-sm text-muted-foreground">Loading people...</p>
-        </div>
-      ) : unconnected.length === 0 ? (
-        <div className="py-6 text-center">
-          <p className="text-sm text-muted-foreground">You&apos;re already connected with everyone on this pod.</p>
+        <div className="py-4 text-center">
+          <p className="text-sm text-muted-foreground">Loading...</p>
         </div>
       ) : (
         <>
-          <div className="mb-4">
+          {/* Search / person picker */}
+          <div className="mb-4 relative">
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-medium text-muted-foreground">Who do you want to connect with?</label>
               <span className={`text-[9px] px-2 py-0.5 rounded border font-semibold uppercase tracking-wide ${CONTEXT_STYLE[connContext] ?? CONTEXT_STYLE.personal}`}>
                 Adding as: {connContext}
               </span>
             </div>
-            <select
-              value={targetId}
-              onChange={(e) => setTargetId(e.target.value)}
-              className="w-full bg-background border border-card-border rounded-xl px-4 py-2.5 text-sm"
-            >
-              <option value="">Select a person...</option>
-              {unconnected.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.display_name}{u.username ? ` (@${u.username})` : ""}
-                  {u.profile_data?.occupation?.title ? ` — ${u.profile_data.occupation.title}` : ""}
-                </option>
-              ))}
-            </select>
+            <div className="relative">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input
+                ref={searchRef}
+                type="text"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setTargetId(""); setCrossPodTarget(null); }}
+                placeholder="Search by name or @username across all pods..."
+                className="w-full pl-9 pr-8 py-2.5 bg-background border border-card-border rounded-xl text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50 transition-all"
+              />
+              {(search || targetId || crossPodTarget) && (
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              )}
+            </div>
+
+            {/* Dropdown results */}
+            {showDropdown && (hasLocalResults || hasCrossPodResults || registryFetching) && (
+              <div className="absolute z-10 w-full mt-1 bg-card border border-card-border rounded-xl shadow-lg overflow-hidden max-h-64 overflow-y-auto">
+                {hasLocalResults && (
+                  <>
+                    <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide bg-card-hover/50 border-b border-card-border">
+                      This Pod
+                    </div>
+                    {filteredLocal.map((u) => (
+                      <button
+                        key={u.id}
+                        type="button"
+                        onClick={() => selectLocal(u.id)}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-card-hover transition-colors text-left"
+                      >
+                        <div className="w-7 h-7 rounded-lg bg-accent/15 flex items-center justify-center text-accent font-bold text-xs shrink-0">
+                          {u.display_name[0]}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">{u.display_name}</p>
+                          {u.username && <p className="text-[11px] text-muted-foreground">@{u.username}</p>}
+                        </div>
+                      </button>
+                    ))}
+                  </>
+                )}
+                {registryFetching && !hasCrossPodResults && (
+                  <div className="px-3 py-3 text-xs text-muted-foreground text-center">Searching all pods...</div>
+                )}
+                {hasCrossPodResults && (
+                  <>
+                    <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide bg-card-hover/50 border-b border-card-border border-t">
+                      Other Pods
+                    </div>
+                    {crossPodResults.map((agent) => (
+                      <button
+                        key={agent.did}
+                        type="button"
+                        onClick={() => selectCrossPod(agent)}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-card-hover transition-colors text-left"
+                      >
+                        <div className="w-7 h-7 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400 font-bold text-xs shrink-0">
+                          {agent.display_name[0]}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium truncate">{agent.display_name}</p>
+                          <p className="text-[11px] text-muted-foreground truncate">
+                            {agent.username ? `@${agent.username} · ` : ""}
+                            {agent.pod_url.replace(/^https?:\/\//, "")}
+                          </p>
+                        </div>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">cross-pod</span>
+                      </button>
+                    ))}
+                  </>
+                )}
+                {!registryFetching && search.length >= 2 && !hasLocalResults && !hasCrossPodResults && (
+                  <div className="px-3 py-3 text-xs text-muted-foreground text-center">No results found</div>
+                )}
+              </div>
+            )}
           </div>
 
-          {selectedUser && (
+          {/* Selected user preview */}
+          {selectedUser && !crossPodTarget && (
             <div className="mb-4">
               <ProfilePreview user={selectedUser} networks={networks} />
             </div>
           )}
 
+          {/* Cross-pod selected preview */}
+          {crossPodTarget && (
+            <div className="mb-4 flex items-center gap-3 p-3 bg-emerald-500/5 border border-emerald-500/20 rounded-xl">
+              <div className="w-9 h-9 rounded-xl bg-emerald-500/15 flex items-center justify-center text-emerald-400 font-bold shrink-0">
+                {crossPodTarget.displayName[0]}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold">{crossPodTarget.displayName}</p>
+                <p className="text-xs text-muted-foreground truncate">
+                  {crossPodTarget.username ? `@${crossPodTarget.username} · ` : ""}
+                  {crossPodTarget.podUrl.replace(/^https?:\/\//, "")}
+                </p>
+              </div>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">cross-pod</span>
+            </div>
+          )}
+
+          {/* Relationship + label */}
           <div className="grid grid-cols-2 gap-3 mb-4">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1.5">Relationship</label>
@@ -627,7 +827,7 @@ function SendConnectionForm({
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1.5">Your nickname for them</label>
+              <label className="block text-xs font-medium text-muted-foreground mb-1.5">Nickname for them</label>
               <input
                 type="text"
                 value={fromLabel}
@@ -667,16 +867,16 @@ function SendConnectionForm({
             />
           </div>
 
-          {mutation.isError && (
-            <p className="text-xs text-danger mb-3">{(mutation.error as Error).message}</p>
+          {isError && (
+            <p className="text-xs text-danger mb-3">{errorMsg}</p>
           )}
 
           <button
-            onClick={() => mutation.mutate()}
-            disabled={!targetId || mutation.isPending}
+            onClick={() => isCrossPod ? crossPodMutation.mutate() : localMutation.mutate()}
+            disabled={!canSend}
             className="w-full bg-accent hover:bg-accent-hover text-accent-fg font-semibold py-3 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:shadow-lg hover:shadow-accent/20"
           >
-            {mutation.isPending ? "Sending..." : "Send Request"}
+            {isPending ? "Sending..." : "Send Request"}
           </button>
         </>
       )}

@@ -149,10 +149,12 @@ export default function DocPage() {
       <div className="border-b border-card-border sticky top-0 bg-background/95 backdrop-blur-sm z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-            <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center shrink-0">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#09090b" strokeWidth="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-            </div>
-            <span className="font-bold text-sm shrink-0">TrustMesh</span>
+            <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
+              <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center shrink-0">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#09090b" strokeWidth="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              </div>
+              <span className="font-bold text-sm shrink-0">TrustMesh</span>
+            </Link>
             <span className="text-xs text-foreground/40 font-mono hidden sm:inline">docs</span>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">

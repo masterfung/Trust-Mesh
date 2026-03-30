@@ -1,5 +1,5 @@
 const DEFAULT_API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:9000";
-const REGISTRY_URL = process.env.NEXT_PUBLIC_REGISTRY_URL || "http://localhost:8100";
+const REGISTRY_URL = process.env.NEXT_PUBLIC_REGISTRY_URL || "http://localhost:9100";
 
 /** Get the active pod URL (from localStorage or default). */
 export function getPodUrl(): string {
@@ -28,6 +28,20 @@ function getApiBase(): string {
     return ""; // Use relative URL — Next.js server-side rewrite handles it
   }
   return getPodUrl();
+}
+
+/**
+ * Get the base URL for the public registry (all-pods registry service).
+ *
+ * In production (non-localhost), route through the Next.js /api/public-registry
+ * handler which reads TRUSTMESH_REGISTRY_URL at runtime. On localhost, hit the
+ * registry directly.
+ */
+function getRegistryBase(): string {
+  if (typeof window !== "undefined" && window.location.hostname !== "localhost") {
+    return "/api/public-registry"; // Next.js route handler proxies to TRUSTMESH_REGISTRY_URL
+  }
+  return `${REGISTRY_URL}/api`;
 }
 
 /** Read the CSRF cookie value (set by backend, httpOnly=false so JS can read it). */
@@ -488,6 +502,8 @@ export const api = {
     apiFetch<Connection[]>(`/api/users/${userId}/connections`),
   listConnectionRequests: (userId: string) =>
     apiFetch<ConnectionRequest[]>(`/api/users/${userId}/connection-requests`),
+  listSentRequests: (userId: string) =>
+    apiFetch<ConnectionRequest[]>(`/api/users/${userId}/connection-requests/sent`),
   sendConnectionRequest: (fromUserId: string, toUserId: string, message: string, relationshipType?: string, fromLabel?: string, context?: string) =>
     apiFetch<ConnectionRequest>("/api/connections/request", {
       method: "POST",
@@ -504,6 +520,29 @@ export const api = {
     apiFetch<ConnectionRequest>(`/api/connection-requests/${requestId}`, {
       method: "PUT",
       body: JSON.stringify({ status, to_label: toLabel || undefined }),
+    }),
+  sendCrossPodConnectionRequest: (
+    fromUserId: string,
+    toPodUrl: string,
+    toDid: string,
+    toUsername: string,
+    toDisplayName: string,
+    message?: string,
+    relationshipType?: string,
+    context?: string,
+  ) =>
+    apiFetch<{ status: string; to_display_name: string; to_pod_url: string }>("/api/connections/request-cross-pod", {
+      method: "POST",
+      body: JSON.stringify({
+        from_user_id: fromUserId,
+        to_pod_url: toPodUrl,
+        to_did: toDid,
+        to_username: toUsername,
+        to_display_name: toDisplayName,
+        message: message || "",
+        relationship_type: relationshipType || "",
+        context: context || "personal",
+      }),
     }),
   deleteConnection: (connectionId: string) =>
     apiFetch<{ status: string }>(`/api/connections/${connectionId}`, { method: "DELETE" }),
@@ -711,15 +750,16 @@ export const api = {
   demoWarmup: () =>
     apiFetch<{ status: string; keys_loaded: number }>("/api/demo/warmup", { method: "POST" }),
 
-  // Public Registry (separate service on port 8100)
+  // Public Registry (separate service on port 8100 / TRUSTMESH_REGISTRY_URL)
+  // In production, proxied through /api/public-registry/* (reads env at runtime).
   registryListAll: () =>
-    fetch(`${REGISTRY_URL}/api/agents`, { headers: { "Content-Type": "application/json" } })
+    fetch(`${getRegistryBase()}/agents`, { headers: { "Content-Type": "application/json" } })
       .then(r => r.json()) as Promise<{ agents: RegistryPodAgent[]; count: number }>,
   registrySearchAll: (q: string) =>
-    fetch(`${REGISTRY_URL}/api/search?q=${encodeURIComponent(q)}`, { headers: { "Content-Type": "application/json" } })
+    fetch(`${getRegistryBase()}/search?q=${encodeURIComponent(q)}`, { headers: { "Content-Type": "application/json" } })
       .then(r => r.json()) as Promise<{ query: string; results: RegistryPodAgent[]; count: number }>,
   registryHealth: () =>
-    fetch(`${REGISTRY_URL}/api/health`).then(r => r.json()) as Promise<{ status: string; agent_count: number }>,
+    fetch(`${getRegistryBase()}/health`).then(r => r.json()) as Promise<{ status: string; agent_count: number }>,
 
   // Timeline
   getTimelineHealth: () =>

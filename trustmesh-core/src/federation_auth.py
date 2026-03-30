@@ -220,3 +220,68 @@ def verify_federation_request(
         _prune_seen_nonces(now_epoch)
 
     return FederationVerifyResult(status="valid")
+
+
+def verify_registry_response(
+    *,
+    registry_did: str,
+    body: bytes,
+    headers: Mapping[str, str],
+    now: datetime | None = None,
+    max_skew_seconds: int = DEFAULT_SKEW_SECONDS,
+) -> FederationVerifyResult:
+    """Verify a signed response from the TrustMesh registry.
+
+    The registry signs responses with the same scheme as federation requests
+    (timestamp + nonce + body), but as a *response* we skip replay protection
+    (each response nonce is unique; we just check the timestamp window).
+
+    registry_did: the expected did:key of the registry (from TRUSTMESH_REGISTRY_DID
+                  or the X-TrustMesh-Registry-DID response header).
+
+    Returns status="missing" if no signature headers are present (registry may be
+    running without a keypair configured), "valid" / "invalid" otherwise.
+    """
+    ts_s = headers.get(HEADER_TIMESTAMP)
+    nonce = headers.get(HEADER_NONCE)
+    sig_s = headers.get(HEADER_SIGNATURE)
+    alg = (headers.get(HEADER_SIGNATURE_ALG) or ALG_ED25519).lower().strip()
+
+    if not ts_s and not nonce and not sig_s:
+        return FederationVerifyResult(status="missing")
+
+    if not ts_s:
+        return FederationVerifyResult(status="invalid", reason=f"Missing {HEADER_TIMESTAMP}")
+    if not nonce:
+        return FederationVerifyResult(status="invalid", reason=f"Missing {HEADER_NONCE}")
+    if not sig_s:
+        return FederationVerifyResult(status="invalid", reason=f"Missing {HEADER_SIGNATURE}")
+    if alg != ALG_ED25519:
+        return FederationVerifyResult(status="invalid", reason=f"Unsupported alg: {alg}")
+
+    try:
+        ts = int(ts_s)
+    except Exception:
+        return FederationVerifyResult(status="invalid", reason="Invalid timestamp")
+
+    now_epoch = _now_epoch(now)
+    if abs(now_epoch - ts) > max_skew_seconds:
+        return FederationVerifyResult(status="invalid", reason="Timestamp outside allowed window")
+
+    try:
+        sig = _b64url_decode(sig_s)
+    except Exception:
+        return FederationVerifyResult(status="invalid", reason="Invalid signature encoding")
+    if len(sig) != 64:
+        return FederationVerifyResult(status="invalid", reason="Invalid signature length")
+
+    try:
+        pub = did_key_to_public_key(registry_did)
+    except Exception as e:
+        return FederationVerifyResult(status="invalid", reason=f"Invalid registry DID: {e}")
+
+    msg = _signed_message(ts, nonce, body)
+    if not verify_ed25519(msg, sig, pub):
+        return FederationVerifyResult(status="invalid", reason="Invalid signature")
+
+    return FederationVerifyResult(status="valid")

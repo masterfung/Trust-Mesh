@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 POD_NAME = os.getenv("TRUSTMESH_POD_NAME", "TrustMesh Pod")
 POD_URL = os.getenv("TRUSTMESH_POD_URL", "http://localhost:9000")
 REGISTRY_URL = os.getenv("TRUSTMESH_REGISTRY_URL", "")
+# Expected did:key of the registry — set to the value logged by the registry on startup.
+# When set, agent-list responses from the registry are signature-verified.
+REGISTRY_DID = os.getenv("TRUSTMESH_REGISTRY_DID", "")
 
 # Timeout for cross-pod HTTP calls
 FEDERATION_TIMEOUT = 15.0

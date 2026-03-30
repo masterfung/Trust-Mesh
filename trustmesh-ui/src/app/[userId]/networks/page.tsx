@@ -164,12 +164,13 @@ export default function NetworksPage() {
                       ))}
                     </div>
 
-                    {n.owner_id === userId && connections && connections.length > 0 && (
+                    {n.owner_id === userId && (
                       <AddMemberToNetwork
                         networkId={n.id}
                         currentMembers={n.members}
-                        connections={connections}
+                        connections={connections || []}
                         onAdded={() => queryClient.invalidateQueries({ queryKey: ["networks", userId] })}
+                        userId={userId}
                       />
                     )}
 
@@ -188,7 +189,7 @@ export default function NetworksPage() {
               </div>
             );
           })}
-          {!networks?.length && (
+          {!networks?.length && !showForm && (
             <div className="text-center py-12">
               <p className="text-muted-foreground text-sm">No groups yet.</p>
               <button
@@ -362,30 +363,41 @@ function NetworkForm({ userId, connections, onDone }: { userId: string; connecti
       )}
 
       {/* Add Members */}
-      {eligibleMembers.length > 0 && (
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-muted-foreground mb-2">Add Members</label>
-          <div className="flex gap-2 flex-wrap">
-            {eligibleMembers.map((u) => (
-              <button
-                key={u.id}
-                type="button"
-                onClick={() => toggleMember(u.id)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all border ${
-                  selectedMembers.includes(u.id)
-                    ? "bg-accent/20 text-accent border-accent/40"
-                    : "bg-card-hover text-muted-foreground border-card-border hover:border-accent/30"
-                }`}
-              >
-                {selectedMembers.includes(u.id) ? "\u2713 " : "+ "}{u.display_name}
-              </button>
-            ))}
+      <div className="mb-4">
+        <label className="block text-sm font-medium text-muted-foreground mb-2">Add Members</label>
+        {eligibleMembers.length > 0 ? (
+          <>
+            <div className="flex gap-2 flex-wrap">
+              {eligibleMembers.map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => toggleMember(u.id)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all border ${
+                    selectedMembers.includes(u.id)
+                      ? "bg-accent/20 text-accent border-accent/40"
+                      : "bg-card-hover text-muted-foreground border-card-border hover:border-accent/30"
+                  }`}
+                >
+                  {selectedMembers.includes(u.id) ? "✓ " : "+ "}{u.display_name}
+                </button>
+              ))}
+            </div>
+            {selectedMembers.length > 0 && (
+              <p className="text-[11px] text-muted-foreground mt-1.5">{selectedMembers.length} member{selectedMembers.length !== 1 ? "s" : ""} will be added on creation.</p>
+            )}
+          </>
+        ) : (
+          <div className="px-4 py-3 bg-card-hover/50 border border-card-border rounded-xl">
+            <p className="text-xs text-muted-foreground">
+              No connections yet — you can add members after connecting with people.{" "}
+              <a href={`/${userId}/connections`} className="text-accent hover:text-accent-hover underline underline-offset-2">
+                Go to People →
+              </a>
+            </p>
           </div>
-          {selectedMembers.length > 0 && (
-            <p className="text-[11px] text-muted-foreground mt-1.5">{selectedMembers.length} member{selectedMembers.length !== 1 ? "s" : ""} will be added on creation.</p>
-          )}
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Expiry date picker */}
       <div className="mb-4">
@@ -587,11 +599,13 @@ function AddMemberToNetwork({
   currentMembers,
   connections,
   onAdded,
+  userId,
 }: {
   networkId: string;
   currentMembers: User[];
   connections: Connection[];
   onAdded: () => void;
+  userId: string;
 }) {
   const [confirmUser, setConfirmUser] = useState<User | null>(null);
   const memberIds = new Set(currentMembers.map((m) => m.id));
@@ -607,7 +621,16 @@ function AddMemberToNetwork({
     },
   });
 
-  if (!eligible.length) return null;
+  if (!eligible.length) return (
+    <div className="mt-4 pt-4 border-t border-card-border">
+      <h3 className="text-xs font-semibold text-muted-foreground mb-2">Add Members</h3>
+      <p className="text-xs text-muted-foreground">
+        {connections.length === 0
+          ? <>No connections yet. <a href={`/${userId}/connections`} className="text-accent hover:text-accent-hover underline underline-offset-2">Connect with people →</a></>
+          : "All your connections are already in this group."}
+      </p>
+    </div>
+  );
 
   return (
     <>

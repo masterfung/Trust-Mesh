@@ -13,7 +13,7 @@ NONCE_SIZE = 12
 # Argon2id parameters (kept for reference, actual values are in Zig)
 ARGON2_TIME_COST = 3
 ARGON2_MEMORY_COST = 65536
-ARGON2_PARALLELISM = 4
+ARGON2_PARALLELISM = 1
 ARGON2_SALT_SIZE = 16
 
 PIN_ARGON2_TIME_COST = 2
