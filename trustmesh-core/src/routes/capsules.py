@@ -147,7 +147,22 @@ async def _propagation_fan_out(
 
                 if remote_pods:
                     from src.federation import push_capsule_notification
+                    from src.models import Agent
                     import asyncio
+
+                    # Get pod's signing key for authenticated notifications
+                    signing_key = None
+                    try:
+                        agent_result = await db.execute(
+                            select(Agent).where(Agent.owner_id == owner_id)
+                        )
+                        agent = agent_result.scalar_one_or_none()
+                        if agent and agent.encrypted_private_key:
+                            from src import transit_bridge
+                            signing_key = transit_bridge.decrypt(owner_id, agent.encrypted_private_key)
+                    except Exception:
+                        pass  # Unsigned is fine — receiver accepts both
+
                     tasks = [
                         push_capsule_notification(
                             peer_url=pod_url,
@@ -155,12 +170,14 @@ async def _propagation_fan_out(
                             capsule_title=capsule_title,
                             capsule_category=capsule_category,
                             owner_display_name=owner_display_name,
+                            signing_private_key=signing_key,
                         )
                         for pod_url in remote_pods
                     ]
                     results = await asyncio.gather(*tasks, return_exceptions=True)
                     ok = sum(1 for r in results if r is True)
-                    logger.info("propagation: cross-pod push to %d pods (%d ok)", len(remote_pods), ok)
+                    logger.info("propagation: cross-pod push to %d pods (%d ok, signed=%s)",
+                                len(remote_pods), ok, signing_key is not None)
 
     except Exception as e:
         logger.warning("propagation fan-out failed for capsule %s: %s", capsule_id[:8], e)

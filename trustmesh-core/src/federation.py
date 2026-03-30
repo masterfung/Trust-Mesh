@@ -546,14 +546,23 @@ async def push_capsule_notification(
     capsule_category: str,
     owner_display_name: str,
     from_pod_url: str | None = None,
+    signing_private_key: bytes | None = None,
 ) -> bool:
-    """Push a capsule update notification to a remote pod. Returns True on success."""
+    """Push a capsule update notification to a remote pod. Returns True on success.
+
+    If signing_private_key is provided, the request is signed with ed25519
+    (same scheme as federation queries). The receiving pod can verify the
+    signature to confirm the notification is genuine.
+    """
     try:
         _validate_peer_url(peer_url)
     except ValueError as exc:
         logger.warning("push_capsule_notification: SSRF rejected %r — %s", peer_url, exc)
         return False
     try:
+        import json as _json
+        from src.federation_auth import sign_federation_request
+
         payload = {
             "from_pod": from_pod_url or POD_URL,
             "notification_type": "capsule_updated",
@@ -562,8 +571,22 @@ async def push_capsule_notification(
             "capsule_category": capsule_category,
             "owner_display_name": owner_display_name,
         }
+        # Deterministic JSON for consistent signing
+        body = _json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+        headers = {"Content-Type": "application/json"}
+        if signing_private_key:
+            headers.update(sign_federation_request(
+                body, signing_private_key,
+                method="POST", path="/api/pod/notify",
+            ))
+
         async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post(f"{peer_url.rstrip('/')}/api/pod/notify", json=payload)
+            r = await client.post(
+                f"{peer_url.rstrip('/')}/api/pod/notify",
+                content=body,
+                headers=headers,
+            )
             if r.status_code == 200:
                 return True
             logger.warning("push_capsule_notification: %s returned %d", peer_url, r.status_code)
