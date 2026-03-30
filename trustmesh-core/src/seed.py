@@ -897,6 +897,7 @@ CAPSULES = [
         ),
         "visibility": "internal",
         "category": "family",
+        "propagation": "notify",
         "networks": ["The Johnsons"],
     },
     {
@@ -928,6 +929,7 @@ CAPSULES = [
         "visibility": "open",
         "category": "general",
         "can_reshare": True,
+        "propagation": "notify",
         "networks": [],
     },
     # Peter's private capsules — personal thoughts nobody else should see
@@ -1001,6 +1003,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     {
@@ -1017,6 +1020,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     {
@@ -1032,6 +1036,7 @@ CAPSULES = [
         ),
         "visibility": "internal",
         "category": "family",
+        "propagation": "notify",
         "networks": ["The Johnsons"],
     },
     # ── CONFLICT SCENARIO (for proactive Timeline interrupt demo) ──
@@ -1054,6 +1059,7 @@ CAPSULES = [
         ),
         "visibility": "internal",
         "category": "family",
+        "propagation": "notify",
         "networks": ["The Johnsons"],
     },
     {
@@ -1069,6 +1075,7 @@ CAPSULES = [
         ),
         "visibility": "internal",
         "category": "family",
+        "propagation": "notify",
         "networks": ["The Johnsons"],
     },
     {
@@ -1161,6 +1168,7 @@ CAPSULES = [
         "visibility": "open",
         "category": "general",
         "can_reshare": True,
+        "propagation": "notify",
         "networks": [],
     },
     # ── JANE ───────────────────────────────────
@@ -1176,6 +1184,7 @@ CAPSULES = [
         ),
         "visibility": "internal",
         "category": "family",
+        "propagation": "notify",
         "networks": ["The Johnsons"],
     },
     {
@@ -1188,6 +1197,7 @@ CAPSULES = [
         ),
         "visibility": "internal",
         "category": "family",
+        "propagation": "notify",
         "networks": ["The Johnsons"],
     },
     {
@@ -1242,6 +1252,7 @@ CAPSULES = [
         ),
         "visibility": "internal",
         "category": "family",
+        "propagation": "notify",
         "networks": ["The Johnsons"],
     },
     {
@@ -1257,6 +1268,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     {
@@ -1314,6 +1326,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     {
@@ -1330,6 +1343,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     {
@@ -1346,6 +1360,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     # ── FAMILY MEDICAL RECORDS (The Johnsons) ──
@@ -1364,6 +1379,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     {
@@ -1382,6 +1398,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     {
@@ -1400,6 +1417,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     {
@@ -1420,6 +1438,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     {
@@ -1444,6 +1463,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     {
@@ -1462,6 +1482,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["The Johnsons"],
     },
     # ── PROACTIVE SCENARIOS ─────────────────────
@@ -1475,6 +1496,7 @@ CAPSULES = [
         ),
         "visibility": "internal",
         "category": "family",
+        "propagation": "notify",
         "networks": ["The Johnsons"],
     },
     {
@@ -1487,6 +1509,7 @@ CAPSULES = [
         ),
         "visibility": "internal",
         "category": "family",
+        "propagation": "notify",
         "networks": ["The Johnsons"],
     },
     {
@@ -1499,6 +1522,7 @@ CAPSULES = [
         ),
         "visibility": "internal",
         "category": "family",
+        "propagation": "notify",
         "networks": ["The Johnsons"],
     },
     # ── KYLE ───────────────────────────────────
@@ -1548,6 +1572,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["Rose's Care Circle"],
     },
     {
@@ -1567,6 +1592,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["Rose's Care Circle"],
     },
     {
@@ -1582,6 +1608,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["Rose's Care Circle"],
     },
     {
@@ -1599,6 +1626,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["Rose's Care Circle"],
     },
     {
@@ -1617,6 +1645,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["Rose's Care Circle"],
     },
     {
@@ -1634,6 +1663,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["Rose's Care Circle"],
     },
     {
@@ -1650,6 +1680,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["Rose's Care Circle"],
     },
     {
@@ -1664,6 +1695,7 @@ CAPSULES = [
         "visibility": "internal",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "networks": ["Rose's Care Circle"],
     },
     {
@@ -1691,6 +1723,7 @@ CAPSULES = [
         ),
         "visibility": "internal",
         "category": "family",
+        "propagation": "notify",
         "networks": ["Rose's Care Circle", "The Johnsons"],
     },
     # Rose's travel & cultural preferences (open so federated agents can read them)
@@ -1719,6 +1752,7 @@ CAPSULES = [
         "visibility": "open",
         "category": "general",
         "can_reshare": True,
+        "propagation": "notify",
         "networks": [],
     },
     # Rose's private capsules — personal thoughts nobody else should see
@@ -2069,6 +2103,7 @@ CAPSULES = [
         "visibility": "private",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "context": "personal",
         "networks": [],
     },
@@ -2086,6 +2121,7 @@ CAPSULES = [
         "visibility": "private",
         "category": "health",
         "emergency_accessible": True,
+        "propagation": "broadcast",
         "context": "personal",
         "networks": [],
     },
@@ -2435,6 +2471,7 @@ async def seed():
                 category=c.get("category", ""),
                 context=ctx,
                 freshness="permanent" if c["type"] in ("skill", "procedure", "preference", "contact") else "temporary",
+                propagation=c.get("propagation", "silent"),
             )
             db.add(capsule)
             await db.flush()
