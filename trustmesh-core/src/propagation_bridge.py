@@ -77,3 +77,60 @@ def infer_propagation(
 
     # Rule 5: default
     return "silent"
+
+
+# ── Debounce buffer (Phase 2) ──
+
+_PROPAGATION_LEVEL = {"silent": 0, "notify": 1, "broadcast": 2}
+
+
+def debounce_push(pod_url: str, capsule_id: str, propagation: str) -> bool:
+    """Push a notification entry to the Zig debounce buffer.
+
+    Returns True if buffered (notify tier), False if broadcast bypass.
+    Falls back to immediate delivery if Zig unavailable.
+    """
+    lib = _get_lib()
+    if lib and hasattr(lib, "podos_debounce_push_export"):
+        import ctypes
+        level = _PROPAGATION_LEVEL.get(propagation, 0)
+        result = lib.podos_debounce_push_export(
+            pod_url.encode(), len(pod_url),
+            capsule_id.encode(), len(capsule_id),
+            ctypes.c_uint8(level),
+        )
+        return result == 1
+    # Fallback: no buffering, return False to trigger immediate send
+    return False
+
+
+def debounce_flush(pod_url: str) -> list[str]:
+    """Flush pending entries for a pod. Returns list of capsule_ids.
+
+    Falls back to empty list if Zig unavailable.
+    """
+    lib = _get_lib()
+    if lib and hasattr(lib, "podos_debounce_flush_export"):
+        import ctypes
+        buf = (ctypes.c_char * (64 * 36))()  # 64 entries × 36 bytes each
+        count = lib.podos_debounce_flush_export(
+            pod_url.encode(), len(pod_url),
+            buf, len(buf),
+        )
+        if count <= 0:
+            return []
+        capsule_ids = []
+        for i in range(count):
+            offset = i * 36
+            cid = bytes(buf[offset:offset + 36]).decode("utf-8", errors="replace")
+            capsule_ids.append(cid)
+        return capsule_ids
+    return []
+
+
+def debounce_pending() -> int:
+    """Get total pending count across all pod buffers."""
+    lib = _get_lib()
+    if lib and hasattr(lib, "podos_debounce_pending_export"):
+        return lib.podos_debounce_pending_export()
+    return 0

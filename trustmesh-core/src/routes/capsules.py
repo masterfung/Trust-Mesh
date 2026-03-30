@@ -138,12 +138,20 @@ async def _propagation_fan_out(
                 await db.commit()
                 logger.info("propagation: %d local notifications for capsule %s", local_count, capsule_id[:8])
 
-            # Cross-pod push (broadcast only)
-            if propagation == "broadcast":
-                remote_pods = set()
-                for _, is_remote, remote_pod_url in members:
-                    if is_remote and remote_pod_url:
-                        remote_pods.add(remote_pod_url.rstrip("/"))
+            # Cross-pod push: broadcast = immediate, notify = debounced
+            remote_pods = set()
+            for _, is_remote, remote_pod_url in members:
+                if is_remote and remote_pod_url:
+                    remote_pods.add(remote_pod_url.rstrip("/"))
+
+            if remote_pods and propagation == "notify":
+                # Debounce: push to Zig ring buffer, flush later
+                from src.propagation_bridge import debounce_push
+                for pod_url in remote_pods:
+                    debounce_push(pod_url, capsule_id, propagation)
+                logger.info("propagation: debounced %d pods for capsule %s", len(remote_pods), capsule_id[:8])
+
+            if remote_pods and propagation == "broadcast":
 
                 if remote_pods:
                     from src.federation import push_capsule_notification
