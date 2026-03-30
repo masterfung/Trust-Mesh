@@ -168,6 +168,17 @@ def _migrate_channel_tokens(conn) -> None:
     """))
 
 
+def _migrate_capsule_propagation(conn):
+    """Add propagation column to knowledge_capsules if missing."""
+    from sqlalchemy import text
+    result = conn.execute(text("PRAGMA table_info(knowledge_capsules)"))
+    columns = {row[1] for row in result}
+    if "propagation" not in columns:
+        conn.execute(text(
+            "ALTER TABLE knowledge_capsules ADD COLUMN propagation VARCHAR(20) NOT NULL DEFAULT 'silent'"
+        ))
+
+
 async def init_db():
     """Create all tables and run migrations."""
     # Import all models explicitly so Base.metadata is fully populated
@@ -183,6 +194,7 @@ async def init_db():
         await conn.run_sync(_migrate_connection_request_context)
         await conn.run_sync(_migrate_performance_indexes)
         await conn.run_sync(_migrate_channel_tokens)
+        await conn.run_sync(_migrate_capsule_propagation)
 
 
 def _drop_zig_tables(conn) -> None:

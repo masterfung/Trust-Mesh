@@ -144,6 +144,7 @@ class KnowledgeCapsule(Base):
     embedding_collection: Mapped[str] = mapped_column(String(50), default="general")
     context: Mapped[str] = mapped_column(String(20), default="personal")  # work | personal | both
     freshness: Mapped[str] = mapped_column(String(20), default="permanent")
+    propagation: Mapped[str] = mapped_column(String(20), default="silent")  # silent | notify | broadcast
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     auto_archive_days: Mapped[int | None] = mapped_column(Integer, nullable=True)

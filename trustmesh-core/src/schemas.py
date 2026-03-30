@@ -365,6 +365,7 @@ class CapsuleCreate(BaseModel):
     category: str = Field(default="", max_length=100)
     context: str = "personal"  # work | personal | both
     freshness: str = "permanent"
+    propagation: str = Field(default="silent", pattern=r"^(silent|notify|broadcast)$")
     expires_at: datetime | None = None
     auto_archive_days: int | None = None
     network_ids: list[str] = []
@@ -388,6 +389,7 @@ class CapsuleUpdate(BaseModel):
     category: str | None = Field(default=None, max_length=100)
     context: str | None = Field(default=None, pattern=r"^(work|personal|both)$")
     freshness: str | None = Field(default=None, max_length=50)
+    propagation: str | None = Field(default=None, pattern=r"^(silent|notify|broadcast)$")
     expires_at: datetime | None = None
     auto_archive_days: int | None = Field(default=None, ge=1, le=365)
     network_ids: list[str] | None = None
@@ -416,6 +418,7 @@ class CapsuleResponse(BaseModel):
     category: str
     context: str = "personal"
     freshness: str
+    propagation: str = "silent"
     expires_at: datetime | None = None
     last_verified_at: datetime
     auto_archive_days: int | None = None
