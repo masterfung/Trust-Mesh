@@ -467,6 +467,11 @@ cmd_demo() {
   # Give pods extra time to init
   echo "Waiting for pods to initialize..."
   sleep 5
+  # Reset registry to clear duplicates from previous runs
+  if curl -sf "http://localhost:$REGISTRY_PORT/api/health" > /dev/null 2>&1; then
+    echo "Resetting registry (clearing stale agents)..."
+    curl -sf -X POST "http://localhost:$REGISTRY_PORT/api/reset" > /dev/null 2>&1 || true
+  fi
   cmd_orchestrate
   cmd_status
 }
