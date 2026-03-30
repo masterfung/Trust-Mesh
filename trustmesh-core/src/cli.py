@@ -688,6 +688,7 @@ def vault_add(
     capsule_type: str = typer.Option("memory", "--type", help="Capsule type"),
     visibility: str = typer.Option("private", "--vis", help="Visibility: private|internal|open"),
     category: str = typer.Option(None, "--category", help="Category tag"),
+    propagation: str = typer.Option(None, "--propagation", help="Propagation: silent|notify|broadcast"),
 ):
     """Add a new capsule to your vault."""
     session = _require_session()
@@ -700,8 +701,13 @@ def vault_add(
     }
     if category:
         payload["category"] = category
+    if propagation:
+        payload["propagation"] = propagation
     result = _api("POST", f"/api/users/{me['id']}/capsules", session=session, json=payload)
+    prop_label = result.get("propagation", "silent")
     console.print(f"[green]Created capsule: {result['title']} ({result['id'][:8]})[/green]")
+    if prop_label != "silent":
+        console.print(f"[dim]Propagation: {prop_label} — network members will be notified on updates[/dim]")
 
 
 @vault_app.command("update")
@@ -710,8 +716,9 @@ def vault_update(
     content: str = typer.Option(None, "--content", "-c", help="New content"),
     title: str = typer.Option(None, "--title", "-t", help="New title"),
     visibility: str = typer.Option(None, "--vis", help="New visibility"),
+    propagation: str = typer.Option(None, "--propagation", help="Propagation: silent|notify|broadcast"),
 ):
-    """Update a capsule's content, title, or visibility."""
+    """Update a capsule's content, title, visibility, or propagation."""
     session = _require_session()
     me = _api("GET", "/api/auth/me", session=session)
     capsules = _api("GET", f"/api/users/{me['id']}/capsules", session=session)
@@ -731,14 +738,18 @@ def vault_update(
         payload["title"] = title
     if visibility is not None:
         payload["visibility"] = visibility
+    if propagation is not None:
+        payload["propagation"] = propagation
     if not payload:
-        console.print("[yellow]Nothing to update. Use --content, --title, or --vis.[/yellow]")
+        console.print("[yellow]Nothing to update. Use --content, --title, --vis, or --propagation.[/yellow]")
         raise typer.Exit(1)
 
     result = _api("PUT", f"/api/capsules/{cap['id']}", session=session, json=payload)
     console.print(f"[green]Updated capsule: {result.get('title', cap['title'])} ({cap['id'][:8]})[/green]")
     if content:
         console.print(f"[dim]Content updated ({len(content)} chars, re-encrypted)[/dim]")
+    if propagation:
+        console.print(f"[dim]Propagation: {result.get('propagation', propagation)}[/dim]")
 
 
 @vault_app.command("archive")

@@ -131,6 +131,17 @@ AGENT_TOOLS = [
                         "Must match exact network names from the owner's networks list."
                     ),
                 },
+                "propagation": {
+                    "type": "string",
+                    "enum": ["silent", "notify", "broadcast"],
+                    "description": (
+                        "How to notify network members when this capsule changes. "
+                        "silent: no notifications (default for private/personal). "
+                        "notify: alert network members on update. "
+                        "broadcast: notify + push to remote pods (default for health). "
+                        "Auto-inferred from category if not set."
+                    ),
+                },
                 "existing_capsule_id": {
                     "type": "string",
                     "description": (
@@ -834,6 +845,10 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
     network_names = params.get("network_names", [])
     existing_id = params.get("existing_capsule_id")
 
+    # Infer propagation
+    from src.propagation_bridge import infer_propagation as _infer_prop
+    propagation = _infer_prop(params.get("propagation"), category, visibility)
+
     # Apply category defaults if not explicitly set
     if category == "health" and not params.get("emergency_accessible"):
         emergency_accessible = True
@@ -924,6 +939,7 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
             can_reshare=can_reshare,
             category=category,
             freshness=freshness,
+            propagation=propagation,
         )
         ctx.db.add(capsule)
         await ctx.db.flush()
