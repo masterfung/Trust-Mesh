@@ -356,6 +356,211 @@ pub fn podos_create_notifications_export(
 }
 
 // ═══════════════════════════════════════════
+//  Debounce Ring Buffer (Phase 2)
+// ═══════════════════════════════════════════
+
+/// Entry in the debounce buffer — one pending capsule notification.
+pub const DebounceEntry = struct {
+    capsule_id: [36]u8 = undefined,
+    propagation: u8 = 0, // 0=silent, 1=notify, 2=broadcast
+    timestamp: i64 = 0,
+    valid: bool = false,
+};
+
+/// Per-pod debounce ring buffer. Fixed capacity, no heap allocation after init.
+/// Broadcast entries bypass the buffer entirely (returned immediately).
+pub const DebounceBuffer = struct {
+    const MAX_ENTRIES: usize = 64;
+    const MAX_PODS: usize = 256;
+
+    /// Pod URL → buffer index mapping. Fixed array, linear scan for lookup.
+    pod_urls: [MAX_PODS][512]u8 = undefined,
+    pod_url_lens: [MAX_PODS]u16 = [_]u16{0} ** MAX_PODS,
+    pod_count: usize = 0,
+
+    /// Ring buffers, one per pod slot.
+    entries: [MAX_PODS][MAX_ENTRIES]DebounceEntry = undefined,
+    heads: [MAX_PODS]usize = [_]usize{0} ** MAX_PODS,
+    tails: [MAX_PODS]usize = [_]usize{0} ** MAX_PODS,
+    counts: [MAX_PODS]usize = [_]usize{0} ** MAX_PODS,
+
+    mutex: std.Thread.Mutex = .{},
+
+    /// Find or create a pod slot. Returns slot index, or null if full.
+    fn findOrCreatePod(self: *DebounceBuffer, pod_url: []const u8) ?usize {
+        const url_len = @min(pod_url.len, 512);
+        // Linear scan for existing
+        for (0..self.pod_count) |i| {
+            if (self.pod_url_lens[i] == url_len and
+                std.mem.eql(u8, self.pod_urls[i][0..url_len], pod_url[0..url_len]))
+            {
+                return i;
+            }
+        }
+        // Create new slot
+        if (self.pod_count >= MAX_PODS) return null;
+        const idx = self.pod_count;
+        @memcpy(self.pod_urls[idx][0..url_len], pod_url[0..url_len]);
+        self.pod_url_lens[idx] = @intCast(url_len);
+        self.pod_count += 1;
+        return idx;
+    }
+
+    /// Enqueue a notification for a pod. Returns true if buffered, false if broadcast (bypass).
+    /// Broadcast entries are NOT buffered — caller should send immediately.
+    pub fn enqueue(self: *DebounceBuffer, pod_url: []const u8, capsule_id: []const u8, propagation_level: u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Broadcast bypasses the buffer — immediate delivery required
+        if (propagation_level == 2) return false;
+
+        const slot = self.findOrCreatePod(pod_url) orelse return false;
+
+        // Write to ring buffer
+        const tail = self.tails[slot];
+        var entry = &self.entries[slot][tail];
+        if (capsule_id.len >= 36) {
+            @memcpy(&entry.capsule_id, capsule_id[0..36]);
+        } else {
+            @memset(&entry.capsule_id, 0);
+            @memcpy(entry.capsule_id[0..capsule_id.len], capsule_id);
+        }
+        entry.propagation = propagation_level;
+        entry.timestamp = std.time.timestamp();
+        entry.valid = true;
+
+        self.tails[slot] = (tail + 1) % MAX_ENTRIES;
+        if (self.counts[slot] < MAX_ENTRIES) {
+            self.counts[slot] += 1;
+        } else {
+            // Buffer full — advance head (drop oldest)
+            self.heads[slot] = (self.heads[slot] + 1) % MAX_ENTRIES;
+        }
+        return true;
+    }
+
+    /// Flush all pending entries for a pod. Returns count of entries written to out_buf.
+    /// Each entry in out_buf is 36 bytes (capsule_id).
+    pub fn flush(self: *DebounceBuffer, pod_url: []const u8, out_buf: []DebounceEntry) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const url_len = @min(pod_url.len, 512);
+        // Find pod slot
+        var slot: ?usize = null;
+        for (0..self.pod_count) |i| {
+            if (self.pod_url_lens[i] == url_len and
+                std.mem.eql(u8, self.pod_urls[i][0..url_len], pod_url[0..url_len]))
+            {
+                slot = i;
+                break;
+            }
+        }
+        const s = slot orelse return 0;
+        if (self.counts[s] == 0) return 0;
+
+        var written: usize = 0;
+        var head = self.heads[s];
+        while (written < self.counts[s] and written < out_buf.len) {
+            out_buf[written] = self.entries[s][head];
+            head = (head + 1) % MAX_ENTRIES;
+            written += 1;
+        }
+
+        // Reset buffer for this pod
+        self.heads[s] = 0;
+        self.tails[s] = 0;
+        self.counts[s] = 0;
+
+        return written;
+    }
+
+    /// Flush ALL pods. Returns total entries flushed.
+    pub fn flushAll(self: *DebounceBuffer, callback: *const fn (pod_url: []const u8, entries: []const DebounceEntry, count: usize) void) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var total: usize = 0;
+        for (0..self.pod_count) |i| {
+            if (self.counts[i] == 0) continue;
+            var batch: [MAX_ENTRIES]DebounceEntry = undefined;
+            var count: usize = 0;
+            var head = self.heads[i];
+            while (count < self.counts[i]) {
+                batch[count] = self.entries[i][head];
+                head = (head + 1) % MAX_ENTRIES;
+                count += 1;
+            }
+            if (count > 0) {
+                const url = self.pod_urls[i][0..self.pod_url_lens[i]];
+                callback(url, &batch, count);
+                total += count;
+            }
+            self.heads[i] = 0;
+            self.tails[i] = 0;
+            self.counts[i] = 0;
+        }
+        return total;
+    }
+
+    /// Get count of pending entries across all pods.
+    pub fn pendingCount(self: *DebounceBuffer) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var total: usize = 0;
+        for (0..self.pod_count) |i| {
+            total += self.counts[i];
+        }
+        return total;
+    }
+};
+
+/// Global debounce buffer instance (module-level, like rate_limit).
+var _debounce_buffer: DebounceBuffer = .{};
+
+/// C ABI: push entry to debounce buffer. Returns 1 if buffered, 0 if broadcast bypass, -1 if error.
+pub fn podos_debounce_push_export(
+    pod_url_ptr: [*]const u8,
+    pod_url_len: usize,
+    capsule_id_ptr: [*]const u8,
+    capsule_id_len: usize,
+    propagation_level: u8,
+) callconv(.c) c_int {
+    const pod_url = pod_url_ptr[0..pod_url_len];
+    const capsule_id = capsule_id_ptr[0..capsule_id_len];
+    const buffered = _debounce_buffer.enqueue(pod_url, capsule_id, propagation_level);
+    return if (buffered) 1 else 0;
+}
+
+/// C ABI: flush debounce buffer for a pod. Returns count of entries written to out_buf.
+/// out_buf layout: [count * 36] bytes of capsule_ids, packed contiguously.
+pub fn podos_debounce_flush_export(
+    pod_url_ptr: [*]const u8,
+    pod_url_len: usize,
+    out_buf: [*]u8,
+    out_buf_cap: usize,
+) callconv(.c) c_int {
+    const pod_url = pod_url_ptr[0..pod_url_len];
+    var entries: [64]DebounceEntry = undefined;
+    const count = _debounce_buffer.flush(pod_url, &entries);
+
+    // Pack capsule_ids into out_buf
+    var offset: usize = 0;
+    for (entries[0..count]) |entry| {
+        if (offset + 36 > out_buf_cap) break;
+        @memcpy(out_buf[offset .. offset + 36], &entry.capsule_id);
+        offset += 36;
+    }
+    return @intCast(count);
+}
+
+/// C ABI: get total pending count across all pods.
+pub fn podos_debounce_pending_export() callconv(.c) c_int {
+    return @intCast(_debounce_buffer.pendingCount());
+}
+
+// ═══════════════════════════════════════════
 //  Tests
 // ═══════════════════════════════════════════
 
@@ -393,4 +598,60 @@ test "inferPropagation: empty explicit uses category default" {
 
 test "inferPropagation: invalid explicit falls through" {
     try std.testing.expectEqualStrings("notify", inferPropagation("scream", "family", "internal"));
+}
+
+// ── Debounce buffer tests ──
+
+test "debounce: enqueue and flush" {
+    var buf: DebounceBuffer = .{};
+    const cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const buffered = buf.enqueue("http://pod:9001", cid, 1); // notify
+    try std.testing.expect(buffered);
+    try std.testing.expectEqual(@as(usize, 1), buf.pendingCount());
+
+    var out: [64]DebounceEntry = undefined;
+    const flushed = buf.flush("http://pod:9001", &out);
+    try std.testing.expectEqual(@as(usize, 1), flushed);
+    try std.testing.expectEqual(@as(usize, 0), buf.pendingCount());
+    try std.testing.expectEqualStrings(cid, &out[0].capsule_id);
+}
+
+test "debounce: broadcast bypasses buffer" {
+    var buf: DebounceBuffer = .{};
+    const cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const buffered = buf.enqueue("http://pod:9001", cid, 2); // broadcast
+    try std.testing.expect(!buffered); // NOT buffered — bypass
+    try std.testing.expectEqual(@as(usize, 0), buf.pendingCount());
+}
+
+test "debounce: coalesces multiple entries" {
+    var buf: DebounceBuffer = .{};
+    _ = buf.enqueue("http://pod:9001", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeee01", 1);
+    _ = buf.enqueue("http://pod:9001", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeee02", 1);
+    _ = buf.enqueue("http://pod:9001", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeee03", 1);
+    try std.testing.expectEqual(@as(usize, 3), buf.pendingCount());
+
+    var out: [64]DebounceEntry = undefined;
+    const flushed = buf.flush("http://pod:9001", &out);
+    try std.testing.expectEqual(@as(usize, 3), flushed);
+    try std.testing.expectEqual(@as(usize, 0), buf.pendingCount());
+}
+
+test "debounce: flush empty returns zero" {
+    var buf: DebounceBuffer = .{};
+    var out: [64]DebounceEntry = undefined;
+    const flushed = buf.flush("http://nonexistent:9999", &out);
+    try std.testing.expectEqual(@as(usize, 0), flushed);
+}
+
+test "debounce: separate pods independent" {
+    var buf: DebounceBuffer = .{};
+    _ = buf.enqueue("http://pod-a:9001", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeee01", 1);
+    _ = buf.enqueue("http://pod-b:9002", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeee02", 1);
+    try std.testing.expectEqual(@as(usize, 2), buf.pendingCount());
+
+    var out: [64]DebounceEntry = undefined;
+    const flushed_a = buf.flush("http://pod-a:9001", &out);
+    try std.testing.expectEqual(@as(usize, 1), flushed_a);
+    try std.testing.expectEqual(@as(usize, 1), buf.pendingCount()); // pod-b still has 1
 }
