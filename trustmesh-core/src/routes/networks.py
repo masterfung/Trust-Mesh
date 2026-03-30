@@ -499,3 +499,88 @@ async def review_join_request(
 
     await db.commit()
     return {"ok": True, "status": data.status}
+
+
+# ── Network mute / notification preferences ──
+
+@router.put("/networks/{network_id}/mute")
+async def mute_network(
+    network_id: str,
+    db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
+    """Mute propagation notifications from a network."""
+    from src.models import NetworkSubscriptionPref
+
+    # Check existing pref
+    existing = await db.execute(
+        select(NetworkSubscriptionPref).where(
+            NetworkSubscriptionPref.user_id == auth_user_id,
+            NetworkSubscriptionPref.network_id == network_id,
+        )
+    )
+    pref = existing.scalar_one_or_none()
+    if pref:
+        pref.muted = True
+        pref.mute_until = None
+    else:
+        db.add(NetworkSubscriptionPref(
+            user_id=auth_user_id,
+            network_id=network_id,
+            muted=True,
+        ))
+    await db.commit()
+    return {"ok": True, "muted": True}
+
+
+@router.delete("/networks/{network_id}/mute")
+async def unmute_network(
+    network_id: str,
+    db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
+    """Unmute propagation notifications from a network."""
+    from src.models import NetworkSubscriptionPref
+
+    existing = await db.execute(
+        select(NetworkSubscriptionPref).where(
+            NetworkSubscriptionPref.user_id == auth_user_id,
+            NetworkSubscriptionPref.network_id == network_id,
+        )
+    )
+    pref = existing.scalar_one_or_none()
+    if pref:
+        pref.muted = False
+        pref.mute_until = None
+        await db.commit()
+    return {"ok": True, "muted": False}
+
+
+@router.get("/networks/{network_id}/mute")
+async def get_mute_status(
+    network_id: str,
+    db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
+    """Check if a network is muted for the current user."""
+    from src.models import NetworkSubscriptionPref
+    from datetime import datetime, timezone
+
+    existing = await db.execute(
+        select(NetworkSubscriptionPref).where(
+            NetworkSubscriptionPref.user_id == auth_user_id,
+            NetworkSubscriptionPref.network_id == network_id,
+        )
+    )
+    pref = existing.scalar_one_or_none()
+    if not pref:
+        return {"muted": False}
+
+    # Check temporary snooze expiry
+    if pref.muted and pref.mute_until and pref.mute_until < datetime.now(timezone.utc):
+        pref.muted = False
+        pref.mute_until = None
+        await db.commit()
+        return {"muted": False}
+
+    return {"muted": pref.muted, "mute_until": pref.mute_until}

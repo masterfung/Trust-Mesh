@@ -120,11 +120,37 @@ async def _propagation_fan_out(
             if not members:
                 return
 
-            # Local notifications
+            # Build set of muted user+network pairs for filtering
+            from src.models import NetworkSubscriptionPref
+            from datetime import datetime as _dt, timezone as _tz
+            muted_result = await db.execute(
+                select(NetworkSubscriptionPref.user_id, NetworkSubscriptionPref.network_id)
+                .where(
+                    NetworkSubscriptionPref.muted == True,  # noqa: E712
+                    or_(
+                        NetworkSubscriptionPref.mute_until.is_(None),
+                        NetworkSubscriptionPref.mute_until > _dt.now(_tz.utc),
+                    ),
+                )
+            )
+            muted_pairs = set((r[0], r[1]) for r in muted_result.all())
+
+            # Get network IDs for this capsule (for mute check)
+            cap_net_result = await db.execute(
+                select(CapsuleNetworkAccess.network_id).where(CapsuleNetworkAccess.capsule_id == capsule_id)
+            )
+            capsule_network_ids = [r[0] for r in cap_net_result.all()]
+
+            # Local notifications (skip muted users)
             local_count = 0
             for user_id, is_remote, remote_pod_url in members:
                 if is_remote:
                     continue
+                # Check if user has muted ALL networks this capsule is shared to
+                if capsule_network_ids and all(
+                    (user_id, nid) in muted_pairs for nid in capsule_network_ids
+                ):
+                    continue  # User muted all relevant networks
                 db.add(Notification(
                     user_id=user_id,
                     notification_type="capsule_updated",

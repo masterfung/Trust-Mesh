@@ -215,6 +215,18 @@ class SharingDelegate(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class NetworkSubscriptionPref(Base):
+    """Per-user notification preferences for networks. Mute/snooze propagation notifications."""
+    __tablename__ = "network_subscription_prefs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    network_id: Mapped[str] = mapped_column(ForeignKey("networks.id"), nullable=False)
+    muted: Mapped[bool] = mapped_column(Boolean, default=False)
+    mute_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # NULL = permanent
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ConnectionRequest(Base):
     __tablename__ = "connection_requests"
 
