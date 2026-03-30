@@ -201,6 +201,7 @@ const CreateRequest = struct {
     emergency_accessible: ?bool = null,
     can_reshare: ?bool = null,
     freshness: ?[]const u8 = null,
+    propagation: ?[]const u8 = null,
 };
 
 fn handleCreateCapsule(ctx: *http.RequestContext) !void {
@@ -238,6 +239,7 @@ fn handleCreateCapsule(ctx: *http.RequestContext) !void {
     const freshness = req.freshness orelse "permanent";
     const emerg = req.emergency_accessible orelse false;
     const reshare = req.can_reshare orelse false;
+    const propagation = podos.propagation.inferPropagation(req.propagation, category, visibility);
 
     // Generate capsule ID
     var capsule_id_buf: [36]u8 = undefined;
@@ -265,9 +267,9 @@ fn handleCreateCapsule(ctx: *http.RequestContext) !void {
             "INSERT INTO knowledge_capsules " ++
                 "(id, owner_id, capsule_type, title, content_encrypted, content_hash, " ++
                 "visibility, emergency_accessible, can_reshare, category, " ++
-                "embedding_collection, context, freshness, last_verified_at, " ++
+                "embedding_collection, context, freshness, propagation, last_verified_at, " ++
                 "is_archived, authority_weight, created_at, updated_at) " ++
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'default', ?, ?, ?, 0, 1.0, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'default', ?, ?, ?, ?, 0, 1.0, ?, ?)",
         ) catch return ctx.sendError(.internal_server_error, "DB error");
         defer stmt.finalize();
         stmt.bindText(1, capsule_id.ptr, 36) catch return ctx.sendError(.internal_server_error, "DB error");
@@ -282,9 +284,10 @@ fn handleCreateCapsule(ctx: *http.RequestContext) !void {
         stmt.bindText(10, category.ptr, @intCast(category.len)) catch return ctx.sendError(.internal_server_error, "DB error");
         stmt.bindText(11, context_val.ptr, @intCast(context_val.len)) catch return ctx.sendError(.internal_server_error, "DB error");
         stmt.bindText(12, freshness.ptr, @intCast(freshness.len)) catch return ctx.sendError(.internal_server_error, "DB error");
-        stmt.bindText(13, ts.ptr, @intCast(ts.len)) catch return ctx.sendError(.internal_server_error, "DB error");
+        stmt.bindText(13, propagation.ptr, @intCast(propagation.len)) catch return ctx.sendError(.internal_server_error, "DB error");
         stmt.bindText(14, ts.ptr, @intCast(ts.len)) catch return ctx.sendError(.internal_server_error, "DB error");
         stmt.bindText(15, ts.ptr, @intCast(ts.len)) catch return ctx.sendError(.internal_server_error, "DB error");
+        stmt.bindText(16, ts.ptr, @intCast(ts.len)) catch return ctx.sendError(.internal_server_error, "DB error");
         _ = stmt.step() catch return ctx.sendError(.internal_server_error, "Insert failed");
     }
 
@@ -301,8 +304,8 @@ fn handleCreateCapsule(ctx: *http.RequestContext) !void {
     const eid_len = json_mod.escapeJsonString(capsule_id, &esc_id) catch
         return ctx.sendError(.internal_server_error, "Serialize failed");
     const body = try std.fmt.allocPrint(ctx.allocator,
-        "{{\"id\":\"{s}\",\"owner_id\":\"{s}\",\"title\":\"{s}\",\"capsule_type\":\"{s}\",\"visibility\":\"{s}\",\"category\":\"{s}\",\"created_at\":\"{s}\"}}",
-        .{ esc_id[0..eid_len], auth_user_id, title, capsule_type, visibility, category, ts },
+        "{{\"id\":\"{s}\",\"owner_id\":\"{s}\",\"title\":\"{s}\",\"capsule_type\":\"{s}\",\"visibility\":\"{s}\",\"category\":\"{s}\",\"propagation\":\"{s}\",\"created_at\":\"{s}\"}}",
+        .{ esc_id[0..eid_len], auth_user_id, title, capsule_type, visibility, category, propagation, ts },
     );
     try ctx.json(.created, body);
 }
@@ -317,6 +320,7 @@ const UpdateRequest = struct {
     visibility: ?[]const u8 = null,
     category: ?[]const u8 = null,
     is_archived: ?bool = null,
+    propagation: ?[]const u8 = null,
 };
 
 fn handleUpdateCapsule(ctx: *http.RequestContext) !void {
@@ -426,6 +430,19 @@ fn handleUpdateCapsule(ctx: *http.RequestContext) !void {
         stmt.bindText(2, ts.ptr, @intCast(ts.len)) catch return ctx.sendError(.internal_server_error, "DB error");
         stmt.bindText(3, cap_id.ptr, @intCast(cap_id.len)) catch return ctx.sendError(.internal_server_error, "DB error");
         _ = stmt.step() catch return ctx.sendError(.internal_server_error, "Update failed");
+    }
+    if (req.propagation) |prop| {
+        // Validate propagation value
+        if (std.mem.eql(u8, prop, "silent") or std.mem.eql(u8, prop, "notify") or std.mem.eql(u8, prop, "broadcast")) {
+            var stmt = database.prepare(
+                "UPDATE knowledge_capsules SET propagation = ?, updated_at = ? WHERE id = ?",
+            ) catch return ctx.sendError(.internal_server_error, "DB error");
+            defer stmt.finalize();
+            stmt.bindText(1, prop.ptr, @intCast(prop.len)) catch return ctx.sendError(.internal_server_error, "DB error");
+            stmt.bindText(2, ts.ptr, @intCast(ts.len)) catch return ctx.sendError(.internal_server_error, "DB error");
+            stmt.bindText(3, cap_id.ptr, @intCast(cap_id.len)) catch return ctx.sendError(.internal_server_error, "DB error");
+            _ = stmt.step() catch return ctx.sendError(.internal_server_error, "Update failed");
+        }
     }
 
     try ctx.json(.ok, "{\"ok\":true}");

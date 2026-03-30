@@ -29,6 +29,7 @@ pub const credential_audit = @import("credential_audit.zig");
 pub const message = @import("message.zig");
 pub const research = @import("research.zig");
 pub const sensitivity = @import("sensitivity.zig");
+pub const propagation = @import("propagation.zig");
 
 // Page allocator for FFI — simple, no libc dependency
 const ffi_allocator = std.heap.page_allocator;
