@@ -69,3 +69,4 @@ logs/demo-3pod/work-seed.log
 logs/demo-3pod/work.log
 logs/demo-3pod/work.pid
 trustmesh-core/pod_kek.bin
+infra/.terraform/
