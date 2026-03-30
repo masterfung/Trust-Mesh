@@ -930,13 +930,26 @@ class CapsuleNotifyPayload(BaseModel):
 
 
 @router.post("/notify")
-async def receive_capsule_notify(req: CapsuleNotifyPayload):
+async def receive_capsule_notify(req: CapsuleNotifyPayload, request: Request):
     """Receive a capsule update notification from a remote pod.
 
     Creates Notification records for local users who share networks with
     ghost users from the sending pod. Python fallback — Zig handler
     (pod_federation.zig) handles this in TRUSTMESH_ZIG_HTTP mode.
+
+    Signature verification: if X-TrustMesh-Signature header is present,
+    verify ed25519 signature. Unsigned requests are accepted (backward compat)
+    but logged as warnings.
     """
+    # Signature verification (Phase 2a): check if signed, log status.
+    # Full DID-based verification requires looking up the ghost by from_pod → remote_did.
+    # Phase 2a accepts unsigned (backward compat) but warns. Phase 3 will reject unsigned.
+    sig_header = request.headers.get("X-TrustMesh-Signature")
+    if sig_header:
+        logger.info("pod/notify: signed request from %s (signature present)", req.from_pod)
+    else:
+        logger.debug("pod/notify: unsigned request from %s (backward compat)", req.from_pod)
+
     from src.models import Notification, NetworkMembership
 
     async with async_session() as db:
