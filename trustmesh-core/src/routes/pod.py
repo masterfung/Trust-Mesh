@@ -918,6 +918,60 @@ async def pool_sync(req: PoolSyncRequest, request: Request):
         }
 
 
+# ── Cross-pod Capsule Notification (Python fallback for non-Zig mode) ──
+
+class CapsuleNotifyPayload(BaseModel):
+    from_pod: str = Field(..., min_length=1, max_length=500)
+    notification_type: str = "capsule_updated"
+    capsule_id: str = Field(default="", max_length=36)
+    capsule_title: str = Field(..., min_length=1, max_length=200)
+    capsule_category: str = Field(default="general", max_length=50)
+    owner_display_name: str = Field(..., min_length=1, max_length=100)
+
+
+@router.post("/notify")
+async def receive_capsule_notify(req: CapsuleNotifyPayload):
+    """Receive a capsule update notification from a remote pod.
+
+    Creates Notification records for local users who share networks with
+    ghost users from the sending pod. Python fallback — Zig handler
+    (pod_federation.zig) handles this in TRUSTMESH_ZIG_HTTP mode.
+    """
+    from src.models import Notification, NetworkMembership
+
+    async with async_session() as db:
+        # Find local users in networks shared with ghosts from this pod
+        from_pod_normalized = req.from_pod.rstrip("/")
+        result = await db.execute(
+            select(User.id)
+            .join(NetworkMembership, NetworkMembership.user_id == User.id)
+            .where(
+                User.is_remote == False,  # noqa: E712
+                NetworkMembership.network_id.in_(
+                    select(NetworkMembership.network_id)
+                    .join(User, User.id == NetworkMembership.user_id)
+                    .where(
+                        User.is_remote == True,  # noqa: E712
+                        User.remote_pod_url.contains(from_pod_normalized),
+                    )
+                ),
+            )
+        )
+        local_ids = list(set(row[0] for row in result.all()))
+
+        for uid in local_ids:
+            db.add(Notification(
+                user_id=uid,
+                notification_type="capsule_updated",
+                title=f"{req.owner_display_name} updated: {req.capsule_title[:80]}",
+                body=f"Capsule '{req.capsule_title}' ({req.capsule_category}) was updated on a remote pod.",
+                related_id=req.capsule_id or None,
+            ))
+        await db.commit()
+
+        return {"received": True, "notifications_created": len(local_ids)}
+
+
 # ── Orchestrator Connection Sync ──
 
 class SyncConnectionItem(BaseModel):
