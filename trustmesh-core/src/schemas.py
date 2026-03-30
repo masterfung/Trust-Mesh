@@ -419,6 +419,9 @@ class CapsuleResponse(BaseModel):
     context: str = "personal"
     freshness: str
     propagation: str = "silent"
+    stale_since: datetime | None = None
+    stale_reason: str | None = None
+    stale_source_capsule_id: str | None = None
     expires_at: datetime | None = None
     last_verified_at: datetime
     auto_archive_days: int | None = None

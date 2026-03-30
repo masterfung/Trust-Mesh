@@ -154,6 +154,9 @@ class KnowledgeCapsule(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stale_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stale_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    stale_source_capsule_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     owner: Mapped["User"] = relationship(back_populates="capsules")
     network_access: Mapped[list["CapsuleNetworkAccess"]] = relationship(

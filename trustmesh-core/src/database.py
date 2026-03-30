@@ -179,6 +179,19 @@ def _migrate_capsule_propagation(conn):
         ))
 
 
+def _migrate_capsule_staleness(conn):
+    """Add staleness columns to knowledge_capsules if missing."""
+    from sqlalchemy import text
+    result = conn.execute(text("PRAGMA table_info(knowledge_capsules)"))
+    columns = {row[1] for row in result}
+    if "stale_since" not in columns:
+        conn.execute(text("ALTER TABLE knowledge_capsules ADD COLUMN stale_since DATETIME"))
+    if "stale_reason" not in columns:
+        conn.execute(text("ALTER TABLE knowledge_capsules ADD COLUMN stale_reason VARCHAR(500)"))
+    if "stale_source_capsule_id" not in columns:
+        conn.execute(text("ALTER TABLE knowledge_capsules ADD COLUMN stale_source_capsule_id VARCHAR(36)"))
+
+
 async def init_db():
     """Create all tables and run migrations."""
     # Import all models explicitly so Base.metadata is fully populated
@@ -195,6 +208,7 @@ async def init_db():
         await conn.run_sync(_migrate_performance_indexes)
         await conn.run_sync(_migrate_channel_tokens)
         await conn.run_sync(_migrate_capsule_propagation)
+        await conn.run_sync(_migrate_capsule_staleness)
 
 
 def _drop_zig_tables(conn) -> None:
