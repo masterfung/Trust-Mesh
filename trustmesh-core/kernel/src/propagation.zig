@@ -180,13 +180,15 @@ pub fn resolveTargets(
 
     var count: usize = 0;
     while (true) {
-        const rc = stmt.step() catch return error.DbError;
-        if (rc != .row) break;
+        const has_row = stmt.step() catch return error.DbError;
+        if (!has_row) break;
         if (count >= targets.len) break; // buffer full
 
-        const uid = stmt.columnText(0);
-        const is_remote_val = stmt.columnInt(1);
-        const pod_url = stmt.columnText(2);
+        const uid_ptr = stmt.getText(0) orelse continue;
+        const uid = std.mem.span(uid_ptr);
+        const is_remote_val = stmt.getInt(1);
+        const pod_url_ptr = stmt.getText(2);
+        const pod_url = if (pod_url_ptr) |p| std.mem.span(p) else "";
 
         var target = &targets[count];
         // Copy user_id

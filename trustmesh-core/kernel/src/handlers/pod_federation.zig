@@ -30,6 +30,7 @@ pub fn setRateLimiter(rl: *podos.rate_limit.RateLimiter) void {
 pub fn registerRoutes() void {
     router.addExact(.POST, "/api/pod/connection-request", handleInboundConnectionRequest);
     router.addExact(.POST, "/api/pod/connection-accept", handleInboundConnectionAccept);
+    router.addExact(.POST, "/api/pod/notify", handleCapsuleNotify);
 }
 
 // ═══════════════════════════════════════════
@@ -583,4 +584,140 @@ fn handleInboundConnectionAccept(ctx: *http.RequestContext) !void {
         .{conn_id},
     );
     try ctx.json(.ok, response);
+}
+
+// ═══════════════════════════════════════════
+//  POST /api/pod/notify — Receive capsule update notification from remote pod
+// ═══════════════════════════════════════════
+
+const CapsuleNotifyRequest = struct {
+    from_pod: ?[]const u8 = null,
+    notification_type: ?[]const u8 = null,
+    capsule_id: ?[]const u8 = null,
+    capsule_title: ?[]const u8 = null,
+    capsule_category: ?[]const u8 = null,
+    owner_display_name: ?[]const u8 = null,
+};
+
+fn handleCapsuleNotify(ctx: *http.RequestContext) !void {
+    const database = _db orelse return ctx.sendError(.service_unavailable, "DB not ready");
+
+    if (ctx.body.len == 0) return ctx.sendError(.bad_request, "Request body required");
+    if (ctx.body.len > 4096) return ctx.sendError(.payload_too_large, "Body too large");
+
+    const parsed = json_mod.parse(CapsuleNotifyRequest, ctx.allocator, ctx.body) catch
+        return ctx.sendError(.bad_request, "Invalid JSON");
+    defer parsed.deinit();
+    const req = parsed.value;
+
+    const from_pod = req.from_pod orelse return ctx.sendError(.bad_request, "from_pod required");
+    const capsule_title = req.capsule_title orelse return ctx.sendError(.bad_request, "capsule_title required");
+    const capsule_category = req.capsule_category orelse "general";
+    const owner_name = req.owner_display_name orelse "Someone";
+    const capsule_id = req.capsule_id orelse "";
+
+    // Rate limit by from_pod (reuse query rate limiter — max 20/hour per pod)
+    if (_rate_limiter) |rl| {
+        const check = rl.checkQuery(from_pod, "notify", false);
+        if (!check.allowed) {
+            return ctx.sendError(.too_many_requests, "Too many notifications from this pod");
+        }
+        rl.recordQuery(from_pod, "notify") catch {};
+    }
+
+    // Find local users who share networks with ghosts from this pod.
+    // SQL: SELECT DISTINCT u.id FROM users u
+    //      JOIN network_memberships nm ON nm.user_id = u.id
+    //      WHERE u.is_remote = 0
+    //        AND nm.network_id IN (
+    //          SELECT nm2.network_id FROM network_memberships nm2
+    //          JOIN users u2 ON u2.id = nm2.user_id
+    //          WHERE u2.is_remote = 1 AND u2.remote_pod_url LIKE ?
+    //        )
+    var notif_count: u32 = 0;
+    {
+        // Normalize from_pod URL (strip trailing slash)
+        var pod_pattern_buf: [512]u8 = undefined;
+        var pod_len: usize = 0;
+        for (from_pod) |ch| {
+            if (pod_len >= pod_pattern_buf.len - 1) break;
+            pod_pattern_buf[pod_len] = ch;
+            pod_len += 1;
+        }
+        // Strip trailing slash
+        if (pod_len > 0 and pod_pattern_buf[pod_len - 1] == '/') pod_len -= 1;
+        // Add SQL LIKE wildcard
+        pod_pattern_buf[pod_len] = '%';
+        pod_len += 1;
+        const pod_pattern = pod_pattern_buf[0..pod_len];
+
+        var stmt = database.prepare(
+            "SELECT DISTINCT u.id FROM users u " ++
+                "JOIN network_memberships nm ON nm.user_id = u.id " ++
+                "WHERE u.is_remote = 0 " ++
+                "AND nm.network_id IN (" ++
+                "  SELECT nm2.network_id FROM network_memberships nm2 " ++
+                "  JOIN users u2 ON u2.id = nm2.user_id " ++
+                "  WHERE u2.is_remote = 1 AND u2.remote_pod_url LIKE ?" ++
+                ")",
+        ) catch return ctx.sendError(.internal_server_error, "DB error");
+        defer stmt.finalize();
+        stmt.bindText(1, pod_pattern.ptr, @intCast(pod_pattern.len)) catch
+            return ctx.sendError(.internal_server_error, "DB error");
+
+        // Build notification title and body
+        var title_buf: [256]u8 = undefined;
+        const title = std.fmt.bufPrint(&title_buf, "{s} updated: {s}", .{
+            owner_name[0..@min(owner_name.len, 50)],
+            capsule_title[0..@min(capsule_title.len, 100)],
+        }) catch title_buf[0..0];
+
+        var body_buf: [512]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf, "Capsule '{s}' ({s}) was updated on a remote pod.", .{
+            capsule_title[0..@min(capsule_title.len, 150)],
+            capsule_category[0..@min(capsule_category.len, 50)],
+        }) catch body_buf[0..0];
+
+        // Timestamp
+        const now_s = std.time.timestamp();
+        var ts_buf: [32]u8 = undefined;
+        const ts_len = common.formatIsoTimestamp(now_s, &ts_buf);
+        const ts = ts_buf[0..ts_len];
+
+        while (true) {
+            const has_row = stmt.step() catch break;
+            if (!has_row) break;
+
+            const uid_raw_ptr = stmt.getText(0) orelse continue;
+            const uid_raw = std.mem.span(uid_raw_ptr);
+            if (uid_raw.len < 36) continue;
+            const uid = uid_raw[0..36];
+
+            // Generate notification ID
+            var notif_id: [36]u8 = undefined;
+            common.generateUuid(&notif_id);
+
+            // INSERT notification
+            var ins = database.prepare(
+                "INSERT INTO notifications " ++
+                    "(id, user_id, notification_type, title, body, is_read, related_id, created_at) " ++
+                    "VALUES (?, ?, 'capsule_updated', ?, ?, 0, ?, ?)",
+            ) catch continue;
+            defer ins.finalize();
+            ins.bindText(1, &notif_id, 36) catch continue;
+            ins.bindText(2, uid.ptr, 36) catch continue;
+            ins.bindText(3, title.ptr, @intCast(title.len)) catch continue;
+            ins.bindText(4, body.ptr, @intCast(body.len)) catch continue;
+            ins.bindText(5, capsule_id.ptr, @intCast(capsule_id.len)) catch continue;
+            ins.bindText(6, ts.ptr, @intCast(ts.len)) catch continue;
+            _ = ins.step() catch continue;
+            notif_count += 1;
+        }
+    }
+
+    const result = try std.fmt.allocPrint(ctx.allocator,
+        "{{\"received\":true,\"notifications_created\":{d}}}",
+        .{notif_count},
+    );
+    try ctx.json(.ok, result);
 }
