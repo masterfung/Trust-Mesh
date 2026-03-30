@@ -227,6 +227,7 @@ function QueryRow({
 }) {
   const typeLabel: Record<string, string> = {
     query_received: "Query received",
+    capsule_updated: "Shared data updated",
     query_response: "Query response",
     connection_request: "Connection request",
     connection_accepted: "Connection accepted",
@@ -321,7 +322,8 @@ export default function InboxPage() {
   // All non-message notification types worth showing in the queries tab
   const queryNotifications = allNotifications.filter((n) =>
     ["query_received", "query_response", "connection_request", "connection_accepted",
-     "network_invite", "network_joined", "task_complete", "emergency_access"].includes(n.notification_type)
+     "network_invite", "network_joined", "task_complete", "emergency_access",
+     "capsule_updated"].includes(n.notification_type)
   );
   const unreadQueryCount = allNotifications.filter((n) => !n.is_read).length;
 

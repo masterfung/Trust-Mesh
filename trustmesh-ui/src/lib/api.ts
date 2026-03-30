@@ -221,6 +221,7 @@ export interface Capsule {
   category: string;
   context?: string;
   freshness: string;
+  propagation?: string; // silent | notify | broadcast
   expires_at?: string;
   last_verified_at: string;
   is_archived: boolean;

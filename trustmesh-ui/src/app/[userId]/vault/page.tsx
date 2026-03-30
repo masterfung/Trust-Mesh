@@ -223,6 +223,12 @@ export default function VaultPage() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0 ml-2">
                     <TrustBadge tier={c.tier} />
+                    {c.propagation === "notify" && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-400 border border-yellow-500/20" title="Notifies network on update">notify</span>
+                    )}
+                    {c.propagation === "broadcast" && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20" title="Broadcasts to all pods on update">broadcast</span>
+                    )}
                     {c.network_names && c.network_names.length > 0 && (
                       <span className="text-[10px] text-muted-foreground/60 hidden sm:block truncate max-w-[100px]">
                         {c.network_names.join(", ")}
@@ -386,6 +392,7 @@ function CapsuleForm({
   const [content, setContent] = useState(capsule?.content || "");
   const [tier, setTier] = useState(capsule?.tier || "private");
   const [selectedNetworks, setSelectedNetworks] = useState<string[]>(capsule?.network_ids || []);
+  const [propagation, setPropagation] = useState(capsule?.propagation || "silent");
   const [showVisibilityConfirm, setShowVisibilityConfirm] = useState(false);
 
   // Org pool selection
@@ -489,11 +496,13 @@ function CapsuleForm({
             capsule_type: type, title, content,
             tier: effectiveTier,
             network_ids: effectiveNetworkIds,
+            propagation,
           })
         : api.createCapsule(userId, {
             capsule_type: type, title, content,
             tier: effectiveTier,
             network_ids: effectiveNetworkIds,
+            propagation,
           }),
     onSuccess: onDone,
   });
@@ -692,6 +701,42 @@ function CapsuleForm({
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Propagation selector — shown when sharing with networks */}
+          {(tier === "network" || tier === "public") && selectedNetworks.length > 0 && (
+            <div className="mb-4">
+              <label className="block text-xs font-medium text-muted-foreground mb-2">
+                When this capsule changes
+              </label>
+              <div className="flex gap-2">
+                {(["silent", "notify", "broadcast"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setPropagation(mode)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      propagation === mode
+                        ? mode === "broadcast"
+                          ? "bg-red-500/15 text-red-400 border border-red-500/30"
+                          : mode === "notify"
+                          ? "bg-yellow-500/15 text-yellow-400 border border-yellow-500/30"
+                          : "bg-card-hover text-foreground border border-card-border"
+                        : "bg-card-hover/50 text-muted-foreground border border-transparent hover:border-card-border"
+                    }`}
+                  >
+                    {mode === "silent" && "Don't notify"}
+                    {mode === "notify" && "Notify network"}
+                    {mode === "broadcast" && "Broadcast to all pods"}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-muted-foreground/60 mt-1">
+                {propagation === "silent" && "Network members discover changes on their next query."}
+                {propagation === "notify" && "Network members get a notification when you update this."}
+                {propagation === "broadcast" && "All pods in the network get pushed a notification instantly."}
+              </p>
             </div>
           )}
 
