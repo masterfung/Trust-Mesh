@@ -164,6 +164,13 @@ async def _propagation_fan_out(
                 await db.commit()
                 logger.info("propagation: %d local notifications for capsule %s", local_count, capsule_id[:8])
 
+            # After notification creation, check for stale references
+            await _trigger_staleness_check(
+                capsule_id, capsule_title, capsule_category,
+                owner_id, owner_display_name, db,
+                local_user_ids=[uid for uid, is_remote, _ in members if not is_remote],
+            )
+
             # Cross-pod push: broadcast = immediate, notify = debounced
             remote_pods = set()
             for _, is_remote, remote_pod_url in members:
@@ -215,6 +222,137 @@ async def _propagation_fan_out(
 
     except Exception as e:
         logger.warning("propagation fan-out failed for capsule %s: %s", capsule_id[:8], e)
+
+
+async def _create_staleness_entry(
+    user_id: str,
+    stale_capsule_title: str,
+    source_capsule_title: str,
+    owner_display_name: str,
+) -> None:
+    """Create a TimelineEntry with AGENT_TASK hook for staleness re-validation.
+
+    Best-effort — silently skipped if timeline engine is unavailable.
+    """
+    try:
+        from src.routes.timeline import _get_optional_engine
+        engine = _get_optional_engine()
+        if not engine or not engine.is_running:
+            return
+
+        from src.timeline_bridge import (
+            EntryBuilder,
+            EntryType,
+            EventSource,
+            HookActionKind,
+            HookPhase,
+            Visibility,
+        )
+
+        hook_prompt = (
+            f"Capsule '{stale_capsule_title}' may be outdated because "
+            f"{owner_display_name} updated '{source_capsule_title}'. "
+            f"Use query_peer to verify current information and save_capsule to update if needed."
+        )
+
+        # If the stale capsule looks like travel/itinerary content, add browse_web instruction
+        _lower = stale_capsule_title.lower()
+        if any(kw in _lower for kw in ("itinerary", "restaurant", "trip", "travel", "flight", "hotel")):
+            hook_prompt += (
+                " Also use browse_web to check for updated schedules, "
+                "reservations, or travel advisories."
+            )
+
+        builder = (
+            EntryBuilder()
+            .set_label(f"Re-validate: {stale_capsule_title[:60]}")
+            .set_category("staleness")
+            .set_salience(0.7)
+            .set_entry_type(EntryType.TASK)
+            .set_visibility(Visibility.PRIVATE)
+            .set_trigger_event(EventSource.SYSTEM, "staleness.detected")
+            .add_hook(
+                action=HookActionKind.AGENT_TASK,
+                phase=HookPhase.PRE,
+                prompt=hook_prompt,
+            )
+        )
+        engine.add_entry(builder)
+    except Exception:
+        pass  # Timeline is optional — never block capsule operations
+
+
+async def _trigger_staleness_check(
+    capsule_id: str,
+    capsule_title: str,
+    capsule_category: str,
+    owner_id: str,
+    owner_display_name: str,
+    db: AsyncSession,
+    local_user_ids: list[str],
+) -> None:
+    """Check local users' capsules for references that may be stale.
+
+    For each local user, search their capsules for owner_name + keywords.
+    If matches found, mark those capsules as stale and create timeline entries.
+    Best-effort — never raises.
+    """
+    import logging as _log
+    logger = _log.getLogger(__name__)
+
+    try:
+        from src.propagation_bridge import search_stale_references
+
+        # Extract keywords from capsule title
+        keywords = [w for w in capsule_title.lower().split() if len(w) > 3]
+        search_terms = search_stale_references(
+            owner_id, owner_display_name, keywords
+        )
+        if not search_terms:
+            return
+
+        from datetime import datetime as _dt, timezone as _tz
+
+        for uid in local_user_ids:
+            # Search this user's capsules for title matches
+            result = await db.execute(
+                select(KnowledgeCapsule).where(
+                    KnowledgeCapsule.owner_id == uid,
+                    KnowledgeCapsule.deleted_at == None,  # noqa: E711
+                    KnowledgeCapsule.stale_since == None,  # noqa: E711 — skip already stale
+                )
+            )
+            user_capsules = result.scalars().all()
+
+            stale_count = 0
+            for uc in user_capsules:
+                title_lower = uc.title.lower()
+                if any(term in title_lower for term in search_terms):
+                    uc.stale_since = _dt.now(_tz.utc)
+                    uc.stale_reason = (
+                        f"{owner_display_name} updated '{capsule_title[:80]}' — "
+                        f"this capsule may reference outdated information."
+                    )
+                    uc.stale_source_capsule_id = capsule_id
+                    stale_count += 1
+
+                    # Create a timeline entry for agent re-validation
+                    await _create_staleness_entry(
+                        uid,
+                        uc.title,
+                        capsule_title,
+                        owner_display_name,
+                    )
+
+            if stale_count:
+                await db.commit()
+                logger.info(
+                    "staleness: marked %d capsules stale for user %s (source: %s)",
+                    stale_count, uid[:8], capsule_id[:8],
+                )
+
+    except Exception as e:
+        logger.warning("staleness check failed: %s", e)
 
 
 def _check_vault_key(user_id: str) -> None:
@@ -273,6 +411,9 @@ def _capsule_to_response(
         context=capsule.context,
         freshness=capsule.freshness,
         propagation=getattr(capsule, "propagation", "silent"),
+        stale_since=getattr(capsule, "stale_since", None),
+        stale_reason=getattr(capsule, "stale_reason", None),
+        stale_source_capsule_id=getattr(capsule, "stale_source_capsule_id", None),
         expires_at=capsule.expires_at,
         last_verified_at=capsule.last_verified_at,
         auto_archive_days=capsule.auto_archive_days,
@@ -685,3 +826,53 @@ async def share_capsule(
         network_names = [net_map.get(nid, nid[:8]) for nid in network_ids]
 
     return _capsule_to_response(capsule, content, network_ids, owner.display_name if owner else None, network_names)
+
+
+@router.post("/capsules/{capsule_id}/mark-reviewed")
+async def mark_capsule_reviewed(
+    capsule_id: str,
+    db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
+    """Clear stale fields on a capsule after user review."""
+    capsule = await db.get(KnowledgeCapsule, capsule_id)
+    if not capsule:
+        raise HTTPException(404, "Capsule not found")
+    if capsule.owner_id != auth_user_id:
+        raise HTTPException(403, "Access denied")
+
+    capsule.stale_since = None
+    capsule.stale_reason = None
+    capsule.stale_source_capsule_id = None
+    capsule.last_verified_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return {"ok": True, "capsule_id": capsule_id}
+
+
+@router.post("/capsules/{capsule_id}/auto-update")
+async def auto_update_capsule(
+    capsule_id: str,
+    db: AsyncSession = Depends(get_db),
+    auth_user_id: str = Depends(get_current_user_id),
+):
+    """Trigger agent re-validation query for a stale capsule."""
+    capsule = await db.get(KnowledgeCapsule, capsule_id)
+    if not capsule:
+        raise HTTPException(404, "Capsule not found")
+    if capsule.owner_id != auth_user_id:
+        raise HTTPException(403, "Access denied")
+
+    if not capsule.stale_since:
+        return {"ok": False, "reason": "Capsule is not marked stale"}
+
+    # Build a re-validation prompt and create a timeline entry
+    source_title = capsule.stale_reason or "unknown source"
+    await _create_staleness_entry(
+        auth_user_id,
+        capsule.title,
+        source_title,
+        "system",
+    )
+
+    return {"ok": True, "capsule_id": capsule_id, "status": "re-validation queued"}

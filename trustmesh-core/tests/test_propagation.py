@@ -208,3 +208,154 @@ class TestMuteModel:
 
         # Mute doesn't change inference — it's checked at fan-out time
         assert infer_propagation(None, "family", "internal") == "notify"
+
+
+# ── Phase 3a: Staleness tests ──
+
+
+class TestStaleness:
+    def test_capsule_response_includes_staleness_fields(self):
+        """CapsuleResponse has stale_since, stale_reason, stale_source_capsule_id."""
+        from src.schemas import CapsuleResponse
+
+        data = CapsuleResponse(
+            id="test-id",
+            owner_id="owner-id",
+            capsule_type="memory",
+            title="Test",
+            content="Content",
+            tier="private",
+            category="general",
+            freshness="permanent",
+            last_verified_at="2026-01-01T00:00:00Z",
+            is_archived=False,
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            network_ids=[],
+            stale_since="2026-03-28T12:00:00Z",
+            stale_reason="Alice updated 'Travel Plans' — this capsule may reference outdated information.",
+            stale_source_capsule_id="src-capsule-id",
+        )
+        assert data.stale_since is not None
+        assert "Alice" in data.stale_reason
+        assert data.stale_source_capsule_id == "src-capsule-id"
+
+    def test_capsule_response_staleness_defaults_none(self):
+        """CapsuleResponse staleness fields default to None."""
+        from src.schemas import CapsuleResponse
+
+        data = CapsuleResponse(
+            id="test-id",
+            owner_id="owner-id",
+            capsule_type="memory",
+            title="Test",
+            content="Content",
+            tier="private",
+            category="general",
+            freshness="permanent",
+            last_verified_at="2026-01-01T00:00:00Z",
+            is_archived=False,
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            network_ids=[],
+        )
+        assert data.stale_since is None
+        assert data.stale_reason is None
+        assert data.stale_source_capsule_id is None
+
+    def test_hook_prompt_contains_query_peer(self):
+        """Generated hook prompt mentions query_peer and save_capsule."""
+        # Simulate the prompt generation logic from _create_staleness_entry
+        stale_capsule_title = "Mom's Medication Schedule"
+        source_capsule_title = "Updated Prescription"
+        owner_display_name = "Dr. Chen"
+
+        hook_prompt = (
+            f"Capsule '{stale_capsule_title}' may be outdated because "
+            f"{owner_display_name} updated '{source_capsule_title}'. "
+            f"Use query_peer to verify current information and save_capsule to update if needed."
+        )
+        assert "query_peer" in hook_prompt
+        assert "save_capsule" in hook_prompt
+        assert "Dr. Chen" in hook_prompt
+
+    def test_research_prompt_includes_browse_web(self):
+        """Stale itinerary capsule prompt includes browse_web instruction."""
+        stale_capsule_title = "Paris Trip Itinerary"
+        source_capsule_title = "Updated Flight Info"
+        owner_display_name = "Alice"
+
+        hook_prompt = (
+            f"Capsule '{stale_capsule_title}' may be outdated because "
+            f"{owner_display_name} updated '{source_capsule_title}'. "
+            f"Use query_peer to verify current information and save_capsule to update if needed."
+        )
+
+        _lower = stale_capsule_title.lower()
+        if any(kw in _lower for kw in ("itinerary", "restaurant", "trip", "travel", "flight", "hotel")):
+            hook_prompt += (
+                " Also use browse_web to check for updated schedules, "
+                "reservations, or travel advisories."
+            )
+
+        assert "browse_web" in hook_prompt
+        assert "itinerary" in stale_capsule_title.lower()
+
+    def test_non_travel_capsule_no_browse_web(self):
+        """Non-travel stale capsule prompt does NOT include browse_web."""
+        stale_capsule_title = "Mom's Medication Schedule"
+
+        hook_prompt = (
+            f"Capsule '{stale_capsule_title}' may be outdated. "
+            f"Use query_peer to verify current information and save_capsule to update if needed."
+        )
+
+        _lower = stale_capsule_title.lower()
+        if any(kw in _lower for kw in ("itinerary", "restaurant", "trip", "travel", "flight", "hotel")):
+            hook_prompt += " Also use browse_web."
+
+        assert "browse_web" not in hook_prompt
+
+    def test_search_stale_references_returns_terms(self):
+        """search_stale_references returns list of search terms."""
+        from src.propagation_bridge import search_stale_references
+
+        terms = search_stale_references("user-1", "Alice Johnson", ["medication", "schedule"])
+        assert isinstance(terms, list)
+        assert "alice" in terms
+        assert "johnson" in terms
+        assert "medication" in terms
+
+    def test_search_stale_references_empty_inputs(self):
+        """search_stale_references returns empty list for empty inputs."""
+        from src.propagation_bridge import search_stale_references
+
+        assert search_stale_references("user-1", "", []) == []
+
+    def test_mark_capsules_stale_returns_count(self):
+        """mark_capsules_stale returns count of capsules to be marked."""
+        from src.propagation_bridge import mark_capsules_stale
+
+        count = mark_capsules_stale(["c1", "c2", "c3"], "test reason", "src-id")
+        assert count == 3
+
+    def test_mark_capsules_stale_empty_list(self):
+        """mark_capsules_stale returns 0 for empty list."""
+        from src.propagation_bridge import mark_capsules_stale
+
+        count = mark_capsules_stale([], "test reason", "src-id")
+        assert count == 0
+
+    def test_knowledge_capsule_model_has_staleness_fields(self):
+        """KnowledgeCapsule model has stale_since, stale_reason, stale_source_capsule_id."""
+        from src.models import KnowledgeCapsule
+
+        capsule = KnowledgeCapsule(
+            owner_id="test",
+            capsule_type="memory",
+            title="Test",
+            content_encrypted=b"enc",
+        )
+        assert capsule.stale_since is None
+        assert capsule.stale_reason is None
+        assert capsule.stale_source_capsule_id is None

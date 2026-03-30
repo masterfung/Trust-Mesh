@@ -982,6 +982,21 @@ async def receive_capsule_notify(req: CapsuleNotifyPayload, request: Request):
             ))
         await db.commit()
 
+        # Check for stale references in local users' capsules
+        try:
+            from src.routes.capsules import _trigger_staleness_check
+            await _trigger_staleness_check(
+                capsule_id=req.capsule_id or "",
+                capsule_title=req.capsule_title,
+                capsule_category=req.capsule_category,
+                owner_id="",  # remote owner — no local ID
+                owner_display_name=req.owner_display_name,
+                db=db,
+                local_user_ids=local_ids,
+            )
+        except Exception as e:
+            logger.warning("staleness check in pod/notify failed: %s", e)
+
         return {"received": True, "notifications_created": len(local_ids)}
 
 
