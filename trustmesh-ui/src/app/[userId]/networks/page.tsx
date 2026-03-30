@@ -113,6 +113,18 @@ export default function NetworksPage() {
                     </div>
                   </div>
                   <span className="text-xs text-muted-foreground bg-card-hover px-2.5 py-1 rounded-lg">{n.members.length} members</span>
+                  {n.is_muted && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-amber-500/10 text-amber-400 border-amber-500/20 flex items-center gap-1">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                        <path d="M18.63 13A17.89 17.89 0 0 1 18 8"/>
+                        <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/>
+                        <path d="M18 8a6 6 0 0 0-9.33-5"/>
+                        <line x1="1" y1="1" x2="23" y2="23"/>
+                      </svg>
+                      Muted
+                    </span>
+                  )}
                   {n.expires_at && (
                     <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${
                       new Date(n.expires_at) < new Date()
@@ -150,6 +162,11 @@ export default function NetworksPage() {
                         ))}
                       </div>
                     )}
+                    {/* Mute toggle */}
+                    <div className="mt-3 mb-3">
+                      <MuteToggle network={n} userId={userId} />
+                    </div>
+
                     <h3 className="text-xs font-semibold text-muted-foreground mt-3 mb-2">Members ({n.members.length})</h3>
                     <div className="space-y-1.5">
                       {n.members.map((m: User) => (
@@ -203,6 +220,60 @@ export default function NetworksPage() {
         </div>
       )}
     </div>
+  );
+}
+
+/* ── Mute Toggle ── */
+
+function MuteToggle({ network, userId }: { network: Network; userId: string }) {
+  const queryClient = useQueryClient();
+  const isMuted = !!network.is_muted;
+
+  const muteMutation = useMutation({
+    mutationFn: () => (isMuted ? api.unmuteNetwork(network.id) : api.muteNetwork(network.id)),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ["networks", userId] });
+      queryClient.setQueryData(["networks", userId], (old: Network[] | undefined) =>
+        old?.map((n) => (n.id === network.id ? { ...n, is_muted: !isMuted } : n)) ?? []
+      );
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["networks", userId] });
+    },
+  });
+
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        muteMutation.mutate();
+      }}
+      disabled={muteMutation.isPending}
+      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+        isMuted
+          ? "bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20"
+          : "bg-card-hover text-muted-foreground border-card-border hover:text-foreground hover:border-card-border/80"
+      }`}
+      title={isMuted ? "Unmute notifications" : "Mute notifications"}
+    >
+      {isMuted ? (
+        /* Bell-off icon (muted) */
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+          <path d="M18.63 13A17.89 17.89 0 0 1 18 8"/>
+          <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/>
+          <path d="M18 8a6 6 0 0 0-9.33-5"/>
+          <line x1="1" y1="1" x2="23" y2="23"/>
+        </svg>
+      ) : (
+        /* Bell icon (active) */
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+      )}
+      {isMuted ? "Muted" : "Mute"}
+    </button>
   );
 }
 

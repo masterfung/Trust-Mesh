@@ -193,6 +193,7 @@ export interface Network {
   pool_type?: string;
   shared_categories?: string[] | null;
   expires_at?: string | null;
+  is_muted?: boolean;
   created_at: string;
   members: User[];
 }
@@ -595,6 +596,10 @@ export const api = {
     }),
   listInvites: (networkId: string) =>
     apiFetch<NetworkInviteListItem[]>(`/api/networks/${networkId}/invites`),
+  muteNetwork: (networkId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/networks/${networkId}/mute`, { method: "PUT" }),
+  unmuteNetwork: (networkId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/networks/${networkId}/mute`, { method: "DELETE" }),
 
   // Capsules
   listCapsules: (userId: string) =>
