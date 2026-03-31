@@ -620,9 +620,8 @@ export const api = {
   deleteCapsule: (capsuleId: string) =>
     apiFetch(`/api/capsules/${capsuleId}`, { method: "DELETE" }),
   markReviewed: (capsuleId: string) =>
-    apiFetch<Capsule>(`/api/capsules/${capsuleId}`, {
-      method: "PUT",
-      body: JSON.stringify({ stale_since: null, stale_reason: null, stale_source_capsule_id: null }),
+    apiFetch<{ ok: boolean; capsule_id: string }>(`/api/capsules/${capsuleId}/mark-reviewed`, {
+      method: "POST",
     }),
   autoUpdateCapsule: (capsuleId: string) =>
     apiFetch<Capsule>(`/api/capsules/${capsuleId}/auto-update`, { method: "POST" }),
