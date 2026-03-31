@@ -4,7 +4,7 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
-import type { TimelineEntry, TimelineEngineState, AgentTask } from "@/lib/api";
+import type { TimelineEntry, TimelineEngineState, AgentTask, Capsule } from "@/lib/api";
 import { CATEGORY_ICONS } from "@/lib/constants";
 
 /* ─── Cron builder helpers ─── */
@@ -634,6 +634,18 @@ export default function TimelinePage() {
     retry: false,
   });
 
+  // Capsules — used to surface stale capsule activity in the timeline
+  const { data: capsules } = useQuery({
+    queryKey: ["capsules", userId],
+    queryFn: () => api.listCapsules(userId),
+    enabled: !!userId,
+    retry: false,
+  });
+  const staleCapsules = useMemo(
+    () => capsules?.filter((c) => c.stale_since) || [],
+    [capsules],
+  );
+
   const tickMutation = useMutation({
     mutationFn: () => api.tickTimeline(),
     onSuccess: () => {
@@ -708,10 +720,18 @@ export default function TimelinePage() {
         <Heartbeat state={engineState} />
       ) : (
         <div className="bg-card border border-card-border rounded-2xl p-5 mb-6">
-          <p className="text-muted-foreground text-sm">
-            Timeline engine not available.{" "}
-            <code className="text-xs bg-card-hover px-1.5 py-0.5 rounded">cd kernel && zig build</code>
-          </p>
+          <div className="flex items-center gap-3">
+            <div className="w-3.5 h-3.5 rounded-full bg-zinc-500" />
+            <div>
+              <h2 className="text-base font-semibold">Timeline engine offline</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                The timeline engine runs in Zig HTTP mode. Agent tasks and staleness checks appear here when active.
+              </p>
+              <p className="text-[11px] text-muted-foreground/60 mt-1">
+                Start with: <code className="bg-card-hover px-1.5 py-0.5 rounded">TRUSTMESH_ZIG_HTTP=1 ./dev.sh start</code>
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
@@ -758,7 +778,12 @@ export default function TimelinePage() {
         </div>
       ) : unavailable ? (
         <div className="bg-card border border-card-border rounded-2xl p-8 text-center">
-          <p className="text-muted-foreground text-sm">Timeline engine not available</p>
+          <p className="text-muted-foreground text-sm">
+            Scheduled entries require the Zig timeline engine.
+            {agentTasks && agentTasks.length > 0
+              ? " Your agent tasks are shown below."
+              : " Agent tasks created during conversations will appear below."}
+          </p>
         </div>
       ) : shown.length === 0 ? (
         <div className="bg-card border border-card-border rounded-2xl p-8 text-center">
@@ -781,26 +806,70 @@ export default function TimelinePage() {
         </div>
       )}
 
-      {/* Agent Tasks — tasks created by the agent during conversations */}
-      {agentTasks && agentTasks.length > 0 && (
+      {/* Recent Activity — agent tasks + stale capsule checks */}
+      {((agentTasks && agentTasks.length > 0) || staleCapsules.length > 0) && (
         <div className="mt-8">
           <h2 className="text-sm font-semibold text-muted-foreground mb-3 flex items-center gap-2">
-            Agent Tasks
-            <span className="px-1.5 py-0.5 rounded bg-card-hover text-[10px] font-medium">{agentTasks.length}</span>
+            Recent Activity
+            <span className="px-1.5 py-0.5 rounded bg-card-hover text-[10px] font-medium">
+              {(agentTasks?.length || 0) + staleCapsules.length}
+            </span>
           </h2>
-          <div className="space-y-2">
-            {agentTasks.map((task) => (
-              <AgentTaskCard key={task.id} task={task} />
-            ))}
-          </div>
+
+          {/* Stale capsule checks */}
+          {staleCapsules.length > 0 && (
+            <div className="mb-4">
+              <h3 className="text-xs font-medium text-orange-400 mb-2 flex items-center gap-1.5">
+                <span>&#x26a0;</span> Staleness Checks ({staleCapsules.length})
+              </h3>
+              <div className="space-y-1.5">
+                {staleCapsules.slice(0, 5).map((c: Capsule) => (
+                  <div key={c.id} className="bg-orange-500/5 border border-orange-500/15 rounded-xl p-3">
+                    <div className="flex items-start gap-2.5">
+                      <span className="text-sm mt-0.5 shrink-0">&#x1f50d;</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium truncate">{c.title}</p>
+                        {c.stale_reason && (
+                          <p className="text-[11px] text-orange-400/70 mt-0.5 line-clamp-1">{c.stale_reason}</p>
+                        )}
+                        <p className="text-[10px] text-muted-foreground/50 mt-0.5">
+                          Flagged {c.stale_since ? getTimeAgo(c.stale_since) : "recently"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {staleCapsules.length > 5 && (
+                  <p className="text-[11px] text-muted-foreground/60 pl-7">
+                    +{staleCapsules.length - 5} more stale capsule{staleCapsules.length - 5 !== 1 ? "s" : ""}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Agent tasks */}
+          {agentTasks && agentTasks.length > 0 && (
+            <div>
+              <h3 className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
+                Agent Tasks
+                <span className="px-1.5 py-0.5 rounded bg-card-hover text-[10px] font-medium">{agentTasks.length}</span>
+              </h3>
+              <div className="space-y-2">
+                {agentTasks.map((task) => (
+                  <AgentTaskCard key={task.id} task={task} />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Empty state when both timeline and agent tasks are empty */}
-      {unavailable && (!agentTasks || agentTasks.length === 0) && (
+      {/* Empty state when no activity at all */}
+      {unavailable && (!agentTasks || agentTasks.length === 0) && staleCapsules.length === 0 && (
         <div className="bg-card border border-card-border rounded-2xl p-8 text-center mt-6">
           <p className="text-muted-foreground text-sm">
-            No scheduled tasks yet. Tasks created by your agent during conversations will appear here.
+            No activity yet. Tasks created by your agent during conversations and staleness checks from the propagation system will appear here.
           </p>
         </div>
       )}
