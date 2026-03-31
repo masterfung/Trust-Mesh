@@ -1,7 +1,7 @@
 """Knowledge capsule CRUD routes."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -598,6 +598,19 @@ async def list_capsules(user_id: str, context: str | None = None,
         )
         for net in net_result.scalars().all():
             network_name_map[net.id] = net.name
+
+    # Auto-expire stale flags older than 7 days so they don't clutter the UI forever
+    stale_expiry = timedelta(days=7)
+    now = datetime.now(timezone.utc)
+    stale_expired = False
+    for c in capsules:
+        if c.stale_since and (now - c.stale_since) > stale_expiry:
+            c.stale_since = None
+            c.stale_reason = None
+            c.stale_source_capsule_id = None
+            stale_expired = True
+    if stale_expired:
+        await db.commit()
 
     responses = []
     for c in capsules:
