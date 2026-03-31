@@ -414,7 +414,7 @@ async def test_pool_invite_creates_ghost_and_connections(api_client):
         )
         assert mem.scalar_one_or_none() is not None
 
-        # Ghost connections are no longer created (slim ghosts — pool membership alone grants trust)
+        # Ghost connections ARE created during pool-sync for agent discovery via list_connections
         conn = await db.execute(
             select(Connection).where(
                 Connection.status == "accepted",
@@ -422,7 +422,7 @@ async def test_pool_invite_creates_ghost_and_connections(api_client):
                 | ((Connection.from_user_id == "owner-id") & (Connection.to_user_id == ghost.id)),
             )
         )
-        assert conn.scalar_one_or_none() is None  # No connection rows for ghost users
+        assert conn.scalar_one_or_none() is not None  # Connection exists for federation queries
 
         # Verify token was consumed
         tok = await db.execute(

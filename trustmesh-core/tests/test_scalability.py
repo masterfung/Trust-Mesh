@@ -364,8 +364,8 @@ def test_format_sort_order():
 # ═══════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_no_ghost_connections_created(db: AsyncSession):
-    """_create_ghost_connections is now a no-op — no Connection rows are created."""
+async def test_ghost_connections_created_on_pool_sync(db: AsyncSession):
+    """_create_ghost_connections creates a Connection between local user and ghost."""
     from src.routes.pod import _create_ghost_connections
     from sqlalchemy import select, func
 
@@ -379,13 +379,13 @@ async def test_no_ghost_connections_created(db: AsyncSession):
     db.add(NetworkMembership(network_id="net-1", user_id="ghost-1", role="remote_member"))
     await db.flush()
 
-    # Call the now-no-op function
+    # Call creates connection between local and ghost
     await _create_ghost_connections(db, "ghost-1", "net-1")
     await db.flush()
 
-    # Verify: no Connection rows created
+    # Verify: 1 Connection row created
     count_result = await db.execute(select(func.count()).select_from(Connection))
-    assert count_result.scalar() == 0
+    assert count_result.scalar() == 1
 
 
 @pytest.mark.asyncio
