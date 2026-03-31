@@ -326,8 +326,21 @@ async def _trigger_staleness_check(
 
             stale_count = 0
             for uc in user_capsules:
+                # Check title AND decrypted content for references
                 title_lower = uc.title.lower()
-                if any(term in title_lower for term in search_terms):
+                content_lower = ""
+                try:
+                    content_lower = transit_bridge.decrypt_text(uid, uc.content_encrypted).lower()
+                except Exception:
+                    pass  # Can't decrypt — check title only
+                searchable = title_lower + " " + content_lower
+                # Require BOTH: owner name reference AND at least one keyword
+                # This prevents false positives (capsules mentioning "peter" in unrelated context)
+                owner_parts = [p.lower() for p in owner_display_name.split() if len(p) > 2]
+                kw_parts = [w for w in capsule_title.lower().split() if len(w) > 3]
+                has_owner_ref = any(part in searchable for part in owner_parts)
+                has_keyword = any(kw in searchable for kw in kw_parts) if kw_parts else True
+                if has_owner_ref and has_keyword:
                     uc.stale_since = _dt.now(_tz.utc)
                     uc.stale_reason = (
                         f"{owner_display_name} updated '{capsule_title[:80]}' — "

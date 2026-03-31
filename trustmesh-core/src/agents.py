@@ -887,6 +887,12 @@ async def handle_save_capsule(ctx: ToolContext, params: dict) -> str:
         capsule.category = category
         capsule.freshness = freshness
 
+        # Clear staleness if capsule was stale (agent is updating it)
+        if getattr(capsule, "stale_since", None) is not None:
+            capsule.stale_since = None
+            capsule.stale_reason = None
+            capsule.stale_source_capsule_id = None
+
         # Update network access
         existing_na = await ctx.db.execute(
             select(CapsuleNetworkAccess).where(CapsuleNetworkAccess.capsule_id == existing_id)
