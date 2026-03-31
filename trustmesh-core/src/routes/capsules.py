@@ -334,13 +334,15 @@ async def _trigger_staleness_check(
                 except Exception:
                     pass  # Can't decrypt — check title only
                 searchable = title_lower + " " + content_lower
-                # Require BOTH: owner name reference AND at least one keyword
-                # This prevents false positives (capsules mentioning "peter" in unrelated context)
+                # Require: owner name reference AND (keyword OR same category with dietary/schedule context)
                 owner_parts = [p.lower() for p in owner_display_name.split() if len(p) > 2]
                 kw_parts = [w for w in capsule_title.lower().split() if len(w) > 3]
                 has_owner_ref = any(part in searchable for part in owner_parts)
-                has_keyword = any(kw in searchable for kw in kw_parts) if kw_parts else True
-                if has_owner_ref and has_keyword:
+                has_keyword = any(kw in searchable for kw in kw_parts) if kw_parts else False
+                # Also match if capsule references dietary/food context in same category
+                diet_context = any(w in searchable for w in ("vegetarian", "pescatarian", "diet", "restaurant", "meal", "food", "allerg"))
+                same_category = (uc.category or "") == capsule_category and capsule_category in ("family", "health")
+                if has_owner_ref and (has_keyword or (diet_context and same_category)):
                     uc.stale_since = _dt.now(_tz.utc)
                     uc.stale_reason = (
                         f"{owner_display_name} updated '{capsule_title[:80]}' — "
