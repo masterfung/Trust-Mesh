@@ -12,6 +12,8 @@ Today, these downstream consumers only discover the change when they happen to r
 2. The system to **detect** which existing capsules are now stale
 3. Agents to **automatically re-trigger** research (e.g., TinyFish finding new restaurants)
 
+The Johnson family makes this concrete. Peter has 47 Starbucks city mugs from around the world and 31 Hard Rock Cafe pins — collecting these is a non-negotiable part of any trip itinerary. Molly needs small family-owned vineyards, not commercial tours, and walks 15-20k steps per day on vacation. Rose needs wheelchair-accessible Michelin restaurants that are not French or Italian — she loves kaiseki, Nikkei, and New Nordic cuisine, is lactose intolerant, and uses a walker. Today this knowledge is scattered across texts, conversations, and memory. When Peter changes his diet from vegetarian to pescatarian after trying omakase in Tokyo, Molly's trip itinerary — which booked Kokotxa (1 Michelin star) specifically for its vegetarian tasting menu — is instantly wrong. The itinerary also referenced Peter's vegetarianism when excluding Elkano (1-star Seafood), which now becomes a perfect fit. Without propagation, Molly discovers this mismatch only when the family arrives in San Sebastian.
+
 ---
 
 ## Phase 1 Implementation Status
@@ -457,17 +459,17 @@ What Peter, Molly, and Rose actually see at each phase of the propagation system
 
 ### Phase 1: Notification Pipe (implemented)
 
-**Peter's experience:** Peter opens his vault and edits "Travel & Dining Preferences." Below the visibility selector, he sees a toggle: "When this changes, notify: Network members." He selects it and saves. The capsule card in his vault list now shows a small bell badge. He changes "vegetarian" to "pescatarian" and saves. No extra steps — the notification fires automatically.
+**Peter's experience:** Peter opens his vault and edits "Travel & Dining Preferences" — the capsule that holds his vegetarian diet, his Starbucks mug collection (47 and counting), his Hard Rock pin collection (31 cities), his love for live blues/rock venues, and his "no early morning tours" rule. Below the visibility selector, he sees a toggle: "When this changes, notify: Network members." He selects it and saves. The capsule card in his vault list now shows a small bell badge. After trying omakase in Tokyo, Peter changes "Vegetarian — no meat, no fish, no poultry" to "Pescatarian — loves sushi, ceviche, grilled fish. Still no meat or poultry." He saves. No extra steps — the notification fires automatically.
 
-**Molly's experience:** Within 1-2 seconds of Peter's save, a notification appears in Molly's inbox: "Peter updated Peter's Travel & Dining Preferences." She clicks it and sees the change summary. She can then query Peter's agent if she wants the full updated content.
+**Molly's experience:** Within 1-2 seconds of Peter's save, a notification appears in Molly's inbox: "Peter updated Peter's Travel & Dining Preferences." She clicks it and sees the change summary. This matters because Molly's "San Sebastian Family Trip Itinerary" was built around Peter being vegetarian — she booked Kokotxa (1 Michelin star) for its vegetarian tasting menu and excluded Elkano (1-star Seafood) entirely. She can now query Peter's agent for the full updated preferences.
 
-**Rose's experience:** Same as Molly. Rose sees the notification in her inbox. She may not act on it immediately, but she is now aware that Peter's diet changed.
+**Rose's experience:** Same as Molly. Rose sees the notification in her inbox. Rose cares because family dinners need to accommodate everyone: her own lactose intolerance and low-sodium diet, Peter's newly changed diet, and whatever the restaurant can handle alongside her mobility needs (accessible seating, no cobblestones to get there). She may not act on it immediately, but she is now aware that Peter's diet changed.
 
 ### Phase 2: Hardening & Control (implemented)
 
 **Molly's experience (mute):** Molly opens her networks page. Next to "The Johnsons" she sees a bell icon. She clicks it — the icon changes to bell-off with amber styling, and notifications from that network stop. Two weeks later, Molly unmutes the network before the family trip. Notifications resume.
 
-**Peter's experience (batching):** Peter updates 5 capsules in 30 seconds — diet, travel preferences, allergy info, restaurant notes, dinner preferences. Molly does NOT get 5 separate notifications. The debounce buffer coalesces the notify-tier updates, and Molly gets 2-3 notifications instead of 5. The allergy update (broadcast tier) arrives immediately because it is safety-critical.
+**Peter's experience (batching):** Peter updates 5 capsules in 30 seconds — diet (pescatarian now), travel preferences (added "sushi restaurants" to must-haves), allergy info (unchanged but re-saved), restaurant notes (new Tokyo omakase recommendations), dinner preferences (fish and seafood OK for family meals). Molly does NOT get 5 separate notifications. The debounce buffer coalesces the notify-tier updates, and Molly gets 2-3 notifications instead of 5. The allergy update (broadcast tier) arrives immediately because it is safety-critical.
 
 **Rose's experience (muted):** Rose has muted "The Johnsons" network. She gets zero notifications from Peter's updates. When she unmutes, she will see future updates but not the ones she missed.
 
@@ -475,7 +477,7 @@ What Peter, Molly, and Rose actually see at each phase of the propagation system
 
 **Molly's experience:** Peter changes his diet. Molly's vault shows an orange "stale" badge on her "San Sebastian Itinerary" capsule. She opens it and sees a warning: "May be outdated -- Peter updated Travel & Dining Preferences." Two buttons appear: "Auto-update" and "Mark as reviewed."
 
-- **Auto-update path:** Molly clicks "Auto-update." A spinner appears. Her agent re-queries Peter ("What are your current dietary preferences?"), gets "Pescatarian," then calls TinyFish to find seafood restaurants in San Sebastian. The itinerary updates automatically. The stale badge disappears. Total time: 15-90 seconds depending on web research.
+- **Auto-update path:** Molly clicks "Auto-update." A spinner appears. Her agent re-queries Peter's pod (:9002): "What are your current dietary preferences?" Peter's agent decrypts the travel capsule and returns: "Pescatarian — loves sushi, ceviche, grilled fish. Still collects Starbucks mugs (47) and Hard Rock pins (31). No early morning tours." Molly's agent then re-queries Rose's pod (:9004) to cross-check: "Rose needs Michelin restaurants that are NOT French or Italian, lactose-free options, accessible seating, no cobblestone walks." TinyFish re-browses the Michelin Guide and finds seafood-friendly options: Elkano (1-star Seafood — grilled turbot, perfect for a pescatarian), Kokotxa (1-star Modern — now the seafood tasting menu instead of vegetarian), Arzak (3-star Traditional — has a fish-forward omakase-style menu). The itinerary updates: Elkano replaces the dropped vegetarian-only slot, Kokotxa switches to the seafood tasting, and Mugaritz (2-star Innovative) stays because its avant-garde menu works for any diet. All venues are confirmed accessible for Rose's walker. The stale badge disappears. Total time: 15-90 seconds depending on web research.
 - **Mark-reviewed path:** Molly decides the change does not affect her plans. She clicks "Mark as reviewed." The badge disappears immediately. No agent action taken.
 - **Ignore path:** Molly does nothing. After 7 days, the stale badge auto-expires. Old staleness flags do not accumulate indefinitely.
 
@@ -503,9 +505,9 @@ $ tm vault get abc123
 
 ### Phase 5 (coming): Federated Write Authority
 
-**Dr. Lee's experience:** Dr. Lee, on his own pod (:9005), needs to update Rose's medication list after an appointment. He has editor role on Rose's medication capsule (granted by Molly as Care Circle admin). He edits the capsule — his pod sends a signed write request to Rose's pod (:9004). Rose's pod verifies Dr. Lee's identity, checks his role, applies the update, and fires propagation. Dr. Lee sees: "Update confirmed, version 7."
+**Dr. Lee's experience:** Dr. Lee, on his own pod (:9005), needs to update Rose's medication list after an appointment. Rose takes Lisinopril 10mg for blood pressure at 8am, has a complex medication schedule, and is lactose intolerant (relevant because some pill coatings contain lactose). Dr. Lee has editor role on Rose's medication capsule (granted by Molly as Care Circle admin). He updates the prescription — adding Amlodipine 5mg for blood pressure and adjusting the Lisinopril dosage. His pod sends a signed write request to Rose's pod (:9004). Rose's pod verifies Dr. Lee's DID, checks his role, applies the update, and fires propagation. Dr. Lee sees: "Update confirmed, version 7."
 
-**Molly's experience:** Molly (Care Circle admin) gets notified: "Rose's medication list was updated." She sees the notification in her inbox. If the medication change affects Rose's care routine, the staleness detection flags it and Molly's agent auto-updates.
+**Molly's experience:** Molly (Care Circle admin) gets a broadcast notification because health capsules default to broadcast propagation: "Dr. Lee updated Rose's Medication Schedule." She sees it in her inbox immediately. The staleness check finds that Molly's "Rose's Daily Care Routine" capsule references the old medication list — it still says "8am: Lisinopril 10mg only" when there is now a second medication to coordinate. Molly's agent auto-updates the care routine, adjusting the morning medication section and flagging the timing interaction between Lisinopril and the new Amlodipine. The San Sebastian itinerary is also flagged: Rose's updated medication schedule may affect meal timing and the low-sodium restaurant requirements become even more important.
 
 ### Phase 6 (coming): Scale Optimizations
 
@@ -783,6 +785,18 @@ When Peter's diet changes, the re-trigger happens on Molly's pod, not Peter's.
   → Peter + Rose get notified: "Molly updated the trip plan"
 ```
 
+### What TinyFish actually finds
+
+TinyFish browsed the real Michelin Guide website for San Sebastian and returned these starred restaurants: Arzak (3-star Traditional), Akelarre (3-star Creative), Mugaritz (2-star Innovative), Kokotxa (1-star Modern), Elkano (1-star Seafood). When Peter's diet changes from vegetarian to pescatarian, the agent re-browses to find seafood-friendly Michelin restaurants that also accommodate Rose's constraints: no French cuisine, no Italian cuisine, lactose-free options available, and accessible seating for her walker. The re-research confirms:
+
+- **Elkano** (1-star Seafood) becomes the top pick — grilled whole turbot over charcoal, naturally dairy-free, ground-floor restaurant with accessible entrance. Previously excluded because Peter was vegetarian.
+- **Kokotxa** (1-star Modern) switches from the vegetarian tasting menu to the seafood-focused tasting — hake, squid, and txangurro (spider crab). Accessible location in the old town.
+- **Arzak** (3-star Traditional) has a fish-forward menu with dairy-free accommodations. Elevator access to the dining room.
+- **Mugaritz** (2-star Innovative) stays — its avant-garde menu adapts to any dietary need, and they confirmed lactose-free and pescatarian options.
+- **Akelarre** (3-star Creative) is on the hillside overlooking the bay — beautiful but requires checking wheelchair/walker access to the dining terrace.
+
+The agent also notes Rose cannot do cobblestone streets, so the itinerary routes between restaurants must avoid the steep cobblestone sections of the old town and include funicular access to Monte Igueldo.
+
 ### Cost gate
 
 TinyFish calls cost API credits. Before auto-triggering:
@@ -957,6 +971,15 @@ test_notification_appears_on_update
 - "The Zig kernel resolves propagation targets in a single SQL query — no N+1, no ORM overhead. Inference uses compile-time keyword lists: allergies always broadcast, travel always notifies."
 - "The notification contains metadata only — capsule title and change summary. Peter's actual capsule content never leaves his pod until someone queries it."
 - "This works in both deployment modes: Zig HTTP (propagation.zig handles everything in-process) and standard Python (propagation_bridge.py calls Zig via FFI, federation.py sends HTTP)."
+
+**Demo with real data flow:**
+Show the chat UI where Molly asks her agent to plan the San Sebastian trip. The agent's tool calls appear as badges in the conversation:
+- `query_peer` badge: "Peter Johnson (Pod :9002, trust: network)" — returns Peter's vegetarian diet, Starbucks collection (47 mugs), Hard Rock pins (31 cities), no early morning tours
+- `query_peer` badge: "Grandma Rose (Pod :9004, trust: network)" — returns Michelin dining (no French/Italian), kaiseki/Nikkei/New Nordic, lactose intolerant, walker, no cobblestones
+- `browse_web` badge: "Michelin Guide San Sebastian" — TinyFish returns Arzak (3-star), Akelarre (3-star), Mugaritz (2-star), Kokotxa (1-star), Elkano (1-star Seafood, excluded for Peter's vegetarian diet)
+- `save_capsule` badge: "San Sebastian Family Trip — 5-Day Itinerary" — the itinerary includes Kokotxa (vegetarian tasting menu for Peter), Mugaritz (avant-garde, works for everyone), day 2 walking tour of old town with accessible route for Rose
+
+Then demonstrate the propagation trigger via CLI: `tm vault update <id> --content "Pescatarian — loves sushi, ceviche, grilled fish"`. Show Molly's inbox updating in real time. Show the stale badge appearing on her itinerary. Show the auto-update re-querying Peter, re-browsing Michelin Guide, and swapping Elkano in.
 
 **What's implemented (Phases 1-3, all live):**
 "Phases 1-3 deliver the full propagation loop:
@@ -1683,6 +1706,8 @@ This is well within the <10ms range for typical pod sizes. The staleness search 
 2. The allowlist is small (one user's capsules, not the entire pod)
 3. BM25 ranking is computed by SQLite's FTS5 engine in C (called from Zig, zero-copy)
 
+In the Johnson family demo, the FTS5 search returns 9 candidates. The content-level matching then decrypts each candidate and applies owner+keyword rules. The search finds "Peter is vegetarian -- booked Kokotxa (1 Michelin star) for vegetarian tasting menu" in Molly's itinerary capsule. The owner name "Peter" matches, and the dietary context "vegetarian" triggers the stale flag because Peter's diet capsule just changed. A second true positive is Molly's research notes, which contain "Peter: vegetarian -- excluded Elkano (seafood)" — this also references Peter by name alongside a dietary keyword. The remaining 7 FTS5 hits are false positives: capsules that mention "Peter" (Family Communication, Emergency Contacts, Birthday Party Plans) without dietary context, or mention "dining" (Budget Tracker) without naming Peter in the content.
+
 #### Optimization 1: Category-scoped FTS5 search
 
 Already partially implemented. The `capsule_fts` table has a `category` column (UNINDEXED). We can add a pre-filter:
@@ -2082,6 +2107,8 @@ TrustMesh has three distinct layers, each with different trust, visibility, and 
 
 **Critical invariant**: Data never leaves the source pod as a copy. Peter's capsule content is ONLY decrypted on Peter's pod. When Molly's agent calls `query_peer(peter)`, Peter's pod decrypts and responds — Molly gets the answer text, not the encrypted capsule. Propagation sends a NOTIFICATION (metadata: "Peter updated X"), not the data itself.
 
+**Concrete example**: Molly's pod (:9001) queries Peter's pod (:9002) for his travel preferences. The trust level resolves to `network` via The Johnsons. Peter's agent decrypts his travel capsule and returns: vegetarian diet (later pescatarian), Starbucks mug collection (47 worldwide), Hard Rock Cafe merch (31 city pins), prefers live blues/rock music, hotels with pool, no early morning tours. This data was encrypted with AES-256-GCM in Peter's Zig transit engine — the plaintext never left Peter's pod until Peter's agent chose to respond to a trusted network query. Molly's pod stores the ANSWER from Peter's agent, not a copy of Peter's encrypted capsule.
+
 **Cost**: O(P) where P = distinct peer pods in the affected networks. Each pod gets ONE batched notification per debounce window, regardless of how many capsules changed or how many ghost users are on that pod.
 
 **Zig role at this layer**:
@@ -2213,7 +2240,16 @@ ADMIN (granted by owner)
 EDITOR (granted by owner or admin)
   └── Can: read, write (content only)
       Cannot: change visibility, propagation, roles, delete
-      Use case: Dr. Lee can edit Rose's medication list
+      Use case: Dr. Lee can edit Rose's medication list —
+        after Rose's appointment, Dr. Lee updates her prescription
+        from his pod (:9005). The federated write goes to Rose's
+        pod (:9004), is verified against Dr. Lee's DID, and updates
+        the encrypted capsule. Rose's medication capsule has
+        propagation=broadcast (health default), so Molly (Care Circle
+        admin on :9001) gets an immediate notification. Molly's
+        staleness check finds her "Rose's Daily Care Routine" capsule
+        references the old medication list (8am Lisinopril 10mg only),
+        and flags it for update with the new Amlodipine addition.
 
 VIEWER (default for network members)
   └── Can: read (via query_peer)
@@ -3082,20 +3118,40 @@ Molly's agent:
   4. save_capsule → "San Sebastián 5-Day Itinerary" (internal, shared to Johnsons)
 ```
 
+Concretely, this is what the federation queries return. Molly's pod (:9001) queries Peter's pod (:9002) via `query_peer`. The trust level resolves to `network` via The Johnsons. Peter's agent decrypts his travel capsule and returns: "Vegetarian — no meat, no fish, no poultry. Starbucks collection: 47 city mugs worldwide (must visit local Starbucks in every city). Hard Rock Cafe: 31 city pins, prefers Hard Rock Hotel when available. Loves live blues/rock music venues. Hotels with pool. No early morning tours — latest start time possible."
+
+Molly's pod then queries Rose's pod (:9004). Rose's agent returns: "Michelin dining is a must — but NO French or Italian cuisine. Loves kaiseki, Nikkei, New Nordic, innovative Korean. Lactose intolerant, low-sodium diet. Opera (Puccini, Verdi) and museum visits (impressionist, modern art). Botanical gardens. Uses walker for longer distances, needs accessible seating, cannot do cobblestone streets, prefers ground-floor hotel rooms or elevator access."
+
+TinyFish then browses the real Michelin Guide and finds 13 starred restaurants in San Sebastian. The agent cross-references these against Peter's vegetarian diet and Rose's no-French/Italian and lactose-free requirements, narrowing to 5 options: Arzak (3-star Traditional), Akelarre (3-star Creative), Mugaritz (2-star Innovative), Kokotxa (1-star Modern), and Elkano (1-star Seafood, excluded because Peter is vegetarian — this exclusion becomes wrong when Peter switches to pescatarian).
+
 **The itinerary capsule creates a DEPENDENCY:**
-- Itinerary references Peter's diet ("vegetarian restaurants")
-- Itinerary references Rose's preferences ("no French/Italian")
-- If either changes, the itinerary is STALE
+- Itinerary references Peter's diet ("vegetarian restaurants" — e.g., Kokotxa booked for vegetarian tasting)
+- Itinerary references Rose's dining preferences ("no French/Italian" — excluded 8 of 13 starred restaurants)
+- Itinerary references Rose's accessibility needs: uses a walker for longer distances, needs accessible seating at all venues, cannot do cobblestone streets for extended periods. The itinerary must account for funicular access to Monte Igueldo instead of the cobblestone path, ground-floor hotel rooms or elevator access, and restaurants with step-free entrances (confirmed for Elkano, Kokotxa, Arzak — checking required for hillside Akelarre)
+- Itinerary references Rose's dietary constraints: lactose intolerant, low-sodium diet — all restaurant bookings note dairy-free and low-sodium accommodations
+- Itinerary references Peter's collection habits: Starbucks visit scheduled for Day 1 (San Sebastian has a Starbucks on Avenida de la Libertad), Hard Rock Cafe visit on Day 3
+- If ANY of these upstream preferences change, the itinerary is STALE
 
 **What's implemented (Phase 3 — staleness detection, DONE):**
 ```
-Peter updates diet → notification arrives on Molly's pod
-  → Zig FTS5: search Molly's capsules for "peter" + "diet" + "vegetarian"
-  → Python: decrypt candidates, verify owner+keyword co-occurrence
-  → Finds: itinerary capsule mentions "Peter: vegetarian" (2 true positives from 9 FTS5 hits)
-  → Mark stale → create timeline entry with hook_prompt
-  → UI: amber badge, auto-update/mark-reviewed buttons
-  → Agent re-triggers (Phase 4: Python timeline executor needed for non-Zig mode)
+Peter updates diet (vegetarian → pescatarian) → notification arrives on Molly's pod
+  → Zig FTS5: search Molly's capsules for "peter" + "diet" + "dining" + "vegetarian"
+  → 9 FTS5 candidates returned
+  → Python: decrypt each candidate, verify owner+keyword co-occurrence
+  → True positive 1: "San Sebastian Itinerary" — contains "Peter is vegetarian —
+    booked Kokotxa (1 Michelin star) for vegetarian tasting menu. Excluded Elkano
+    (seafood) because Peter doesn't eat fish."
+  → True positive 2: "Research: San Sebastian Restaurants" — contains "Peter:
+    vegetarian constraint. Filtered 13 Michelin restaurants to 5 options.
+    Elkano excluded (seafood-focused)."
+  → 7 false positives filtered by owner+keyword rules
+  → Mark stale → create timeline entry with hook_prompt including browse_web
+    instruction for TinyFish re-research of seafood-friendly Michelin restaurants
+    that also accommodate Rose's no-French/Italian and lactose-free requirements
+  → UI: amber badge on itinerary, auto-update/mark-reviewed buttons
+  → Agent re-triggers: query_peer(peter) → updated diet, query_peer(grandmarose) →
+    confirm Rose's constraints unchanged, browse_web → TinyFish finds Elkano now
+    eligible, Kokotxa switches to seafood tasting menu
 ```
 
 **Scale:**
