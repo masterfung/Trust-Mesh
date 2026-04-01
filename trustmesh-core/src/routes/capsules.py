@@ -604,7 +604,7 @@ async def list_capsules(user_id: str, context: str | None = None,
     now = datetime.now(timezone.utc)
     stale_expired = False
     for c in capsules:
-        if c.stale_since and (now - c.stale_since) > stale_expiry:
+        if c.stale_since and (now - c.stale_since.replace(tzinfo=timezone.utc) if c.stale_since.tzinfo is None else now - c.stale_since) > stale_expiry:
             c.stale_since = None
             c.stale_reason = None
             c.stale_source_capsule_id = None
